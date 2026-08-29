@@ -1,0 +1,1008 @@
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:luna_tv/services/user_data_service.dart';
+import 'package:luna_tv/screens/login_screen.dart';
+import 'package:luna_tv/services/local_search_cache_service.dart';
+import 'package:luna_tv/models/favorite_item.dart';
+import 'package:luna_tv/models/search_result.dart';
+import 'package:luna_tv/models/play_record.dart';
+import 'package:luna_tv/models/search_resource.dart';
+import 'package:luna_tv/models/search_suggestion.dart';
+
+/// API响应结果类
+class ApiResponse<T> {
+  final bool success;
+  final T? data;
+  final String? message;
+  final int? statusCode;
+
+  ApiResponse({
+    required this.success,
+    this.data,
+    this.message,
+    this.statusCode,
+  });
+
+  factory ApiResponse.success(T data, {int? statusCode}) {
+    return ApiResponse<T>(
+      success: true,
+      data: data,
+      statusCode: statusCode,
+    );
+  }
+
+  factory ApiResponse.error(String message, {int? statusCode}) {
+    return ApiResponse<T>(
+      success: false,
+      message: message,
+      statusCode: statusCode,
+    );
+  }
+}
+
+/// 通用API请求服务
+class ApiService {
+  // v2.5.26: 复用 HTTP 客户端, 启用 keep-alive 连接池.
+  //   之前每次 http.get/post 都新建 IOClient → 新 TLS 握手 (200-1000ms/次).
+  //   复用后同 host 的请求走同一个连接池, 省掉 TLS 握手开销.
+  static final http.Client _httpClient = http.Client();
+
+  // v2.6.26: 把 _httpClient 公开给 SSE 搜索复用. 共享连接池省掉每次搜索
+  //   冷启首搜的 TCP 握手 + TLS 协商 (200-1000ms). 调用方 (SSESearchService)
+  //   不得 close() 这个 client, 否则会破坏其他请求的 keep-alive. SSE 长连接
+  //   取消 subscription 让流自然结束即可.
+  static http.Client get sharedHttpClient => _httpClient;
+
+  // v2.5.25: 分场景超时 — 之前全部 30s, 列表/搜索卡住时用户等太久.
+  //   - 普通 GET/POST (列表/收藏/历史): 15s
+  //   - 搜索 (fetchSourcesData): 20s (后端聚合多源, 需要更久)
+  //   - 登录/autoLogin: 10s (快速失败, 让用户早看到错误)
+  static const Duration _timeoutDefault = Duration(seconds: 15);
+  static const Duration _timeoutSearch = Duration(seconds: 20);
+  static const Duration _timeoutAuth = Duration(seconds: 10);
+
+  /// 获取基础URL (优先同步内存缓存, fallback async)
+  static Future<String?> _getBaseUrl() async {
+    // v2.5.25: warmup 后走同步内存读, 避免每次请求都 async/await
+    final cached = UserDataService.getServerUrlSync();
+    if (cached != null) return cached;
+    return await UserDataService.getServerUrl();
+  }
+
+  /// 获取认证cookies (优先同步内存缓存, fallback async)
+  static Future<String?> _getCookies() async {
+    final cached = UserDataService.getCookiesSync();
+    if (cached != null) return cached;
+    return await UserDataService.getCookies();
+  }
+
+  /// 构建完整URL
+  static Future<String> _buildUrl(String endpoint) async {
+    final baseUrl = await _getBaseUrl();
+    if (baseUrl == null) {
+      throw Exception('服务器地址未配置，请先登录');
+    }
+
+    // 确保baseUrl不以/结尾，endpoint以/开头
+    String cleanBaseUrl = baseUrl.endsWith('/')
+        ? baseUrl.substring(0, baseUrl.length - 1)
+        : baseUrl;
+    String cleanEndpoint = endpoint.startsWith('/') ? endpoint : '/$endpoint';
+
+    return '$cleanBaseUrl$cleanEndpoint';
+  }
+
+  /// 构建请求头
+  static Future<Map<String, String>> _buildHeaders({
+    Map<String, String>? additionalHeaders,
+    bool includeAuth = true,
+  }) async {
+    final headers = <String, String>{
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    };
+
+    // 添加认证cookies
+    if (includeAuth) {
+      final cookies = await _getCookies();
+      if (cookies != null && cookies.isNotEmpty) {
+        headers['Cookie'] = cookies;
+      }
+    }
+
+    // 添加额外头部
+    if (additionalHeaders != null) {
+      headers.addAll(additionalHeaders);
+    }
+
+    return headers;
+  }
+
+  /// 处理响应
+  static Future<ApiResponse<T>> _handleResponse<T>(
+    http.Response response,
+    T Function(dynamic)? fromJson,
+    BuildContext? context,
+  ) async {
+    // 处理401未授权
+    if (response.statusCode == 401) {
+      // 清除用户数据
+      await UserDataService.clearUserData();
+
+      // 跳转到登录页
+      if (context != null && context.mounted) {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (context) => const LoginScreen()),
+          (route) => false,
+        );
+      }
+
+      return ApiResponse.error(
+        '登录已过期，请重新登录',
+        statusCode: 401,
+      );
+    }
+
+    // 处理其他错误状态码
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      String errorMessage = '请求失败';
+      try {
+        final errorData = json.decode(response.body);
+        errorMessage =
+            errorData['message'] ?? errorData['error'] ?? errorMessage;
+      } catch (e) {
+        // 如果解析失败，使用默认错误信息
+        switch (response.statusCode) {
+          case 400:
+            errorMessage = '请求参数错误';
+            break;
+          case 403:
+            errorMessage = '没有权限访问';
+            break;
+          case 404:
+            errorMessage = '请求的资源不存在';
+            break;
+          case 500:
+            errorMessage = '服务器内部错误';
+            break;
+          default:
+            errorMessage = '网络请求失败 (${response.statusCode})';
+        }
+      }
+
+      return ApiResponse.error(
+        errorMessage,
+        statusCode: response.statusCode,
+      );
+    }
+
+    // 处理成功响应
+    try {
+      // 兼容空响应 (如 POST /api/playrecords 有些后端返回 200 + 空 body)
+      if (response.body.isEmpty) {
+        return ApiResponse.success(null as T, statusCode: response.statusCode);
+      }
+      final responseData = json.decode(response.body);
+
+      if (fromJson != null) {
+        final data = fromJson(responseData);
+        return ApiResponse.success(data, statusCode: response.statusCode);
+      } else {
+        return ApiResponse.success(responseData as T,
+            statusCode: response.statusCode);
+      }
+    } catch (e) {
+      return ApiResponse.error(
+        '响应数据解析失败: ${e.toString()}',
+        statusCode: response.statusCode,
+      );
+    }
+  }
+
+  /// GET请求
+  static Future<ApiResponse<T>> get<T>(
+    String endpoint, {
+    Map<String, String>? queryParameters,
+    Map<String, String>? headers,
+    T Function(dynamic)? fromJson,
+    BuildContext? context,
+    Duration? timeout,
+  }) async {
+    try {
+      // v2.5.25: 并行构建 URL 和 headers (之前串行 await 2 次)
+      final results = await Future.wait([
+        _buildUrl(endpoint),
+        _buildHeaders(additionalHeaders: headers),
+      ]);
+      String url = results[0] as String;
+      final requestHeaders = results[1] as Map<String, String>;
+
+      // 添加查询参数
+      if (queryParameters != null && queryParameters.isNotEmpty) {
+        final uri = Uri.parse(url);
+        final newUri = uri.replace(queryParameters: queryParameters);
+        url = newUri.toString();
+      }
+
+      final response = await _httpClient
+          .get(
+            Uri.parse(url),
+            headers: requestHeaders,
+          )
+          .timeout(timeout ?? _timeoutDefault);
+
+      return await _handleResponse(response, fromJson, context);
+    } catch (e) {
+      return ApiResponse.error('网络请求异常: ${e.toString()}');
+    }
+  }
+
+  /// POST请求
+  static Future<ApiResponse<T>> post<T>(
+    String endpoint, {
+    Map<String, dynamic>? body,
+    Map<String, String>? headers,
+    T Function(dynamic)? fromJson,
+    BuildContext? context,
+    Duration? timeout,
+  }) async {
+    try {
+      // v2.5.25: 并行构建 URL 和 headers
+      final results = await Future.wait([
+        _buildUrl(endpoint),
+        _buildHeaders(additionalHeaders: headers),
+      ]);
+      final url = results[0] as String;
+      final requestHeaders = results[1] as Map<String, String>;
+
+      final response = await _httpClient
+          .post(
+            Uri.parse(url),
+            headers: requestHeaders,
+            body: body != null ? json.encode(body) : null,
+          )
+          .timeout(timeout ?? _timeoutDefault);
+
+      return await _handleResponse(response, fromJson, context);
+    } catch (e) {
+      return ApiResponse.error('网络请求异常: ${e.toString()}');
+    }
+  }
+
+  /// PUT请求
+  static Future<ApiResponse<T>> put<T>(
+    String endpoint, {
+    Map<String, dynamic>? body,
+    Map<String, String>? headers,
+    T Function(dynamic)? fromJson,
+    BuildContext? context,
+    Duration? timeout,
+  }) async {
+    try {
+      // v2.5.25: 并行构建 URL 和 headers
+      final results = await Future.wait([
+        _buildUrl(endpoint),
+        _buildHeaders(additionalHeaders: headers),
+      ]);
+      final url = results[0] as String;
+      final requestHeaders = results[1] as Map<String, String>;
+
+      final response = await http
+          .put(
+            Uri.parse(url),
+            headers: requestHeaders,
+            body: body != null ? json.encode(body) : null,
+          )
+          .timeout(timeout ?? _timeoutDefault);
+
+      return await _handleResponse(response, fromJson, context);
+    } catch (e) {
+      return ApiResponse.error('网络请求异常: ${e.toString()}');
+    }
+  }
+
+  /// DELETE请求
+  static Future<ApiResponse<T>> delete<T>(
+    String endpoint, {
+    Map<String, String>? headers,
+    T Function(dynamic)? fromJson,
+    BuildContext? context,
+    Duration? timeout,
+  }) async {
+    try {
+      // v2.5.25: 并行构建 URL 和 headers
+      final results = await Future.wait([
+        _buildUrl(endpoint),
+        _buildHeaders(additionalHeaders: headers),
+      ]);
+      final url = results[0] as String;
+      final requestHeaders = results[1] as Map<String, String>;
+
+      final response = await http
+          .delete(
+            Uri.parse(url),
+            headers: requestHeaders,
+          )
+          .timeout(timeout ?? _timeoutDefault);
+
+      return await _handleResponse(response, fromJson, context);
+    } catch (e) {
+      return ApiResponse.error('网络请求异常: ${e.toString()}');
+    }
+  }
+
+  /// 上传文件请求
+  static Future<ApiResponse<T>> uploadFile<T>(
+    String endpoint,
+    String filePath, {
+    Map<String, String>? fields,
+    Map<String, String>? headers,
+    T Function(dynamic)? fromJson,
+    BuildContext? context,
+  }) async {
+    try {
+      final url = await _buildUrl(endpoint);
+      final requestHeaders = await _buildHeaders(
+        additionalHeaders: headers,
+        includeAuth: true,
+      );
+
+      // 移除Content-Type，让http包自动设置multipart的Content-Type
+      requestHeaders.remove('Content-Type');
+
+      final request = http.MultipartRequest('POST', Uri.parse(url));
+      request.headers.addAll(requestHeaders);
+
+      // 添加文件
+      request.files.add(await http.MultipartFile.fromPath('file', filePath));
+
+      // 添加其他字段
+      if (fields != null) {
+        request.fields.addAll(fields);
+      }
+
+      final streamedResponse = await request.send().timeout(_timeoutDefault);
+      final response = await http.Response.fromStream(streamedResponse);
+
+      return await _handleResponse(response, fromJson, context);
+    } catch (e) {
+      return ApiResponse.error('文件上传异常: ${e.toString()}');
+    }
+  }
+
+  /// 获取收藏夹列表
+  static Future<ApiResponse<List<FavoriteItem>>> getFavorites(
+      BuildContext context) async {
+    try {
+      final baseUrl = await _getBaseUrl();
+      if (baseUrl == null) {
+        return ApiResponse.error('服务器地址未配置');
+      }
+
+      final cookies = await _getCookies();
+      if (cookies == null) {
+        return ApiResponse.error('用户未登录');
+      }
+
+      final response = await _httpClient.get(
+        Uri.parse('$baseUrl/api/favorites'),
+        headers: {
+          'Accept': 'application/json',
+          'Cookie': cookies,
+        },
+      ).timeout(_timeoutDefault);
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = json.decode(response.body);
+        final List<FavoriteItem> favorites = [];
+
+        // 将Map转换为List并按save_time降序排序
+        data.forEach((id, itemData) {
+          favorites.add(FavoriteItem.fromJson(id, itemData));
+        });
+
+        // 按save_time降序排序
+        favorites.sort((a, b) => b.saveTime.compareTo(a.saveTime));
+
+        return ApiResponse.success(favorites, statusCode: response.statusCode);
+      } else if (response.statusCode == 401) {
+        // 未授权，跳转到登录页面
+        if (context.mounted) {
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (context) => const LoginScreen()),
+          );
+        }
+        return ApiResponse.error('登录已过期，请重新登录',
+            statusCode: response.statusCode);
+      } else {
+        return ApiResponse.error('获取收藏夹失败: ${response.statusCode}',
+            statusCode: response.statusCode);
+      }
+    } catch (e) {
+      return ApiResponse.error('获取收藏夹异常: ${e.toString()}');
+    }
+  }
+
+  /// 获取搜索历史
+  static Future<ApiResponse<List<String>>> getSearchHistory(
+      BuildContext context) async {
+    try {
+      final response = await get<List<String>>(
+        '/api/searchhistory',
+        context: context,
+        fromJson: (data) => (data as List).cast<String>(),
+      );
+
+      if (response.success && response.data != null) {
+        return ApiResponse.success(response.data!,
+            statusCode: response.statusCode);
+      } else {
+        return ApiResponse.error(response.message ?? '获取搜索历史失败');
+      }
+    } catch (e) {
+      return ApiResponse.error('获取搜索历史异常: ${e.toString()}');
+    }
+  }
+
+  /// 添加搜索历史
+  static Future<ApiResponse<void>> addSearchHistory(
+      String query, BuildContext context) async {
+    try {
+      final response = await post<void>(
+        '/api/searchhistory',
+        context: context,
+        body: {'keyword': query},
+      );
+
+      return response;
+    } catch (e) {
+      return ApiResponse.error('添加搜索历史异常: ${e.toString()}');
+    }
+  }
+
+  /// 清空搜索历史
+  static Future<ApiResponse<void>> clearSearchHistory(
+      BuildContext context) async {
+    try {
+      final response = await delete<void>(
+        '/api/searchhistory',
+        context: context,
+      );
+
+      return response;
+    } catch (e) {
+      return ApiResponse.error('清空搜索历史异常: ${e.toString()}');
+    }
+  }
+
+  /// 删除单个搜索历史
+  static Future<ApiResponse<void>> deleteSearchHistory(
+      String query, BuildContext context) async {
+    try {
+      final encodedQuery = Uri.encodeComponent(query);
+      final response = await delete<void>(
+        '/api/searchhistory?keyword=$encodedQuery',
+        context: context,
+      );
+
+      return response;
+    } catch (e) {
+      return ApiResponse.error('删除搜索历史异常: ${e.toString()}');
+    }
+  }
+
+  /// 保存播放记录
+  static Future<ApiResponse<void>> savePlayRecord(
+      PlayRecord playRecord, BuildContext context) async {
+    try {
+      // 构建正确的请求体格式
+      final key = '${playRecord.source}+${playRecord.id}';
+      final body = {
+        'key': key,
+        'record': playRecord.toJson(),
+      };
+      // ignore: avoid_print
+      print('[playrecords] POST key=$key');
+
+      final response = await post<void>(
+        '/api/playrecords',
+        body: body,
+        context: context,
+      );
+
+      // ignore: avoid_print
+      print('[playrecords] POST resp code=${response.statusCode} ok=${response.success} msg=${response.message}');
+      return response;
+    } catch (e) {
+      // ignore: avoid_print
+      print('[playrecords] POST 异常: $e');
+      return ApiResponse.error('保存播放记录异常: ${e.toString()}');
+    }
+  }
+
+  /// 删除播放记录
+  static Future<ApiResponse<void>> deletePlayRecord(
+      String source, String id, BuildContext context) async {
+    try {
+      final key = '$source+$id';
+      final encodedKey = Uri.encodeComponent(key);
+      final response = await delete<void>(
+        '/api/playrecords?key=$encodedKey',
+        context: context,
+      );
+
+      return response;
+    } catch (e) {
+      return ApiResponse.error('删除播放记录异常: ${e.toString()}');
+    }
+  }
+
+  /// 清空播放记录
+  static Future<ApiResponse<void>> clearPlayRecord(BuildContext context) async {
+    try {
+      final response = await delete<void>(
+        '/api/playrecords',
+        context: context,
+      );
+
+      return response;
+    } catch (e) {
+      return ApiResponse.error('清空播放记录异常: ${e.toString()}');
+    }
+  }
+
+  /// 添加收藏
+  static Future<ApiResponse<void>> favorite(String source, String id,
+      Map<String, dynamic> favoriteData, BuildContext context) async {
+    try {
+      final key = '$source+$id';
+      final body = {
+        'key': key,
+        'favorite': favoriteData,
+      };
+
+      final response = await post<void>(
+        '/api/favorites',
+        body: body,
+        context: context,
+      );
+
+      return response;
+    } catch (e) {
+      return ApiResponse.error('收藏异常: ${e.toString()}');
+    }
+  }
+
+  /// 取消收藏
+  static Future<ApiResponse<void>> unfavorite(
+      String source, String id, BuildContext context) async {
+    try {
+      final key = '$source+$id';
+      final encodedKey = Uri.encodeComponent(key);
+      final response = await delete<void>(
+        '/api/favorites?key=$encodedKey',
+        context: context,
+      );
+
+      return response;
+    } catch (e) {
+      return ApiResponse.error('取消收藏异常: ${e.toString()}');
+    }
+  }
+
+  /// 检查网络连接状态
+  static Future<bool> checkConnection() async {
+    try {
+      final baseUrl = await _getBaseUrl();
+      if (baseUrl == null) return false;
+
+      final response = await _httpClient.get(
+        Uri.parse('$baseUrl/api/health'),
+        headers: {'Accept': 'application/json'},
+      ).timeout(const Duration(seconds: 5));
+
+      return response.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// 自动登录方法
+  static Future<ApiResponse<String>> autoLogin() async {
+    try {
+      // 获取用户数据
+      final serverUrl = await UserDataService.getServerUrl();
+      final username = await UserDataService.getUsername();
+      final password = await UserDataService.getPassword();
+
+      if (serverUrl == null || username == null || password == null) {
+        return ApiResponse.error('缺少登录信息');
+      }
+
+      // 处理 URL
+      String baseUrl = serverUrl.trim();
+      if (baseUrl.endsWith('/')) {
+        baseUrl = baseUrl.substring(0, baseUrl.length - 1);
+      }
+      String loginUrl = '$baseUrl/api/login';
+
+      // 发送登录请求
+      final response = await _httpClient
+          .post(
+            Uri.parse(loginUrl),
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: json.encode({
+              'username': username,
+              'password': password,
+            }),
+          )
+          .timeout(_timeoutAuth);
+
+      if (response.statusCode == 200) {
+        // 解析并保存 cookies
+        String cookies = _parseCookies(response);
+
+        // 更新 cookies
+        await UserDataService.saveUserData(
+          serverUrl: baseUrl,
+          username: username,
+          password: password,
+          cookies: cookies,
+        );
+
+        return ApiResponse.success('自动登录成功', statusCode: response.statusCode);
+      } else {
+        return ApiResponse.error(
+          '自动登录失败: ${response.statusCode}',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      return ApiResponse.error('自动登录异常: ${e.toString()}');
+    }
+  }
+
+  /// 获取视频详情
+  static Future<List<SearchResult>> fetchSourceDetail(
+      String source, String id) async {
+    try {
+      final response = await get<SearchResult>(
+        '/api/detail',
+        queryParameters: {
+          'source': source,
+          'id': id,
+        },
+        fromJson: (data) => SearchResult.fromJson(data as Map<String, dynamic>),
+      );
+
+      if (response.success && response.data != null) {
+        return [response.data!];
+      } else {
+        print('获取视频详情失败: ${response.message}');
+        return [];
+      }
+    } catch (e) {
+      print('获取视频详情失败: $e');
+      return [];
+    }
+  }
+
+  /// 搜索视频源数据
+  /// 同一 source key 出现多次时,只保留集数最多的那一条
+  /// (修复后端注册多个同 key 资源导致前端显示重复源的问题)
+  ///
+  /// v2.5.26: 接入 LocalSearchCacheService 10 分钟 TTL 缓存.
+  ///   - 重复搜索同关键词直接命中内存, 零网络延迟.
+  ///   - 缓存存的是已去重的 List<SearchResult>, 避免重复解析 JSON.
+  ///   - sourceKey 用 'server_aggregated' 表示这是后端聚合结果.
+  /// v2.5.77: 在 search 路径上加搜索词归一化:
+  ///   - 全角空格/标点 → 半角
+  ///   - 连续空白 collapse 到单空格
+  ///   - 移除控制字符
+  ///   后端 LunaTV /api/search 接收 q 后用全词匹配 + 模糊, 但搜"ＭＥ！" 跟 "ME!"
+  ///   (全角 vs 半角) 是两个串, 落不到同一条目, 用户体感"搜不到".
+  ///   归一化不改变原 query (UI 显示不变), 只在网络请求时改写.
+  static Future<List<SearchResult>> fetchSourcesData(String query) async {
+    final normalized = _normalizeSearchQuery(query);
+    if (normalized.isEmpty) return [];
+
+    // v2.5.26: 缓存命中直接返回, 跳过网络请求
+    //   v2.5.77: 缓存 key 用归一化后的 query, 避免 "ME!" 和 "ME! " 走两套缓存.
+    const sourceKey = 'server_aggregated';
+    final cache = LocalSearchCacheService();
+    final cached = cache.getCachedSearchPage(sourceKey, normalized, 1);
+    if (cached != null && cached.status == CachedPageStatus.ok) {
+      // 缓存里存的就是 List<SearchResult>, 直接 cast 返回
+      try {
+        return (cached.data as List).cast<SearchResult>();
+      } catch (_) {
+        // cast 失败说明缓存类型异常, 走网络重写
+      }
+    }
+
+    try {
+      final response = await get<Map<String, dynamic>>(
+        '/api/search',
+        queryParameters: {
+          'q': normalized,
+        },
+        fromJson: (data) => data as Map<String, dynamic>,
+        timeout: _timeoutSearch,
+      );
+
+      if (response.success && response.data != null) {
+        final data = response.data!;
+        final results = data['results'] as List<dynamic>? ?? [];
+
+        // 解析 + 按 source key 去重
+        final parsed = results
+            .map((item) => SearchResult.fromJson(item as Map<String, dynamic>))
+            .toList();
+        final deduped = _dedupeBySourceKey(parsed);
+
+        // v2.5.26: 命中网络后写缓存 (只缓存非空结果, 避免空结果被缓存 10 分钟)
+        //   v2.5.77: 用归一化 key 写缓存, 跟 read 一致.
+        if (deduped.isNotEmpty) {
+          cache.setCachedSearchPage(
+            sourceKey,
+            normalized,
+            1,
+            CachedPageStatus.ok,
+            deduped,
+          );
+        }
+        return deduped;
+      } else {
+        print('搜索失败: ${response.message}');
+        return [];
+      }
+    } catch (e) {
+      print('搜索失败: $e');
+      return [];
+    }
+  }
+
+  /// 跨源不合并, 每个 source 一条结果; 同 source 同 title 同 year 视为
+  /// 同剧多版本, 只保留集数最多的 (处理 "新版"/"重制版" 这种集数变体).
+  ///
+  /// 关键: 跨源同剧的合并交给 SearchResultAggGrid (按 title+year+类型
+  /// 聚合 + sourceNames.join(',') 展示, 跟 web 行为一致).
+  /// api_service.dart 这层不做跨源聚合, 不然 18 个源同剧 (如"凡人修仙传")
+  /// 在 SearchResultAggGrid 那边就只剩 1 条 SearchResult, 卡片上
+  /// sourceNames 只有 1 个源名, 跟 web 18 个源名差很多.
+  ///
+  /// 同源的多版本 ("凡人修仙传" + "凡人修仙传 新版") 不会错误合并,
+  /// 因为 key 含 title, 两个不同 title 走不同 key, 各自保留.
+  /// 真正的"可可影视"重复 (tv 19 集 + movie 1 集) 也由同源多版本
+  /// 去重解决: 集数多的覆盖集数少的.
+  static List<SearchResult> _dedupeBySourceKey(List<SearchResult> results) {
+    final deduped = <String, SearchResult>{};
+    for (final r in results) {
+      if (r.source.isEmpty || r.title.isEmpty) {
+        // 缺关键字段 → 单独留, 不参与聚合
+        deduped['__nokey_${deduped.length}'] = r;
+        continue;
+      }
+      // v2.6.6: 跟 v2.5.81 一致 — title+year+source, 跨源不合并.
+      //   同 source 的同 title 同 year 才会合并 (同源去重), 跨源分开保留.
+      final key = '${r.title}_${r.year}_${r.source}';
+      final existing = deduped[key];
+      if (existing == null) {
+        deduped[key] = r;
+      } else if (r.episodes.length > existing.episodes.length) {
+        // 同源同剧多版本, 集数更多的覆盖 (处理 "新版"/"重制版")
+        deduped[key] = r;
+      }
+      // 集数少, 跳过 (同源同剧的次优版本)
+    }
+    return deduped.values.toList();
+  }
+
+  /// v2.5.77: 搜索词归一化.
+  ///   - 全角字母数字空格标点 → 半角
+  ///   - 移除控制字符
+  ///   - 连续空白 collapse 到单空格
+  ///   - trim 首尾空白
+  ///   不动 UI 显示的原 query, 只在网络请求前改写一次.
+  ///   例: "ＭＥ！" → "me!", "进击  巨人 " → "进击 巨人", "　" → " ".
+  /// v2.5.78: 加 toLowerCase 让大小写不敏感:
+  ///   - 用户输入 "ME" / "me" / "Me" → 都发 "me"
+  ///   - 后端如果存的是 "ME" (大写), 需要后端也做 lowercase 比对
+  ///   - 单前端改: 保证发出的 q 一致, 但后端不做 lowercase 还是匹配不上
+  ///     大写标题 (例如 "ME" vs "me"). 需后端配合.
+  /// v2.5.79: 进一步剥离常见 ASCII 标点, 让"输入干净词也能搜到带符号标题".
+  ///   - 之前 "ME!" → "me!", 后端转发给资源站 `wd=me!`, 资源站子串匹配
+  ///     要求子串完全一致, `me!` 在 `ME!` 里能匹配, 但反过来
+  ///     用户输入 "me" 时, `wd=me` 能不能匹配 `ME!` 取决于资源站
+  ///     是否做大小写不敏感 + 是否把 `!` 当成可忽略的标点.
+  ///   - 多数 vod 资源站对 `wd=me` 是大小写不敏感但保留标点字面量,
+  ///     所以 `wd=me` → 命中 `ME`、`Me`、`me`, 但**不会**自动去掉 `ME!` 里的 `!`
+  ///     来做匹配. 但资源站普遍会把 `wd` 当关键词, 标题里只要含 `me`
+  ///     子串就返回, 所以输入 "me" 实际是能搜到 "ME!" 的.
+  ///   - 真正搜不到的场景是用户输入带符号的 query, 如 "ME!": 资源站
+  ///     `wd=ME!` 不会匹配 `ME` (子串里没有 `!`). 把 query 里的
+  ///     `!` 剥掉变 "me" 就能搜到.
+  ///   - 这里只剥**用户明显会顺手敲出来**的装饰性符号, 不动 `-`(连字符)
+  ///     和 `.`(句点, 可能出现在 "Mr." "Dr." "v2.0" 这种有意义的缩写里),
+  ///     避免误伤.
+  ///   例: "ME!" → "me", "进击的巨人!" → "进击的巨人", "V2.0" → "v2.0" 保留点.
+  static String _normalizeSearchQuery(String query) {
+    if (query.isEmpty) return '';
+    final buf = StringBuffer();
+    for (final rune in query.runes) {
+      // ASCII 跳过
+      if (rune < 0x80) {
+        // 控制字符 (含 \n \t \r 等) 跳过, 但保留普通空格
+        if (rune < 0x20 && rune != 0x20) continue;
+        // v2.5.79: 剥离装饰性符号. 这些是用户顺手敲的、不影响语义.
+        //   不动字母/数字/空格/连字符/句点(可能是标题里有意义的).
+        //   ! ? ' " & + ( ) * # @ ~ ^ ` | \ / < > =
+        if (rune == 0x21 || // !
+            rune == 0x3F || // ?
+            rune == 0x27 || // '
+            rune == 0x22 || // "
+            rune == 0x26 || // &
+            rune == 0x2B || // +
+            rune == 0x28 || // (
+            rune == 0x29 || // )
+            rune == 0x2A || // *
+            rune == 0x23 || // #
+            rune == 0x40 || // @
+            rune == 0x7E || // ~
+            rune == 0x5E || // ^
+            rune == 0x60 || // `
+            rune == 0x7C || // |
+            rune == 0x5C || // \
+            rune == 0x2F || // /
+            rune == 0x3C || // <
+            rune == 0x3E || // >
+            rune == 0x3D) { // =
+          continue; // 跳过符号, 不写入
+        }
+        buf.writeCharCode(rune);
+        continue;
+      }
+      // 全角空格 (U+3000) → 半角空格
+      if (rune == 0x3000) {
+        buf.writeCharCode(0x20);
+        continue;
+      }
+      // 全角 ASCII 可打印区: 0xFF01..0xFF5E → 半角 0x21..0x7E
+      if (rune >= 0xFF01 && rune <= 0xFF5E) {
+        // v2.5.79: 全角符号同样剥掉 (统一行为, 用户敲全角 "！" 跟半角 "!" 等价)
+        final ascii = rune - 0xFEE0;
+        if (ascii == 0x21 || ascii == 0x3F || ascii == 0x27 || ascii == 0x22 ||
+            ascii == 0x26 || ascii == 0x2B || ascii == 0x28 || ascii == 0x29 ||
+            ascii == 0x2A || ascii == 0x23 || ascii == 0x40 || ascii == 0x7E ||
+            ascii == 0x5E || ascii == 0x60 || ascii == 0x7C || ascii == 0x5C ||
+            ascii == 0x2F || ascii == 0x3C || ascii == 0x3E || ascii == 0x3D) {
+          continue;
+        }
+        buf.writeCharCode(ascii);
+        continue;
+      }
+      // 中文标点 → 半角等价 (仅最常见的 6 个, 不全量映射避免误改)
+      // , , . . ? ? ! !
+      if (rune == 0xFF0C) {
+        buf.write(',');
+      } else if (rune == 0x3002) {
+        buf.write('.');
+      } else if (rune == 0xFF1F) {
+        // v2.5.79: 全角 ? 也归到符号里, 不保留
+        continue;
+      } else if (rune == 0xFF01) {
+        // v2.5.79: 全角 ! 也归到符号里, 不保留
+        continue;
+      } else if (rune == 0xFF1A) {
+        buf.write(':');
+      } else if (rune == 0xFF1B) {
+        buf.write(';');
+      } else if (rune == 0x200B || rune == 0x200C || rune == 0x200D ||
+                 rune == 0xFEFF || rune == 0x2060) {
+        // v2.5.81: 剥零宽字符 (用户复制粘贴站名时常带)
+        //   U+200B 零宽空格, U+200C 零宽非连接符, U+200D 零宽连接符
+        //   U+FEFF BOM/零宽无断空格, U+2060 词组连接符
+        continue;
+      } else if (_isEmojiRune(rune)) {
+        // v2.5.81: 剥 emoji — maccms LIKE 一定搜不到, 白占 query 字符
+        //   例: "进击的巨人 🔥" 剥了 emoji 后变 "进击的巨人"
+        //   注: 不剥汉字/假名/谚文 (那是真字符, 不是 emoji)
+        continue;
+      } else {
+        // 中文字符 / 韩文 / 其它非 ASCII 保留
+        buf.writeCharCode(rune);
+      }
+    }
+    // 连续空白 collapse 到单空格 + 全小写 + trim 首尾
+    return buf.toString().replaceAll(RegExp(r'\s+'), ' ').toLowerCase().trim();
+  }
+
+  // v2.5.81: 判断一个 rune 是不是 emoji
+  //   主要 emoji 区间:
+  //     U+1F300..U+1FAFF (Misc Symbols and Pictographs, Emoticons, Transport, Supplemental Symbols and Pictographs, Symbols and Pictographs Extended-A)
+  //     U+2600..U+27BF (Misc Symbols, Dingbats, Misc Symbols and Arrows)
+  //     U+1F000..U+1F1FF (Mahjong, Playing Cards, Enclosed Alphanumeric Supplement — 包含旗帜 U+1F1E6..U+1F1FF)
+  //   这些区间都跟汉字/假名/谚文 (U+4E00..U+9FFF / U+3040..U+30FF / U+AC00..U+D7AF) 互不重叠, 直接 range check 即可
+  static bool _isEmojiRune(int rune) {
+    if (rune >= 0x1F300 && rune <= 0x1FAFF) return true;
+    if (rune >= 0x2600 && rune <= 0x27BF) return true;
+    if (rune >= 0x1F000 && rune <= 0x1F1FF) return true;
+    if (rune >= 0x1F200 && rune <= 0x1F2FF) return true;  // Enclosed Ideographic Supplement
+    return false;
+  }
+
+  /// 获取搜索资源列表
+  static Future<List<SearchResource>> getSearchResources() async {
+    try {
+      final response = await get<List<SearchResource>>(
+        '/api/search/resources',
+        fromJson: (data) {
+          final list = data as List<dynamic>;
+          return list
+              .map((item) =>
+                  SearchResource.fromJson(item as Map<String, dynamic>))
+              .toList();
+        },
+      );
+
+      if (response.success && response.data != null) {
+        return response.data!;
+      } else {
+        print('获取搜索源失败: ${response.message}');
+        return [];
+      }
+    } catch (e) {
+      print('获取搜索源失败: $e');
+      return [];
+    }
+  }
+
+  /// 获取搜索建议
+  static Future<List<String>> getSearchSuggestions(String query) async {
+    try {
+      final response = await get<List<SearchSuggestion>>(
+        '/api/search/suggestions',
+        queryParameters: {'q': query.trim()},
+        fromJson: (data) {
+          final responseData = data as Map<String, dynamic>;
+          final list = responseData['suggestions'] as List<dynamic>;
+          return list
+              .map((item) =>
+                  SearchSuggestion.fromJson(item as Map<String, dynamic>))
+              .toList();
+        },
+      );
+
+      if (response.success && response.data != null) {
+        // 提取建议文本列表
+        return response.data!.map((suggestion) => suggestion.text).toList();
+      } else {
+        print('获取搜索建议失败: ${response.message}');
+        return [];
+      }
+    } catch (e) {
+      print('获取搜索建议失败: $e');
+      return [];
+    }
+  }
+
+  /// 解析 Set-Cookie 头部
+  static String _parseCookies(http.Response response) {
+    List<String> cookies = [];
+
+    // 获取所有 Set-Cookie 头部
+    final setCookieHeaders = response.headers['set-cookie'];
+    if (setCookieHeaders != null) {
+      // HTTP 头部通常是 String 类型
+      final cookieParts = setCookieHeaders.split(';');
+      if (cookieParts.isNotEmpty) {
+        cookies.add(cookieParts[0].trim());
+      }
+    }
+
+    return cookies.join('; ');
+  }
+}
