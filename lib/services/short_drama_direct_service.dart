@@ -22,6 +22,7 @@ class ShortDramaDirectService {
       categories: [
         _SourceCategory(48, 'AI 漫剧'),
         _SourceCategory(45, '反转爽剧'),
+        _SourceCategory(47, '擦边短剧'),
         _SourceCategory(41, '现代都市'),
         _SourceCategory(43, '言情总裁'),
         _SourceCategory(40, '古装仙侠'),
@@ -41,6 +42,7 @@ class ShortDramaDirectService {
   static const List<String> SHORT_DRAMA_KEYWORDS = [
     'AI 漫剧',
     '反转爽剧',
+    '擦边短剧',
     '星芽精选',
     '现代都市',
     '言情总裁',
@@ -102,7 +104,7 @@ class ShortDramaDirectService {
     final url = '$apiUrl?$query';
     final resp = await http
         .get(Uri.parse(url), headers: {
-          'User-Agent': 'Mozilla/5.0 (LunaTV-Mobile/2.6.66)',
+          'User-Agent': 'Mozilla/5.0 (LunaTV-Mobile/2.6.67)',
           'Accept': 'application/json',
         })
         .timeout(_timeout);
@@ -402,6 +404,7 @@ class ShortDramaDirectService {
     const priorityNames = [
       'AI 漫剧',       // ★ 火爆 AI 短剧 (主源金鹰 48) - 专区置顶！
       '反转爽剧',       // ★ 反转/打脸爽剧 (主源金鹰 45)
+      '擦边短剧',       // ★ 擦边/猎奇微短剧 (主源金鹰 47)
       '星芽精选',       // ★ 星芽精品竖屏短剧 (备用源星芽 1)
       '现代都市',       // ★ 现代都市生活 (主源金鹰 41)
       '言情总裁',       // ★ 豪门总裁甜宠 (主源金鹰 43)
