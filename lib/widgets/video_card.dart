@@ -64,14 +64,12 @@ class _VideoCardState extends State<VideoCard> {
         final String episodeText =
             shouldShowEpisodeInfo ? _getEpisodeText() : '';
 
-        return FutureBuilder<String>(
-          future: getImageUrl(widget.videoInfo.cover, widget.videoInfo.source),
-          builder: (context, snapshot) {
-            final String imageUrl = snapshot.data ?? widget.videoInfo.cover;
-            final headers =
-                getImageRequestHeaders(imageUrl, widget.videoInfo.source);
+        final String imageUrl =
+            getImageUrlSync(widget.videoInfo.cover, widget.videoInfo.source);
+        final headers =
+            getImageRequestHeaders(imageUrl, widget.videoInfo.source);
 
-            final cardContent = SizedBox(
+        final cardContent = SizedBox(
               width: width,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.center,
@@ -654,8 +652,6 @@ class _VideoCardState extends State<VideoCard> {
               behavior: HitTestBehavior.opaque,
               child: cardContent,
             );
-          },
-        );
       },
     );
   }

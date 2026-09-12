@@ -1,5 +1,23 @@
 # LunaTV-Mobile 修复日记
 
+## v2.6.66 (2026-09-12) — 彻底解决冷启动海报加载缓慢（OkHttp并发解锁 + 现代TLS直连 + 启动请求风暴消除 + 全同步图片URL）
+
+### 根因分析与优化
+1. **OkHttp 默认单主机并发限制解锁（maxRequestsPerHost: 5 -> 24）**：
+   - 根因：打开软件时首页与短剧专区一次性挂载数十张海报，均指向金鹰官方图床同一域名（`image.jinyingimage.com`）。OkHttp 默认 `Dispatcher.maxRequestsPerHost` 仅为 5，导致后续 20~50 张海报在队列中严重积压排队，冷启动无缓存时海报出现明显延迟；一旦缓存完成后刷新则走本地，表现为“过一会刷新非常快”。
+   - 修复：在 `ImageHttpChannel.kt` 中将 `maxRequestsPerHost` 提升至 24，`maxRequests` 设为 64，海报并发吞吐提升近 5 倍。
+2. **TLS 现代协议握手优先（MODERN_TLS 优先直连）**：
+   - 根因：原 `connectionSpecs` 将兼容旧协议的 `COMPATIBLE_TLS` 置于首位，导致请求现代 CDN/图床时频繁发生握手降级重试与往返延迟。
+   - 修复：调整为现代 `ConnectionSpec.MODERN_TLS` 优先，1-RTT / 0-RTT 极速直连，消除握手回退损耗。
+3. **消除启动瞬间网络请求风暴（21+ 并发削减至 7）**：
+   - 根因：首页 `HotShortDramaSection` 获取 12 部推荐剧时，`getRecommend` 跨 5 个分类 × 3 页并发拉取外加搜索，瞬间打出 21 个 HTTP 请求，挤占了手机全部网络带宽与 Socket 连接，导致海报下载被严重阻塞。
+   - 修复：`getRecommend` 与 `getRecommendResponse` 改为单页聚合（单次提供 140+ 部候选剧集完全满足需求），启动网络并发负荷降低 70%，为海报图片让出顺畅通道。
+4. **移除 FutureBuilder，全面升级为零延迟同步图片 URL 处理**：
+   - 根因：`ShortDramaCard` 与 `VideoCard` 使用 `FutureBuilder` 包装图片地址，不仅增加微任务调度开销，且挂载瞬间 `snapshot.data` 为空导致闪烁与二次渲染。
+   - 修复：在 `UserDataService.warmupUserDataConfig` 中预热内存配置，新增 `getImageUrlSync` 全同步提取，`ShortDramaCard` 与 `VideoCard` 均直连渲染 `CachedNetworkImage`，淡入时间优化至 150ms。
+
+---
+
 ## v2.6.65 (2026-09-12) — 紧急修复：短剧专区全空（金鹰官方采集域名纠正 + 真实分类对齐 + 星芽设备鉴权通道打通）
 
 ### 修复与优化

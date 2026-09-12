@@ -230,17 +230,28 @@ class UserDataService {
     return _getDoubanDataSourceDisplayNameFromKey(key);
   }
 
+  static String? _doubanImageSourceKeyCache;
+
   // 保存豆瓣图片源设置（存储key值）
   static Future<void> saveDoubanImageSource(String imageSourceDisplayName) async {
     final prefs = await SharedPreferences.getInstance();
     final key = _getDoubanImageSourceKeyFromDisplayName(imageSourceDisplayName);
+    _doubanImageSourceKeyCache = key;
     await prefs.setString(_doubanImageSourceKey, key);
   }
 
   // 获取豆瓣图片源设置（返回key值）
   static Future<String> getDoubanImageSourceKey() async {
+    if (_doubanImageSourceKeyCache != null) return _doubanImageSourceKeyCache!;
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_doubanImageSourceKey) ?? 'direct';
+    final key = prefs.getString(_doubanImageSourceKey) ?? 'direct';
+    _doubanImageSourceKeyCache = key;
+    return key;
+  }
+
+  // 同步获取豆瓣图片源设置
+  static String getDoubanImageSourceKeySync() {
+    return _doubanImageSourceKeyCache ?? 'direct';
   }
 
   // 获取豆瓣图片源显示名称
@@ -1431,6 +1442,11 @@ class UserDataService {
       final prefs = await SharedPreferences.getInstance();
       final v = prefs.getString(_doubanCookieKey);
       _doubanCookieCache = (v == null || v.isEmpty) ? null : v;
+    }
+    // 缓存豆瓣图片源设置，使图片 URL 可以同步计算
+    if (_doubanImageSourceKeyCache == null) {
+      final prefs = await SharedPreferences.getInstance();
+      _doubanImageSourceKeyCache = prefs.getString(_doubanImageSourceKey) ?? 'direct';
     }
     // v2.0.93: 缓存 TMDB API key, 给详情页大头部用 (build 时同步判断)
     if (_tmdbApiKeyCache == null) {

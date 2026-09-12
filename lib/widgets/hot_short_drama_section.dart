@@ -92,7 +92,7 @@ class _HotShortDramaSectionState extends State<HotShortDramaSection> {
       final cover = drama.backdrop.isNotEmpty ? drama.backdrop : drama.cover;
       return VideoInfo(
         id: drama.id.toString(),
-        source: '',
+        source: 'shortdrama',
         title: drama.name,
         sourceName: '',
         year: '',

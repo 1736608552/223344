@@ -65,13 +65,14 @@ String _upgradeDoubanCoverUrl(String url) {
 ///   [UserDataService.buildBangumiImageUrl] / [buildTmdbImageUrl] 现在是
 ///   1:1 返原 URL 的 passthrough (加速删了). 这里手动走 https 升级跟
 ///   v2.0.74 之前的行为对齐. 删了 CF Worker 健康探测 / 30s 缓存整段.
-Future<String> getImageUrl(
+/// 同步获取处理后的图片地址（零延迟，无需 FutureBuilder）
+String getImageUrlSync(
   String originalUrl,
   String? source, {
   bool upgradeDouban = false,
-}) async {
+}) {
   if (source == 'douban' && originalUrl.isNotEmpty) {
-    final imageSourceKey = await UserDataService.getDoubanImageSourceKey();
+    final imageSourceKey = UserDataService.getDoubanImageSourceKeySync();
 
     // v2.0.77: 登录豆瓣后, 任何位置都自动升级到高清 l_ratio_poster
     final bool shouldUpgrade =
@@ -102,28 +103,24 @@ Future<String> getImageUrl(
         return processed;
     }
   }
-  // v2.1.42: Bangumi 图片 URL 调 [UserDataService.buildBangumiImageUrl],
-  //   内部按当前 Bangumi 图片源选择 + worker URL 配置决定是否走
-  //   path-based worker 加速 (例: https://lain.bgm.tv/img/.../abc.jpg →
-  //   https://your-worker.example.com/bgm-img/img/.../abc.jpg). 老 v2.1.40
-  //   直连逻辑保留 (没选 bangumi_proxy 或没配 worker URL 时 1:1 返).
   if (source == 'bangumi' && originalUrl.isNotEmpty) {
     return UserDataService.buildBangumiImageUrl(originalUrl);
   }
-  // v2.1.41: TMDB 图片 URL 调 [UserDataService.buildTmdbImageUrl], 内部
-  //   按当前 TMDB 数据源选择 + worker URL 配置决定是否走 path-based
-  //   worker 加速 (例: https://image.tmdb.org/t/p/w1280/abc.jpg →
-  //   https://your-worker.example.com/image/t/p/w1280/abc.jpg). 老 v2.1.40
-  //   直连逻辑保留 (没选 tmdb_proxy 或没配 worker URL 时 1:1 返).
   if (source == 'tmdb' && originalUrl.isNotEmpty) {
     return UserDataService.buildTmdbImageUrl(originalUrl);
   }
-  // v2.5.28: 短剧图片走 worker /sd-img?url= 代理 (复用 TMDB proxy worker URL).
-  //   没配 worker URL → 1:1 返原 URL (直连 TVBox 源图床).
   if (source == 'shortdrama' && originalUrl.isNotEmpty) {
     return UserDataService.buildShortDramaImageUrl(originalUrl);
   }
   return originalUrl;
+}
+
+Future<String> getImageUrl(
+  String originalUrl,
+  String? source, {
+  bool upgradeDouban = false,
+}) async {
+  return getImageUrlSync(originalUrl, source, upgradeDouban: upgradeDouban);
 }
 
 /// v2.0.84: 豆瓣 16:9 横版 cover_url 处理器 (跟 [getImageUrl] 类似, 但升级到

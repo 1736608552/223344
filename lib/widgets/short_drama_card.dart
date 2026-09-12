@@ -7,6 +7,7 @@ import 'package:luna_tv/utils/font_utils.dart';
 import 'package:luna_tv/utils/device_utils.dart';
 import 'package:luna_tv/utils/image_url.dart';
 import 'package:luna_tv/services/luna_cache_manager.dart';
+import 'package:luna_tv/services/user_data_service.dart';
 
 /// 短剧卡片组件
 class ShortDramaCard extends StatefulWidget {
@@ -79,12 +80,11 @@ class _ShortDramaCardState extends State<ShortDramaCard> {
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(8),
                       child: widget.drama.cover.isNotEmpty
-                          ? FutureBuilder<String>(
-                              future: getImageUrl(
-                                  widget.drama.cover, 'shortdrama'),
-                              builder: (context, snapshot) {
+                          ? Builder(
+                              builder: (context) {
                                 final String imageUrl =
-                                    snapshot.data ?? widget.drama.cover;
+                                    UserDataService.buildShortDramaImageUrl(
+                                        widget.drama.cover);
                                 final headers = getImageRequestHeaders(
                                     imageUrl, 'shortdrama');
                                 return CachedNetworkImage(
@@ -132,7 +132,7 @@ class _ShortDramaCardState extends State<ShortDramaCard> {
                                     ),
                                   ),
                                   fadeInDuration:
-                                      const Duration(milliseconds: 200),
+                                      const Duration(milliseconds: 150),
                                   fadeOutDuration:
                                       const Duration(milliseconds: 100),
                                 );

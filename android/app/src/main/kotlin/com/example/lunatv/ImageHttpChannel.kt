@@ -6,6 +6,7 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import okhttp3.ConnectionSpec
+import okhttp3.Dispatcher
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -50,11 +51,16 @@ class ImageHttpChannel(messenger: BinaryMessenger) : MethodChannel.MethodCallHan
     private val mainHandler = Handler(Looper.getMainLooper())
 
     // OkHttp client:
-    //   - COMPATIBLE_TLS: TLS 1.0/1.1/1.2 全开, cipher 列表最宽, 避开
-    //     dart:io TLS 1.3 cipher 协商失败问题
+    //   - maxRequestsPerHost = 24: 避免大量同源海报 (如 image.jinyingimage.com) 排队拥塞 (默认只有 5)
+    //   - MODERN_TLS 优先: 现代 TLS 1.2/1.3 优先连接，避免 COMPATIBLE_TLS 导致的降级探测与握手往返延迟
+    //   - COMPATIBLE_TLS fallback: TLS 1.0/1.1/1.2 全开, cipher 列表最宽, 避开 dart:io TLS 1.3 协商失败
     //   - followRedirects(true): TMDB image URL 经常有 redirect (image.tmdb.org/t/p/...)
     //   - 重试: 不在 OkHttp 层做, 让 Dart [LunaImageHttp] 决定是否 fallback
     private val client: OkHttpClient = OkHttpClient.Builder()
+        .dispatcher(Dispatcher().apply {
+            maxRequests = 64
+            maxRequestsPerHost = 24
+        })
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
@@ -62,10 +68,10 @@ class ImageHttpChannel(messenger: BinaryMessenger) : MethodChannel.MethodCallHan
         .followSslRedirects(true)
         .connectionSpecs(
             listOf(
-                // 强制兼容 TLS (1.0/1.1/1.2), 跟所有 CF zone 都兼容
-                ConnectionSpec.COMPATIBLE_TLS,
-                // Fallback 1: 现代 TLS (1.2/1.3), 应付大部分现代 server
+                // 优先现代 TLS (1.2/1.3), 握手速度极快
                 ConnectionSpec.MODERN_TLS,
+                // Fallback: 强制兼容 TLS (1.0/1.1/1.2), 跟旧 server / CF zone 都兼容
+                ConnectionSpec.COMPATIBLE_TLS,
             )
         )
         .build()

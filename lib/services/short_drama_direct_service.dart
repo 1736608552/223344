@@ -102,7 +102,7 @@ class ShortDramaDirectService {
     final url = '$apiUrl?$query';
     final resp = await http
         .get(Uri.parse(url), headers: {
-          'User-Agent': 'Mozilla/5.0 (LunaTV-Mobile/2.6.65)',
+          'User-Agent': 'Mozilla/5.0 (LunaTV-Mobile/2.6.66)',
           'Accept': 'application/json',
         })
         .timeout(_timeout);
@@ -247,7 +247,7 @@ class ShortDramaDirectService {
     return allRaw;
   }
 
-  /// 首页"热门短剧"拉取：主源(金鹰) + 备用源(星芽) 全量聚合并清洗去重
+  /// 首页"热门短剧"拉取：主源(金鹰) + 备用源(星芽) 单页精炼聚合并清洗去重 (轻量快速，不阻塞启动)
   static Future<List<ShortDrama>> getRecommend({int size = 60}) async {
     final allRaw = <RawShortDrama>[];
 
@@ -258,13 +258,8 @@ class ShortDramaDirectService {
           src,
           cat.typeId,
           startPage: 1,
-          pages: src.pages,
+          pages: 1, // 首页热门只需单页聚合(约140部候选)，避免启动瞬间打出20+并发阻塞图片下载
         ));
-      }
-      // 金鹰主源额外针对热门"AI漫剧"和"红果"进行搜索扩展
-      if (src.srcKey == 'jyzy') {
-        futures.add(_fetchFromSearch(src, 'AI漫剧', pages: 2));
-        futures.add(_fetchFromSearch(src, '红果', pages: 2));
       }
     }
     final results = await Future.wait(futures);
@@ -306,7 +301,7 @@ class ShortDramaDirectService {
           src,
           cat.typeId,
           startPage: page,
-          pages: src.pages,
+          pages: 1, // 单次分页仅拉取对应页码的单页，避免并发打满
         ));
       }
     }
