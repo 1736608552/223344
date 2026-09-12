@@ -575,8 +575,8 @@ async function handleGithubAsset(request, url, corsHeaders) {
 // 配套 LunaTV-Mobile v2.5.28+ ShortDramaDirectService 走 worker 代理,
 // 一次「全部」tab 27 个请求走 CF 边缘缓存, 命中后毫秒级返回.
 const SHORT_DRAMA_SOURCES = {
-  jyzy:   'https://api.jyzyapi.com/provide/vod',
-  xingya: 'https://app.whjzjx.cn/v1/theater/list',
+  jyzy:   'https://jyzyapi.com/provide/vod',
+  xingya: 'https://app.whjzjx.cn',
   tyyszy: 'https://tyyszyapi.com/api.php/provide/vod',
   wujin:  'https://api.wujinapi.com/api.php/provide/vod',
   lzi:    'https://cj.lziapi.com/api.php/provide/vod',

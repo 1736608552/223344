@@ -16,18 +16,20 @@ class ShortDramaDirectService {
   static const List<_DirectSource> _sources = [
     _DirectSource(
       name: '金鹰短剧',
-      apiUrl: 'https://api.jyzyapi.com/provide/vod',
+      apiUrl: 'https://jyzyapi.com/provide/vod',
       srcKey: 'jyzy',
       pages: 3,
       categories: [
-        _SourceCategory(36, 'AI 漫剧'),
-        _SourceCategory(31, '红果短剧'),
-        _SourceCategory(34, '爽剧精选'),
+        _SourceCategory(48, 'AI 漫剧'),
+        _SourceCategory(45, '反转爽剧'),
+        _SourceCategory(41, '现代都市'),
+        _SourceCategory(43, '言情总裁'),
+        _SourceCategory(40, '古装仙侠'),
       ],
     ),
     _DirectSource(
       name: '星芽短剧',
-      apiUrl: 'https://app.whjzjx.cn/v1/theater/list',
+      apiUrl: 'https://app.whjzjx.cn',
       srcKey: 'xingya',
       pages: 2,
       categories: [
@@ -38,12 +40,54 @@ class ShortDramaDirectService {
 
   static const List<String> SHORT_DRAMA_KEYWORDS = [
     'AI 漫剧',
-    '红果短剧',
+    '反转爽剧',
     '星芽精选',
-    '爽剧精选',
+    '现代都市',
+    '言情总裁',
+    '古装仙侠',
   ];
 
   static const Duration _timeout = Duration(seconds: 10);
+
+  static String? _xingyaToken;
+  static DateTime? _xingyaTokenExpiry;
+
+  /// 获取并缓存星芽访问 Token
+  static Future<String?> _getXingyaToken() async {
+    if (_xingyaToken != null &&
+        _xingyaTokenExpiry != null &&
+        DateTime.now().isBefore(_xingyaTokenExpiry!)) {
+      return _xingyaToken;
+    }
+    try {
+      final resp = await http.post(
+        Uri.parse('https://u.shytkjgs.com/user/v1/account/login'),
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'okhttp/4.10.0',
+          'x-app-id': '7',
+          'platform': '1',
+          'version_name': '3.3.1',
+          'app_version': '3.3.1',
+          'device_id': '2885ce2d34c9634b287ab022f2f3a6cfb',
+        },
+        body: 'device=2885ce2d34c9634b287ab022f2f3a6cfb',
+      ).timeout(_timeout);
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body) as Map<String, dynamic>;
+        final token = data['data']?['token']?.toString();
+        if (token != null && token.isNotEmpty) {
+          _xingyaToken = token;
+          _xingyaTokenExpiry = DateTime.now().add(const Duration(hours: 12));
+          return token;
+        }
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('[ShortDramaDirect] xingya token login error: $e');
+    }
+    return _xingyaToken;
+  }
 
   /// 通用 TVBox GET 工具 (用于金鹰等标准 MacCMS 协议).
   static Future<Map<String, dynamic>> _get(
@@ -58,7 +102,7 @@ class ShortDramaDirectService {
     final url = '$apiUrl?$query';
     final resp = await http
         .get(Uri.parse(url), headers: {
-          'User-Agent': 'Mozilla/5.0 (LunaTV-Mobile/2.6.64)',
+          'User-Agent': 'Mozilla/5.0 (LunaTV-Mobile/2.6.65)',
           'Accept': 'application/json',
         })
         .timeout(_timeout);
@@ -69,45 +113,54 @@ class ShortDramaDirectService {
     return json.decode(body) as Map<String, dynamic>;
   }
 
-  /// 星芽短剧 (备用源) 开放 API 拉取
+  /// 星芽短剧 (备用源) 接口拉取
   static Future<List<RawShortDrama>> _fetchXingyaPage(
     _DirectSource src,
     String typeId,
     int page,
   ) async {
     try {
-      final query = 'page=$page&size=20&category_id=$typeId';
-      final url = '${src.apiUrl}?$query';
-      final resp = await http.get(Uri.parse(url), headers: {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36',
-        'Accept': 'application/json',
-      }).timeout(_timeout);
+      final token = await _getXingyaToken();
+      final headers = <String, String>{
+        'User-Agent': 'okhttp/4.10.0',
+        'x-app-id': '7',
+        'platform': '1',
+        'version_name': '3.3.1',
+        'app_version': '3.3.1',
+        'device_id': '2885ce2d34c9634b287ab022f2f3a6cfb',
+        if (token != null) 'authorization': token,
+        if (token != null) 'token': token,
+      };
+      final url = '${src.apiUrl}/cloud/v2/theater/home_page?theater_class_id=$typeId&type=1&page_num=$page&page_size=24';
+      final resp = await http.get(Uri.parse(url), headers: headers).timeout(_timeout);
 
       if (resp.statusCode == 200) {
-        final jsonMap = json.decode(resp.body);
-        final list = (jsonMap['data']?['list'] ?? jsonMap['list'] ?? []) as List<dynamic>;
+        final jsonMap = json.decode(resp.body) as Map<String, dynamic>;
+        final list = (jsonMap['data']?['list'] ?? []) as List<dynamic>;
         return list.map((item) {
-          final m = item as Map<String, dynamic>;
+          final rawItem = item as Map<String, dynamic>;
+          final m = (rawItem['theater'] ?? rawItem) as Map<String, dynamic>;
           final rawName = (m['title'] ?? m['name'] ?? '').toString();
-          final rawPic = (m['cover'] ?? m['pic'] ?? '').toString();
-          final ep = m['episodes'] ?? m['episode_count'] ?? 1;
+          final rawPic = (m['cover_url'] ?? m['cover'] ?? m['pic'] ?? '').toString();
+          final ep = m['total'] ?? m['episodes'] ?? m['current_num'] ?? 1;
           final epCount = ep is int ? ep : (int.tryParse(ep.toString()) ?? 1);
-          final score = (m['score'] as num?)?.toDouble() ?? 0.0;
+          final theme = (m['theme'] ?? '星芽精选').toString();
+          final desc = (m['introduction'] ?? m['descrip'] ?? '').toString();
           return RawShortDrama(
             vodId: (m['id'] is int ? m['id'] : int.tryParse(m['id']?.toString() ?? '0')) ?? 0,
             vodName: RawShortDrama.cleanVodName(rawName),
             vodPic: RawShortDrama.cleanVodPic(rawPic),
             vodPicSlide: '',
-            vodTime: (m['updated_at'] ?? m['time'] ?? '').toString(),
-            vodScore: score,
+            vodTime: DateTime.now().toIso8601String(),
+            vodScore: 9.0,
             vodRemarksEpisodeCount: epCount,
-            vodContent: (m['intro'] ?? m['desc'] ?? '').toString(),
-            vodBlurb: (m['intro'] ?? '').toString(),
-            vodActor: (m['tag'] ?? '星芽精选').toString(),
+            vodContent: desc,
+            vodBlurb: desc,
+            vodActor: theme,
             typeId: int.tryParse(typeId) ?? 1,
             typeName: '星芽精选',
           );
-        }).toList();
+        }).where((r) => r.vodName.isNotEmpty).toList();
       }
     } catch (e) {
       // ignore: avoid_print
@@ -350,12 +403,14 @@ class ShortDramaDirectService {
       }
     }
 
-    // 核心精简分类 (全部由前端固定排在最前, 后面紧随这 4 个精品分类)
+    // 核心精简分类 (全部由前端固定排在最前, 紧随真实可用分类)
     const priorityNames = [
-      'AI 漫剧',       // ★ 火爆 AI 短剧 (主源)
-      '红果短剧',       // ★ 红果专属短剧 (主源)
-      '星芽精选',       // ★ 星芽精品短剧 (备用源)
-      '爽剧精选',       // ★ 反转/打脸爽剧 (主源)
+      'AI 漫剧',       // ★ 火爆 AI 短剧 (主源金鹰 48) - 专区置顶！
+      '反转爽剧',       // ★ 反转/打脸爽剧 (主源金鹰 45)
+      '星芽精选',       // ★ 星芽精品竖屏短剧 (备用源星芽 1)
+      '现代都市',       // ★ 现代都市生活 (主源金鹰 41)
+      '言情总裁',       // ★ 豪门总裁甜宠 (主源金鹰 43)
+      '古装仙侠',       // ★ 穿越仙侠古风 (主源金鹰 40)
     ];
 
     final sorted = <_SourceCategory>[];
