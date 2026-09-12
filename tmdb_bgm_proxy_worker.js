@@ -575,16 +575,19 @@ async function handleGithubAsset(request, url, corsHeaders) {
 // 配套 LunaTV-Mobile v2.5.28+ ShortDramaDirectService 走 worker 代理,
 // 一次「全部」tab 27 个请求走 CF 边缘缓存, 命中后毫秒级返回.
 const SHORT_DRAMA_SOURCES = {
+  jyzy:   'https://api.jyzyapi.com/provide/vod',
+  xingya: 'https://app.whjzjx.cn/v1/theater/list',
   tyyszy: 'https://tyyszyapi.com/api.php/provide/vod',
   wujin:  'https://api.wujinapi.com/api.php/provide/vod',
   lzi:    'https://cj.lziapi.com/api.php/provide/vod',
+  bfzy:   'https://bfzyapi.com/api.php/provide/vod',
 }
 
 async function handleShortDramaApi(request, url, corsHeaders) {
   // /sd-api/{src} → 取 src key
   const srcKey = url.pathname.replace('/sd-api/', '')
   if (!srcKey || !SHORT_DRAMA_SOURCES[srcKey]) {
-    return jsonError('Unknown short drama source. Expected /sd-api/{tyyszy|wujin|lzi}', 400, corsHeaders)
+    return jsonError('Unknown short drama source. Expected /sd-api/{jyzy|xingya|...}', 400, corsHeaders)
   }
   const apiUrl = SHORT_DRAMA_SOURCES[srcKey] + url.search
   let response

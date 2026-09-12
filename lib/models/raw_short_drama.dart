@@ -38,6 +38,34 @@ class RawShortDrama {
     required this.typeName,
   });
 
+  /// 清洗短剧标题 (去除采集站垃圾标记、括号集数说明、完结/高清后缀等)
+  static String cleanVodName(String raw) {
+    if (raw.isEmpty) return '';
+    var s = raw.trim();
+    // 1. 去除常见的带括号标签，如：【全集】、[全80集]、(80集全)、（完结）
+    s = s.replaceAll(RegExp(r'[【\[\(（][^】\]\)）]*[】\]\)）]'), '');
+    // 2. 去除常见状态和集数标记: 全80集, 80集全, 第1-80集, 完结, HD, 1080P, 超清, 未删减等
+    s = s.replaceAll(
+      RegExp(
+        r'(?:第?\s*\d+[-~至到]\d+\s*[集话]|全\s*\d+\s*[集话]|\d+\s*[集话]全|全集|完结|更新至\s*\d+\s*[集话]|超清|高清|未删减|无删减|中字|国语|1080[pP]|4[kK]|HD|BD)+',
+        caseSensitive: false,
+      ),
+      '',
+    );
+    // 3. 去除首尾多余标点和空白
+    s = s.trim().replaceAll(RegExp(r'^[-_—:：\s]+|[-_—:：\s]+$'), '');
+    return s.isNotEmpty ? s : raw.trim();
+  }
+
+  /// 规范化图片地址 (修复协议、去除空格)
+  static String cleanVodPic(String raw) {
+    var p = raw.trim();
+    if (p.startsWith('//')) {
+      p = 'https:$p';
+    }
+    return p;
+  }
+
   /// 从 TVBox JSON (`?ac=detail&t=...`) 的一条 `list[]` 项解析.
   factory RawShortDrama.fromVodJson(Map<String, dynamic> json) {
     // 跟 src/lib/shortdrama.server.ts L62-66 字段映射 1:1, 复用后端解析逻辑.
@@ -45,13 +73,16 @@ class RawShortDrama {
     final epCount = int.tryParse(remarks.replaceAll(RegExp(r'[^\d]'), '')) ?? 1;
     final score =
         double.tryParse(json['vod_score']?.toString() ?? '') ?? 0.0;
+    final rawName = json['vod_name']?.toString() ?? '';
+    final rawPic = json['vod_pic']?.toString() ?? '';
+    final rawSlide = json['vod_pic_slide']?.toString() ?? '';
     return RawShortDrama(
       vodId: json['vod_id'] is int
           ? json['vod_id']
           : int.tryParse(json['vod_id']?.toString() ?? '0') ?? 0,
-      vodName: json['vod_name']?.toString() ?? '',
-      vodPic: json['vod_pic']?.toString() ?? '',
-      vodPicSlide: json['vod_pic_slide']?.toString() ?? '',
+      vodName: cleanVodName(rawName),
+      vodPic: cleanVodPic(rawPic),
+      vodPicSlide: cleanVodPic(rawSlide),
       vodTime: json['vod_time']?.toString() ?? '',
       vodScore: score,
       vodRemarksEpisodeCount: epCount,
