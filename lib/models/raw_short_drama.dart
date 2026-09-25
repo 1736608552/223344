@@ -63,6 +63,9 @@ class RawShortDrama {
     if (p.startsWith('//')) {
       p = 'https:$p';
     }
+    if (p.endsWith('.webp')) {
+      p = p.replaceFirst(RegExp(r'\.webp$'), '.image');
+    }
     return p;
   }
 

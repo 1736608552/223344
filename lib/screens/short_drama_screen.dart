@@ -183,6 +183,7 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     } else {
       result = await ShortDramaDirectService.getListByTypeId(
         typeId: selectedTypeId,
+        categoryName: _selectedTypeTab,
         page: _page,
         size: 20,
       );
@@ -229,6 +230,7 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     } else {
       result = await ShortDramaDirectService.getListByTypeId(
         typeId: selectedTypeId,
+        categoryName: _selectedTypeTab,
         page: _page,
         size: 20,
       );

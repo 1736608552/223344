@@ -104,13 +104,16 @@ class ImageHttpChannel(messenger: BinaryMessenger) : MethodChannel.MethodCallHan
             return
         }
 
-        // 解析 URL
-        val parsed = parseUrl(url)
+        // 协议规范化 (兼容以 // 开头的无协议 CDN 链接)
+        val normalizedUrl = if (url.trim().startsWith("//")) "https:${url.trim()}" else url.trim()
+
+        // 解析 URL (容错优先，避免特殊字符导致图片加载被直接拦截)
+        val parsed = parseUrl(normalizedUrl)
         if (parsed == null) {
-            result.error("INVALID_URL", "cannot parse url: $url", null)
+            result.error("INVALID_URL", "cannot parse url: $normalizedUrl", null)
             return
         }
-        val (scheme, requestHost, port, pathAndQuery) = parsed
+        val requestHost = parsed.host
 
         // 优选 IP 解析:
         //   - 如果 Dart 给了 overrideHost + overrideIp, 给这个 hostname
@@ -135,14 +138,19 @@ class ImageHttpChannel(messenger: BinaryMessenger) : MethodChannel.MethodCallHan
             client.newBuilder().dns(customDns).build()
         } else client
 
-        val requestBuilder = Request.Builder()
-            .url(url)
-        // 加自定义 header (跳过 Host, OkHttp 不让 set)
-        for ((k, v) in headers) {
-            if (k.equals("Host", ignoreCase = true)) continue
-            requestBuilder.addHeader(k, v)
+        val request = try {
+            val requestBuilder = Request.Builder()
+                .url(normalizedUrl)
+            // 加自定义 header (跳过 Host, OkHttp 不让 set)
+            for ((k, v) in headers) {
+                if (k.equals("Host", ignoreCase = true)) continue
+                requestBuilder.addHeader(k, v)
+            }
+            requestBuilder.build()
+        } catch (e: Exception) {
+            result.error("INVALID_URL", e.message ?: "url build failed", null)
+            return
         }
-        val request = requestBuilder.build()
 
         // 异步跑 (OkHttp 自己有线程池, 不需要 new Thread)
         requestClient.newCall(request).enqueue(object : okhttp3.Callback {
@@ -183,10 +191,18 @@ class ImageHttpChannel(messenger: BinaryMessenger) : MethodChannel.MethodCallHan
     )
 
     /**
-     * 解析 url 成 (scheme, host, port, path?query). 用 java.net.URI 避免
-     * 自己处理 IPv6 bracket 等边界情况.
+     * 解析 url 成 (scheme, host, port, path?query). 优先使用 OkHttp 的 HttpUrl，
+     * 完美兼容带 ~、:、% 及参数签名的各类 CDN 海报地址.
      */
     private fun parseUrl(url: String): ParsedUrl? {
+        val httpUrl = okhttp3.HttpUrl.parse(url)
+        if (httpUrl != null) {
+            val scheme = httpUrl.scheme
+            val host = httpUrl.host
+            val port = httpUrl.port
+            val pathAndQuery = httpUrl.encodedPath + if (httpUrl.encodedQuery != null) "?" + httpUrl.encodedQuery else ""
+            return ParsedUrl(scheme, host, port, pathAndQuery)
+        }
         return try {
             val uri = java.net.URI(url)
             val scheme = uri.scheme ?: return null
