@@ -218,6 +218,11 @@ class _PlayerScreenState extends State<PlayerScreen>
   // pinch 指针追踪 — 记录当前按下的指针 id → 屏幕坐标
   final Map<int, Offset> _pinchPointers = {};
   double _pinchInitialDistance = 0.0; // pinch 开始时两指距离 (像素)
+
+  // 分辨率 / 清晰度状态 (默认显示「原画」，支持多分辨率平滑切换)
+  String _currentResolution = '原画';
+  List<String> _availableResolutions = [];
+  final Map<String, String> _resolutionUrlMap = {};
   // v2.2.0: 删 _videoParamsSub (libmpv streams.videoParams 替代)
   //   video size 从 backend.width/height 读 (在 positionStream listener 里同步)
 
@@ -3419,6 +3424,9 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     final url = await _resolveSharePageUrl(actualSourceUrl);
 
+    // 异步分析当前播放流的分辨率，无多分辨率时常驻显示「原画」
+    unawaited(_checkStreamResolutions(url));
+
     // 切集时先把自动切下一集标志重置, 让新一集播完时能再次触发
     _autoPlayedThisEpisode = false;
     // 切集时清零 _lastKnownPosition, 避免上一集的"主片位置"被新一集沿用
@@ -5683,6 +5691,8 @@ class _PlayerScreenState extends State<PlayerScreen>
                               ),
                             ),
                           ),
+                          // 分辨率 / 原画切换控件 (无多分辨率时常驻显示原画)
+                          _buildResolutionButton(),
                           // 右: 倍速
                           _iconBtn(
                             icon: Icons.speed,
@@ -5724,6 +5734,175 @@ class _PlayerScreenState extends State<PlayerScreen>
         ),
       ),
     );
+  }
+
+  /// 构建分辨率 / 清晰度切换控件 (无多分辨率选择时常驻显示「原画」)
+  Widget _buildResolutionButton() {
+    return GestureDetector(
+      onTap: _showResolutionSelectorSheet,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.14),
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(
+            color: Colors.white.withOpacity(0.22),
+            width: 0.8,
+          ),
+        ),
+        child: Text(
+          _currentResolution, // 无多分辨率选择时默认显示「原画」
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.3,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 弹出分辨率切换面板
+  void _showResolutionSelectorSheet() {
+    if (_availableResolutions.length > 1) {
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: Colors.transparent,
+        builder: (ctx) => Container(
+          decoration: const BoxDecoration(
+            color: Color(0xFF1E1E2E),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Text(
+                  '选择分辨率',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const Divider(color: Colors.white12),
+              ..._availableResolutions.map((res) {
+                final isSelected = res == _currentResolution;
+                return ListTile(
+                  title: Text(
+                    res,
+                    style: TextStyle(
+                      color: isSelected
+                          ? const Color(0xFF10b981)
+                          : Colors.white,
+                      fontWeight:
+                          isSelected ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                  trailing: isSelected
+                      ? const Icon(Icons.check, color: Color(0xFF10b981))
+                      : null,
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    if (isSelected) return;
+                    final targetUrl = _resolutionUrlMap[res];
+                    if (targetUrl != null && targetUrl.isNotEmpty) {
+                      setState(() {
+                        _currentResolution = res;
+                      });
+                      final currentPos = _currentPosition;
+                      _pendingResumeAt = currentPos;
+                      await _player!.open(targetUrl);
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('已切换清晰度至: $res'),
+                            duration: const Duration(seconds: 1),
+                          ),
+                        );
+                      }
+                    }
+                  },
+                );
+              }),
+            ],
+          ),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('当前已是官方原画最高清晰度'),
+          duration: Duration(seconds: 2),
+          backgroundColor: Color(0xFF10b981),
+        ),
+      );
+    }
+  }
+
+  /// 异步检测当前流的多分辨率选项，无子流时显示「原画」
+  Future<void> _checkStreamResolutions(String url) async {
+    if (!mounted) return;
+    try {
+      if (url.contains('.m3u8')) {
+        final resp = await http
+            .get(Uri.parse(url), headers: _browserHeaders)
+            .timeout(const Duration(seconds: 4));
+        if (resp.statusCode == 200 &&
+            resp.body.contains('#EXT-X-STREAM-INF')) {
+          final lines = resp.body.split('\n');
+          final resolutions = <String>[];
+          final urlMap = <String, String>{};
+          for (int i = 0; i < lines.length; i++) {
+            final line = lines[i].trim();
+            if (line.startsWith('#EXT-X-STREAM-INF') &&
+                line.contains('RESOLUTION=')) {
+              final match = RegExp(r'RESOLUTION=(\d+x\d+)').firstMatch(line);
+              if (match != null && i + 1 < lines.length) {
+                final subUrl = lines[i + 1].trim();
+                final dims = match.group(1)!.split('x');
+                final h = int.tryParse(dims.last) ?? 0;
+                String resName = '${h}P';
+                if (h >= 1080) {
+                  resName = '原画 (1080P)';
+                } else if (h >= 720) {
+                  resName = '超清 (720P)';
+                } else if (h >= 480) {
+                  resName = '高清 (480P)';
+                }
+                final fullUrl = Uri.parse(url).resolve(subUrl).toString();
+                resolutions.add(resName);
+                urlMap[resName] = fullUrl;
+              }
+            }
+          }
+          if (resolutions.isNotEmpty && mounted) {
+            setState(() {
+              _availableResolutions = resolutions;
+              _resolutionUrlMap
+                ..clear()
+                ..addAll(urlMap);
+              _currentResolution = resolutions.first;
+            });
+            return;
+          }
+        }
+      }
+    } catch (_) {}
+
+    if (mounted) {
+      setState(() {
+        _availableResolutions = [];
+        _resolutionUrlMap.clear();
+        _currentResolution = '原画';
+      });
+    }
   }
 
   /// 进度条 (5px 矩形, 绿进度, LunaTV Web 风格)
