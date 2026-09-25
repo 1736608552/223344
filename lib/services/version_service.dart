@@ -8,16 +8,13 @@ import 'package:luna_tv/services/diary_service.dart';
 import 'package:luna_tv/services/user_data_service.dart';
 
 class VersionService {
-  static const String githubRepoUrl = 'https://github.com/djsevenx1/LunaTV-Mobile';
-  static const String githubApiUrl = 'https://api.github.com/repos/djsevenx1/LunaTV-Mobile/releases/latest';
+  static const String githubRepoUrl = 'https://github.com/djsevenx1/LunaTV-Mobile-Private';
+  static const String githubApiUrl = 'https://api.github.com/repos/djsevenx1/LunaTV-Mobile-Private/releases/latest';
   static const String _dismissedVersionKey = 'dismissed_version';
 
-  // 极速高可用 CDN 镜像源列表（国内免梯秒连）
+  // 极速高可用 CDN 镜像源列表（私有仓库备用，若未来配置公开镜像可秒连）
   static const List<String> _cdnPubspecMirrors = [
-    'https://fastly.jsdelivr.net/gh/djsevenx1/LunaTV-Mobile@main/pubspec.yaml',
-    'https://testingcf.jsdelivr.net/gh/djsevenx1/LunaTV-Mobile@main/pubspec.yaml',
-    'https://cdn.jsdelivr.net/gh/djsevenx1/LunaTV-Mobile@main/pubspec.yaml',
-    'https://raw.githubusercontent.com/djsevenx1/LunaTV-Mobile/main/pubspec.yaml',
+    'https://raw.githubusercontent.com/djsevenx1/LunaTV-Mobile-Private/main/pubspec.yaml',
   ];
 
   /// 检查是否有新版本（启动自动调用）
