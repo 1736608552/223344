@@ -20,6 +20,7 @@ import 'package:luna_tv/services/page_cache_service.dart';
 import 'package:luna_tv/services/user_data_service.dart';
 import 'package:luna_tv/services/m3u8_service.dart';
 import 'package:luna_tv/services/player_backend.dart';
+import 'package:luna_tv/services/duanju_core_bridge.dart';
 // v2.3.0: 视频加速 (VideoProxyServer + CfOptimizer) 整个删了, 不用这两个 import
 //   - video_proxy_server.dart 已删
 //   - cf_optimizer.dart 已删
@@ -2357,6 +2358,35 @@ class _PlayerScreenState extends State<PlayerScreen>
       _error = null;
     });
 
+    // 短剧专属源直连：若为短剧直接使用红果官方原画观看源，跳过普通影视站搜索
+    if (widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama' ||
+        widget.videoInfo.source == '__shortdrama__') {
+      final totalEps = widget.videoInfo.totalEpisodes > 0
+          ? widget.videoInfo.totalEpisodes
+          : 80;
+      final eps = List.generate(totalEps, (i) => (i + 1).toString());
+      final epTitles = List.generate(totalEps, (i) => '第${i + 1}集');
+      final dramaSource = SearchResult(
+        id: widget.videoInfo.id,
+        title: widget.videoInfo.title,
+        poster: widget.videoInfo.cover,
+        episodes: eps,
+        episodesTitles: epTitles,
+        source: 'hongguo',
+        sourceName: '红果短剧 (官方原画)',
+        year: widget.videoInfo.year.isNotEmpty ? widget.videoInfo.year : '2026',
+      );
+      if (!mounted) return;
+      setState(() {
+        _sourceResults = [dramaSource];
+        _sourcesLoading = false;
+        _error = null;
+      });
+      _selectSource(dramaSource);
+      return;
+    }
+
     // 先尝试从云端拉一次播放记录, 防止 videoInfo 没带 source/index
     // (比如从搜索结果直接点进来, 但云端其实有别的源在播)
     final resume = widget.videoInfo.source.isEmpty || widget.videoInfo.index <= 0
@@ -3371,7 +3401,23 @@ class _PlayerScreenState extends State<PlayerScreen>
     //   "Failed to recognize file format". 修法: 检测是 HTML 就提取 m3u8.
     //   只对明显不是视频流 (非 .m3u8/.mp4/.ts/.flv 后缀) 的 URL 做 fetch,
     //   避免对正常视频流多一次 HTTP 请求.
-    final url = await _resolveSharePageUrl(originalUrl);
+    // 红果官方原画观看源直解：调用原生 Go 引擎/直连通道直出 1080p 超清流
+    String actualSourceUrl = originalUrl;
+    if (source.source == 'hongguo' ||
+        source.source == 'shortdrama' ||
+        !originalUrl.startsWith('http')) {
+      final dramaId = source.id.isNotEmpty ? source.id : widget.videoInfo.id;
+      final resolved = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
+        dramaId: dramaId,
+        episode: index + 1,
+        rawUrl: originalUrl.startsWith('http') ? originalUrl : null,
+      );
+      if (resolved != null && resolved.isNotEmpty) {
+        actualSourceUrl = resolved;
+      }
+    }
+
+    final url = await _resolveSharePageUrl(actualSourceUrl);
 
     // 切集时先把自动切下一集标志重置, 让新一集播完时能再次触发
     _autoPlayedThisEpisode = false;

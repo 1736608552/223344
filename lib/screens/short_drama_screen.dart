@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:luna_tv/models/short_drama.dart';
 import 'package:luna_tv/models/video_info.dart';
+import 'package:luna_tv/models/search_result.dart';
 import 'package:luna_tv/screens/player_screen.dart';
 // v2.5.3: 列表/分类/图片走 ShortDramaDirectService (直连 3 源, 不依赖
 //   serverUrl). 播放解析仍走 ShortDramaService.parseEpisode (serverUrl
@@ -275,18 +276,35 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     _fetchDramaList(isRefresh: true);
   }
 
-  /// 点击短剧卡片 - 和电视剧/电影一样，跳转 PlayerScreen 走多源搜索播放
+  /// 点击短剧卡片 - 采用红果短剧 (官方原画) 观看源直出播放
   void _onDramaTap(ShortDrama drama) {
     final cover = drama.backdrop.isNotEmpty ? drama.backdrop : drama.cover;
+    final totalEps = drama.episodeCount > 0 ? drama.episodeCount : 80;
+    final eps = List.generate(totalEps, (i) => (i + 1).toString());
+    final epTitles = List.generate(totalEps, (i) => '第${i + 1}集');
+
+    final initialDetail = SearchResult(
+      id: drama.id.toString(),
+      title: drama.name,
+      poster: cover,
+      episodes: eps,
+      episodesTitles: epTitles,
+      source: 'hongguo',
+      sourceName: '红果短剧 (官方原画)',
+      year: '2026',
+      desc: drama.description,
+      typeName: drama.author,
+    );
+
     final videoInfo = VideoInfo(
       id: drama.id.toString(),
-      source: '',
+      source: 'hongguo',
       title: drama.name,
-      sourceName: '',
-      year: '',
+      sourceName: '红果短剧 (官方原画)',
+      year: '2026',
       cover: cover,
       index: 0,
-      totalEpisodes: drama.episodeCount,
+      totalEpisodes: totalEps,
       playTime: 0,
       totalTime: 0,
       saveTime: 0,
@@ -295,7 +313,11 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => PlayerScreen(videoInfo: videoInfo),
+        builder: (context) => PlayerScreen(
+          videoInfo: videoInfo,
+          preferredSource: 'hongguo',
+          initialDetail: initialDetail,
+        ),
       ),
     );
   }
