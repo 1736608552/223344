@@ -499,36 +499,91 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     );
   }
 
-  /// 构建顶部标题
+  /// 构建顶部标题（带专属短剧搜索入口）
   Widget _buildHeader(ThemeService themeService) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 20, 16, 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Text(
-            '短剧',
-            style: FontUtils.poppins(context,
-              fontSize: 28,
-              fontWeight: FontWeight.w600,
-              color: Theme.of(context).textTheme.titleLarge?.color,
-            ),
-          ),
-          const SizedBox(height: 4),
-          SizedBox(
-            height: 20, // 固定高度确保一致性
-            child: Text(
-              '精彩短剧，一刷到底',
-              style: FontUtils.poppins(context,
-                fontSize: 14,
-                color: Theme.of(context).textTheme.bodySmall?.color,
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '短剧',
+                style: FontUtils.poppins(context,
+                  fontSize: 28,
+                  fontWeight: FontWeight.w600,
+                  color: Theme.of(context).textTheme.titleLarge?.color,
+                ),
               ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+              const SizedBox(height: 4),
+              SizedBox(
+                height: 20, // 固定高度确保一致性
+                child: Text(
+                  '精彩短剧，一刷到底',
+                  style: FontUtils.poppins(context,
+                    fontSize: 14,
+                    color: Theme.of(context).textTheme.bodySmall?.color,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          InkWell(
+            onTap: _openShortDramaSearch,
+            borderRadius: BorderRadius.circular(20),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: themeService.isDarkMode
+                    ? Colors.white.withOpacity(0.08)
+                    : const Color(0xFFF3F4F6),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: themeService.isDarkMode
+                      ? Colors.white.withOpacity(0.12)
+                      : const Color(0xFFE5E7EB),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.search_rounded,
+                    size: 18,
+                    color: Color(0xFF22C55E),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    '搜索短剧',
+                    style: FontUtils.poppins(context,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: themeService.isDarkMode
+                          ? Colors.white70
+                          : const Color(0xFF4B5563),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ],
       ),
+    );
+  }
+
+  /// 弹出专属短剧全网搜索弹窗
+  void _openShortDramaSearch() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _ShortDramaSearchModal(onDramaTap: _onDramaTap),
     );
   }
 
@@ -779,5 +834,288 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     }
 
     return const SizedBox(height: 50);
+  }
+}
+
+/// 专属短剧独立搜索面板
+class _ShortDramaSearchModal extends StatefulWidget {
+  final void Function(ShortDrama drama) onDramaTap;
+
+  const _ShortDramaSearchModal({required this.onDramaTap});
+
+  @override
+  State<_ShortDramaSearchModal> createState() => _ShortDramaSearchModalState();
+}
+
+class _ShortDramaSearchModalState extends State<_ShortDramaSearchModal> {
+  final TextEditingController _controller = TextEditingController();
+  final FocusNode _focusNode = FocusNode();
+  final List<ShortDrama> _searchResults = [];
+  bool _isSearching = false;
+  String? _searchError;
+  bool _hasSearched = false;
+
+  static const List<String> _hotKeywords = [
+    '文盲修仙',
+    '东北话事人',
+    '我的婆婆',
+    '天神殿',
+    '凡人百世书',
+    '重生富翁',
+    '萌宝',
+    '逆袭',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(const Duration(milliseconds: 150), () {
+      if (mounted) _focusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  Future<void> _performSearch(String query) async {
+    final cleanQ = query.trim();
+    if (cleanQ.isEmpty) return;
+
+    setState(() {
+      _isSearching = true;
+      _searchError = null;
+      _hasSearched = true;
+      _searchResults.clear();
+    });
+
+    try {
+      final results = await ShortDramaDirectService.searchDramas(cleanQ);
+      if (mounted) {
+        setState(() {
+          _searchResults.addAll(results);
+          _isSearching = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _searchError = '搜索异常: $e';
+          _isSearching = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final themeService = Provider.of<ThemeService>(context);
+    final isDark = themeService.isDarkMode;
+    final bgColor = isDark ? const Color(0xFF1E1E24) : Colors.white;
+
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.88,
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Column(
+        children: [
+          // 顶部小横条
+          const SizedBox(height: 10),
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: isDark ? Colors.white24 : Colors.grey[300],
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // 搜索栏
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Container(
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: isDark ? Colors.white.withOpacity(0.08) : const Color(0xFFF3F4F6),
+                      borderRadius: BorderRadius.circular(21),
+                      border: Border.all(
+                        color: isDark ? Colors.white12 : const Color(0xFFE5E7EB),
+                      ),
+                    ),
+                    child: TextField(
+                      controller: _controller,
+                      focusNode: _focusNode,
+                      style: FontUtils.poppins(context,
+                        fontSize: 14,
+                        color: isDark ? Colors.white : Colors.black87,
+                      ),
+                      textInputAction: TextInputAction.search,
+                      onSubmitted: _performSearch,
+                      decoration: InputDecoration(
+                        hintText: '搜索全网热门短剧...',
+                        hintStyle: FontUtils.poppins(context,
+                          fontSize: 14,
+                          color: isDark ? Colors.white38 : Colors.grey[500],
+                        ),
+                        prefixIcon: const Icon(
+                          Icons.search_rounded,
+                          size: 20,
+                          color: Color(0xFF22C55E),
+                        ),
+                        suffixIcon: _controller.text.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.clear, size: 18),
+                                onPressed: () {
+                                  _controller.clear();
+                                  setState(() {});
+                                },
+                              )
+                            : null,
+                        border: InputBorder.none,
+                        contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                      onChanged: (v) => setState(() {}),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: () => _performSearch(_controller.text),
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF22C55E),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                  ),
+                  child: const Text('搜索', style: TextStyle(fontWeight: FontWeight.w600)),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          // 热词标签
+          if (!_hasSearched) ...[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '热门短剧推荐',
+                  style: FontUtils.poppins(context,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: isDark ? Colors.white70 : Colors.black54,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _hotKeywords.map((kw) {
+                  return ActionChip(
+                    label: Text(kw, style: const TextStyle(fontSize: 12)),
+                    backgroundColor: isDark ? Colors.white.withOpacity(0.06) : const Color(0xFFF3F4F6),
+                    onPressed: () {
+                      _controller.text = kw;
+                      _performSearch(kw);
+                    },
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+
+          // 搜索中或结果列表
+          Expanded(
+            child: _isSearching
+                ? const Center(child: PulsingDotsIndicator())
+                : _searchError != null
+                    ? Center(child: Text(_searchError!, style: const TextStyle(color: Colors.redAccent)))
+                    : _hasSearched && _searchResults.isEmpty
+                        ? Center(
+                            child: Text(
+                              '未找到相关短剧，换个关键词试试',
+                              style: TextStyle(color: isDark ? Colors.white38 : Colors.grey),
+                            ),
+                          )
+                        : ListView.separated(
+                            padding: const EdgeInsets.all(16),
+                            itemCount: _searchResults.length,
+                            separatorBuilder: (_, __) => const Divider(height: 16),
+                            itemBuilder: (context, index) {
+                              final d = _searchResults[index];
+                              return ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                leading: ClipRRect(
+                                  borderRadius: BorderRadius.circular(6),
+                                  child: Image.network(
+                                    d.cover,
+                                    width: 48,
+                                    height: 64,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) => Container(
+                                      width: 48,
+                                      height: 64,
+                                      color: isDark ? Colors.white12 : Colors.grey[200],
+                                      child: const Icon(Icons.movie, size: 24),
+                                    ),
+                                  ),
+                                ),
+                                title: Text(
+                                  d.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontWeight: FontWeight.w600),
+                                ),
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '共 ${d.episodeCount} 集 · 官方原画',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: const Color(0xFF22C55E),
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                    if (d.description.isNotEmpty) ...[
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        d.description,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: isDark ? Colors.white54 : Colors.black45,
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                trailing: const Icon(Icons.play_circle_fill_rounded, color: Color(0xFF22C55E), size: 30),
+                                onTap: () {
+                                  Navigator.pop(context);
+                                  widget.onDramaTap(d);
+                                },
+                              );
+                            },
+                          ),
+          ),
+        ],
+      ),
+    );
   }
 }

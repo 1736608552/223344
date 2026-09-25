@@ -5897,10 +5897,23 @@ class _PlayerScreenState extends State<PlayerScreen>
     } catch (_) {}
 
     if (mounted) {
+      final isShortDrama = widget.preferredSource == 'hongguo' ||
+          widget.videoInfo.source == 'hongguo' ||
+          widget.videoInfo.source == 'shortdrama';
       setState(() {
-        _availableResolutions = [];
-        _resolutionUrlMap.clear();
-        _currentResolution = '原画';
+        if (isShortDrama) {
+          _availableResolutions = ['1080P 超清', '720P 高清', '480P 标清'];
+          _resolutionUrlMap
+            ..clear()
+            ..['1080P 超清'] = url
+            ..['720P 高清'] = url
+            ..['480P 标清'] = url;
+          _currentResolution = '1080P 超清';
+        } else {
+          _availableResolutions = [];
+          _resolutionUrlMap.clear();
+          _currentResolution = '原画';
+        }
       });
     }
   }

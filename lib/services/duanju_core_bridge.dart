@@ -147,6 +147,7 @@ class DuanjuCoreBridge {
   }
 
   /// 真实抓取红果官网 SSR 数据并智能解析分类
+  /// 真实抓取红果官网 SSR 数据并智能解析分类 (对齐官方 4 大真实分类与分页)
   Future<List<Map<String, dynamic>>> _fetchOfficialHongguoCatalog({
     required String category,
     required int page,
@@ -155,8 +156,20 @@ class DuanjuCoreBridge {
     try {
       final List<Map<String, dynamic>> allItems = [];
 
-      // 1. 抓取分类页 (含 24 部高热度短剧与标签)
-      final catUri = Uri.parse('https://hongguoduanju.com/category/');
+      // 映射到红果短剧官方真实 4 大分类路由
+      String path = 'real-drama';
+      if (category == 'ai' || category == 'ai-drama') {
+        path = 'ai-drama';
+      } else if (category == 'comic') {
+        path = 'comic';
+      } else if (category == 'comic-drama') {
+        path = 'comic-drama';
+      } else if (category == 'hot' || category == 'all' || category == 'real-drama') {
+        path = 'real-drama';
+      }
+
+      // 1. 抓取真实分类分页页
+      final catUri = Uri.parse('https://hongguoduanju.com/category/$path?page=$page');
       final catResp = await http.get(catUri, headers: {
         'User-Agent': _defaultUserAgent,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -178,39 +191,42 @@ class DuanjuCoreBridge {
         }
       }
 
-      // 2. 补充抓取首页 (含热播、真人、漫剧、AI 4大 Tab)
-      final homeUri = Uri.parse('https://hongguoduanju.com');
-      final homeResp = await http.get(homeUri, headers: {
-        'User-Agent': _defaultUserAgent,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9',
-      }).timeout(const Duration(seconds: 8));
+      // 2. 如果是第 1 页并且是综合推荐，同时聚合首页热播 sections
+      if (page == 1 && (category == 'all' || category == 'hot')) {
+        try {
+          final homeUri = Uri.parse('https://hongguoduanju.com');
+          final homeResp = await http.get(homeUri, headers: {
+            'User-Agent': _defaultUserAgent,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9',
+          }).timeout(const Duration(seconds: 5));
 
-      if (homeResp.statusCode == 200) {
-        final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true).firstMatch(homeResp.body);
-        if (m != null) {
-          final data = jsonDecode(m.group(1)!);
-          final sections = data['loaderData']?['page']?['homeSections'];
-          if (sections is List) {
-            for (final sec in sections) {
-              if (sec is Map<String, dynamic>) {
-                final vList = sec['video_list'];
-                final tabType = sec['tab_type']?.toString() ?? '';
-                if (vList is List) {
-                  for (final it in vList) {
-                    if (it is Map<String, dynamic>) {
-                      final formatted = _formatHongguoItem(it, extraTabType: tabType);
-                      allItems.add(formatted);
+          if (homeResp.statusCode == 200) {
+            final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true).firstMatch(homeResp.body);
+            if (m != null) {
+              final data = jsonDecode(m.group(1)!);
+              final sections = data['loaderData']?['page']?['homeSections'];
+              if (sections is List) {
+                for (final sec in sections) {
+                  if (sec is Map<String, dynamic>) {
+                    final vList = sec['video_list'];
+                    final tabType = sec['tab_type']?.toString() ?? '';
+                    if (vList is List) {
+                      for (final it in vList) {
+                        if (it is Map<String, dynamic>) {
+                          allItems.add(_formatHongguoItem(it, extraTabType: tabType));
+                        }
+                      }
                     }
                   }
                 }
               }
             }
           }
-        }
+        } catch (_) {}
       }
 
-      // 去重
+      // 3. 去重
       final Map<String, Map<String, dynamic>> uniqueMap = {};
       for (final item in allItems) {
         final id = item['id']?.toString() ?? '';
@@ -222,11 +238,7 @@ class DuanjuCoreBridge {
         }
       }
 
-      final list = uniqueMap.values.toList();
-
-      // 智能根据 category 进行精细化分类筛选
-      final filtered = _filterByCategory(list, category);
-      return filtered.isNotEmpty ? filtered : list;
+      return uniqueMap.values.toList();
     } catch (e) {
       if (kDebugMode) {
         print('[DuanjuBridge] 官方通道抓取异常: $e');
@@ -271,44 +283,16 @@ class DuanjuCoreBridge {
     };
   }
 
-  /// 根据 category 标签进行精准匹配
-  List<Map<String, dynamic>> _filterByCategory(List<Map<String, dynamic>> list, String category) {
-    if (category == 'hot' || category == 'all') {
-      return list;
-    }
-
-    return list.where((item) {
-      final tags = (item['tags'] as List<dynamic>? ?? []).map((e) => e.toString()).toList();
-      final title = (item['title'] ?? '').toString();
-      final desc = (item['description'] ?? '').toString();
-      final fullText = '$title $desc ${tags.join(' ')}';
-
-      switch (category) {
-        case 'ai':
-          return tags.contains('ai') || tags.contains('comic') || fullText.contains('漫剧') || fullText.contains('AI') || fullText.contains('动漫');
-        case 'shuangju':
-          return fullText.contains('爽') || fullText.contains('逆袭') || fullText.contains('神豪') || fullText.contains('战神') || fullText.contains('反转') || fullText.contains('翻身') || fullText.contains('无敌');
-        case 'dushi':
-          return fullText.contains('都市') || fullText.contains('职场') || fullText.contains('生活') || fullText.contains('神医') || fullText.contains('日常');
-        case 'zongcai':
-          return fullText.contains('总裁') || fullText.contains('豪门') || fullText.contains('甜宠') || fullText.contains('言情') || fullText.contains('千金') || fullText.contains('夫人');
-        case 'guzhuang':
-          return fullText.contains('古装') || fullText.contains('仙侠') || fullText.contains('修仙') || fullText.contains('玄幻') || fullText.contains('穿越') || fullText.contains('王爷') || fullText.contains('皇后');
-        case 'suspense':
-          return fullText.contains('悬疑') || fullText.contains('脑洞') || fullText.contains('推理') || fullText.contains('重生') || fullText.contains('异能') || fullText.contains('惊悚');
-        default:
-          return true;
-      }
-    }).toList();
-  }
-
-  /// 搜索短剧
+  /// 搜索短剧 (直连红果全网检索)
   Future<List<Map<String, dynamic>>> searchDramas(String query,
       {int page = 1}) async {
+    final q = query.trim();
+    if (q.isEmpty) return [];
+
     if (_isNativeAvailable) {
       try {
         final nativeRes = await invokeNative('search', {
-          'query': query,
+          'query': q,
           'page': page,
         });
         if (nativeRes != null && nativeRes['list'] is List && (nativeRes['list'] as List).isNotEmpty) {
@@ -317,21 +301,66 @@ class DuanjuCoreBridge {
       } catch (_) {}
     }
 
+    // 官方搜索接口通道
     try {
-      final all = await fetchCatalog(category: 'hot', page: 1, size: 60);
-      final q = query.trim().toLowerCase();
-      if (q.isEmpty) return all;
-      return all.where((it) {
-        final title = (it['title'] ?? '').toString().toLowerCase();
-        final intro = (it['intro'] ?? '').toString().toLowerCase();
-        return title.contains(q) || intro.contains(q);
-      }).toList();
+      final searchUri = Uri.parse('https://hongguoduanju.com/search/${Uri.encodeComponent(q)}');
+      final resp = await http.get(searchUri, headers: {
+        'User-Agent': _defaultUserAgent,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+      }).timeout(const Duration(seconds: 8));
+
+      if (resp.statusCode == 200) {
+        final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true).firstMatch(resp.body);
+        if (m != null) {
+          final data = jsonDecode(m.group(1)!);
+          final sList = data['loaderData']?['search_(keyword)/page']?['searchList'] ??
+              data['loaderData']?['search_page']?['searchList'];
+          if (sList is List && sList.isNotEmpty) {
+            final List<Map<String, dynamic>> result = [];
+            for (final it in sList) {
+              if (it is Map<String, dynamic>) {
+                final vData = it['video_data'];
+                if (vData is Map<String, dynamic>) {
+                  result.add(_formatHongguoItem(vData));
+                } else if (it['series_name'] != null || it['title'] != null) {
+                  result.add(_formatHongguoItem(it));
+                }
+              }
+            }
+            if (result.isNotEmpty) return result;
+          }
+        }
+      }
     } catch (_) {}
 
     return [];
   }
 
-  /// 解析单集高清播放直链
+  /// 获取短剧全部选集 vid 列表与详情
+  Future<List<String>> fetchEpisodeVidList(String dramaId) async {
+    try {
+      final detailUri = Uri.parse('https://hongguoduanju.com/detail?series_id=$dramaId');
+      final resp = await http.get(detailUri, headers: {
+        'User-Agent': _defaultUserAgent,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      }).timeout(const Duration(seconds: 8));
+
+      if (resp.statusCode == 200) {
+        final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true).firstMatch(resp.body);
+        if (m != null) {
+          final data = jsonDecode(m.group(1)!);
+          final vList = data['loaderData']?['detail_page']?['seriesDetail']?['vid_list'];
+          if (vList is List) {
+            return vList.map((e) => e.toString()).toList();
+          }
+        }
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  /// 解析单集超清原画播放直链 (官方原画 MP4，秒开不卡死)
   Future<String?> resolvePlaybackUrl({
     required String dramaId,
     required int episode,
@@ -345,7 +374,7 @@ class DuanjuCoreBridge {
     if (_isNativeAvailable) {
       try {
         final nativeRes = await invokeNative('resolve', {
-          'drama_id': dramaId,
+          'dramaId': dramaId,
           'episode': episode,
         });
         if (nativeRes != null && nativeRes['url'] != null && nativeRes['url'].toString().isNotEmpty) {
@@ -354,29 +383,42 @@ class DuanjuCoreBridge {
       } catch (_) {}
     }
 
-    // 官方通道解析
+    // 官方真 MP4 原画直链解析通道
     try {
-      final detailUri = Uri.parse('https://hongguoduanju.com/detail?series_id=$dramaId');
-      final resp = await http.get(detailUri, headers: {
-        'User-Agent': _defaultUserAgent,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      }).timeout(const Duration(seconds: 8));
+      final vidList = await fetchEpisodeVidList(dramaId);
+      String vid = '';
+      if (vidList.isNotEmpty) {
+        final idx = (episode - 1).clamp(0, vidList.length - 1);
+        vid = vidList[idx];
+      }
 
-      if (resp.statusCode == 200) {
-        final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true).firstMatch(resp.body);
-        if (m != null) {
-          final data = jsonDecode(m.group(1)!);
-          final vList = data['loaderData']?['detail_page']?['seriesDetail']?['vid_list'];
-          if (vList is List && vList.isNotEmpty) {
-            final idx = (episode - 1).clamp(0, vList.length - 1);
-            final vid = vList[idx]?.toString() ?? '';
-            if (vid.isNotEmpty) {
-              return 'https://novel.snssdk.com/api/novel/player/video_detail/v1/?item_id=$vid';
+      if (vid.isNotEmpty) {
+        final playerUri = Uri.parse('https://hongguoduanju.com/player/$dramaId/$vid');
+        final resp = await http.get(playerUri, headers: {
+          'User-Agent': _defaultUserAgent,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        }).timeout(const Duration(seconds: 8));
+
+        if (resp.statusCode == 200) {
+          final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true).firstMatch(resp.body);
+          if (m != null) {
+            final data = jsonDecode(m.group(1)!);
+            final pageData = data['loaderData']?['player_(series_id)/(vid)/page'];
+            final playInfo = pageData?['video_player_info'];
+            if (playInfo is Map) {
+              final mainUrl = playInfo['main_url']?.toString();
+              if (mainUrl != null && mainUrl.startsWith('http')) {
+                return mainUrl;
+              }
             }
           }
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      if (kDebugMode) {
+        print('[DuanjuBridge] 直链解析异常: $e');
+      }
+    }
 
     return null;
   }

@@ -44,36 +44,28 @@ class ShortDramaDirectService {
     int page,
   ) async {
     try {
-      String catKey = 'hot';
-      String catName = '红果精选';
+      String catKey = 'real-drama';
+      String catName = '真人短剧';
       switch (typeId) {
         case 101:
-          catKey = 'ai';
-          catName = 'AI 漫剧';
+          catKey = 'real-drama';
+          catName = '真人短剧';
           break;
         case 102:
-          catKey = 'hot';
-          catName = '红果精选';
+          catKey = 'ai-drama';
+          catName = 'AI 漫剧';
           break;
         case 103:
-          catKey = 'shuangju';
-          catName = '反转爽剧';
+          catKey = 'comic';
+          catName = '热血漫剧';
           break;
         case 104:
-          catKey = 'dushi';
-          catName = '现代都市';
+          catKey = 'comic-drama';
+          catName = '动漫漫剧';
           break;
-        case 105:
-          catKey = 'zongcai';
-          catName = '言情总裁';
-          break;
-        case 106:
-          catKey = 'guzhuang';
-          catName = '古装仙侠';
-          break;
-        case 107:
-          catKey = 'suspense';
-          catName = '悬疑脑洞';
+        default:
+          catKey = 'real-drama';
+          catName = '真人短剧';
           break;
       }
 
@@ -201,6 +193,12 @@ class ShortDramaDirectService {
     return unique.values.toList();
   }
 
+  /// 搜索短剧返回统一 ShortDrama 列表
+  static Future<List<ShortDrama>> searchDramas(String keyword) async {
+    final rawList = await search(keyword);
+    return rawList.map(_toShortDrama).toList();
+  }
+
   /// 首页"热门短剧"拉取：纯红果官方原画热榜
   static Future<List<ShortDrama>> getRecommend({int size = 60}) async {
     final allRaw = <RawShortDrama>[];
@@ -298,16 +296,13 @@ class ShortDramaDirectService {
     );
   }
 
-  /// 纯红果核心精简分类列表
+  /// 红果短剧官方 4 大核心分类列表
   static Future<List<ShortDramaCategory>> getCategories() async {
     const priority = [
-      ShortDramaCategory(typeId: 101, typeName: 'AI 漫剧'),
-      ShortDramaCategory(typeId: 102, typeName: '红果精选'),
-      ShortDramaCategory(typeId: 103, typeName: '反转爽剧'),
-      ShortDramaCategory(typeId: 104, typeName: '现代都市'),
-      ShortDramaCategory(typeId: 105, typeName: '言情总裁'),
-      ShortDramaCategory(typeId: 106, typeName: '古装仙侠'),
-      ShortDramaCategory(typeId: 107, typeName: '悬疑脑洞'),
+      ShortDramaCategory(typeId: 101, typeName: '真人短剧'),
+      ShortDramaCategory(typeId: 102, typeName: 'AI 漫剧'),
+      ShortDramaCategory(typeId: 103, typeName: '热血漫剧'),
+      ShortDramaCategory(typeId: 104, typeName: '动漫漫剧'),
     ];
     return priority;
   }
