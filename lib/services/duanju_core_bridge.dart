@@ -156,20 +156,58 @@ class DuanjuCoreBridge {
     try {
       final List<Map<String, dynamic>> allItems = [];
 
-      // 映射到红果短剧官方真实 4 大分类路由
-      String path = 'real-drama';
-      if (category == 'ai' || category == 'ai-drama') {
-        path = 'ai-drama';
-      } else if (category == 'comic') {
-        path = 'comic';
-      } else if (category == 'comic-drama') {
-        path = 'comic-drama';
-      } else if (category == 'hot' || category == 'all' || category == 'real-drama') {
-        path = 'real-drama';
+      // 1. 处理官方各大热播榜单页面抓取 (/rank/hot-drama, /rank/hot-real-drama 等)
+      if (category.startsWith('rank-')) {
+        String rankPath = 'hot-drama';
+        if (category == 'rank-real') {
+          rankPath = 'hot-real-drama';
+        } else if (category == 'rank-comic') {
+          rankPath = 'hot-comic-drama';
+        } else if (category == 'rank-ai') {
+          rankPath = 'hot-ai-drama';
+        }
+
+        final rankUri = Uri.parse('https://hongguoduanju.com/rank/$rankPath');
+        final rankResp = await http.get(rankUri, headers: {
+          'User-Agent': _defaultUserAgent,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'zh-CN,zh;q=0.9',
+        }).timeout(const Duration(seconds: 8));
+
+        if (rankResp.statusCode == 200) {
+          final rankItems = _parseHongguoRankHtml(rankResp.body);
+          allItems.addAll(rankItems);
+        }
+
+        if (allItems.isNotEmpty) {
+          return allItems;
+        }
       }
 
-      // 1. 抓取真实分类分页页
-      final catUri = Uri.parse('https://hongguoduanju.com/category/$path?page=$page');
+      // 2. 映射到红果短剧官方真实分类路由 (支持 RESTful 子分类与全库分页)
+      String catUrl;
+      if (category == 'ai' || category == 'ai-drama') {
+        catUrl = 'https://hongguoduanju.com/category/ai-drama?page=$page';
+      } else if (category == 'comic') {
+        catUrl = 'https://hongguoduanju.com/category/comic?page=$page';
+      } else if (category == 'comic-drama') {
+        catUrl = 'https://hongguoduanju.com/category/comic-drama?page=$page';
+      } else if (category == 'comeback') {
+        catUrl = 'https://hongguoduanju.com/category/real-drama/comeback?page=$page';
+      } else if (category == 'urban') {
+        catUrl = 'https://hongguoduanju.com/category/real-drama/urban?page=$page';
+      } else if (category == 'costume') {
+        catUrl = 'https://hongguoduanju.com/category/real-drama/costume?page=$page';
+      } else if (category == 'romance') {
+        catUrl = 'https://hongguoduanju.com/category/real-drama/romance?page=$page';
+      } else if (category == 'suspense') {
+        catUrl = 'https://hongguoduanju.com/category/real-drama/suspense?page=$page';
+      } else {
+        catUrl = 'https://hongguoduanju.com/category/real-drama?page=$page';
+      }
+
+      // 抓取真实分类分页页 (单页24部, 支持 1~34 页无限翻页)
+      final catUri = Uri.parse(catUrl);
       final catResp = await http.get(catUri, headers: {
         'User-Agent': _defaultUserAgent,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -191,42 +229,25 @@ class DuanjuCoreBridge {
         }
       }
 
-      // 2. 如果是第 1 页并且是综合推荐，同时聚合首页热播 sections
+      // 3. 如果是第 1 页并且是综合推荐「全部」，聚合热播总榜前 20 部短剧，首屏爆满
       if (page == 1 && (category == 'all' || category == 'hot')) {
         try {
-          final homeUri = Uri.parse('https://hongguoduanju.com');
-          final homeResp = await http.get(homeUri, headers: {
+          final rankUri = Uri.parse('https://hongguoduanju.com/rank/hot-drama');
+          final rankResp = await http.get(rankUri, headers: {
             'User-Agent': _defaultUserAgent,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'zh-CN,zh;q=0.9',
           }).timeout(const Duration(seconds: 5));
 
-          if (homeResp.statusCode == 200) {
-            final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true).firstMatch(homeResp.body);
-            if (m != null) {
-              final data = jsonDecode(m.group(1)!);
-              final sections = data['loaderData']?['page']?['homeSections'];
-              if (sections is List) {
-                for (final sec in sections) {
-                  if (sec is Map<String, dynamic>) {
-                    final vList = sec['video_list'];
-                    final tabType = sec['tab_type']?.toString() ?? '';
-                    if (vList is List) {
-                      for (final it in vList) {
-                        if (it is Map<String, dynamic>) {
-                          allItems.add(_formatHongguoItem(it, extraTabType: tabType));
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
+          if (rankResp.statusCode == 200) {
+            final topRanks = _parseHongguoRankHtml(rankResp.body);
+            // 将热播榜首剧集插到最前
+            allItems.insertAll(0, topRanks);
           }
         } catch (_) {}
       }
 
-      // 3. 去重
+      // 4. 全局智能去重
       final Map<String, Map<String, dynamic>> uniqueMap = {};
       for (final item in allItems) {
         final id = item['id']?.toString() ?? '';
@@ -245,6 +266,62 @@ class DuanjuCoreBridge {
       }
       return [];
     }
+  }
+
+  /// 精准解析红果短剧官方热播排行榜 HTML 页面
+  List<Map<String, dynamic>> _parseHongguoRankHtml(String html) {
+    final List<Map<String, dynamic>> rankList = [];
+    try {
+      final chunks = html.split('/detail?series_id=');
+      for (int i = 1; i < chunks.length; i++) {
+        final c = chunks[i];
+        final mId = RegExp(r'^([0-9]+)').firstMatch(c);
+        if (mId == null) continue;
+        final sid = mId.group(1)!;
+
+        // 提取标题
+        final mTitle = RegExp(r'<h[0-9][^>]*class=[\x22\x27][^\x22\x27]*title[^\x22\x27]*[\x22\x27][^>]*>([^<]+)<').firstMatch(c) ??
+            RegExp(r'aria-label=[\x22\x27]查看([^\x22\x27]+)[\x22\x27]').firstMatch(c);
+        final title = mTitle != null ? mTitle.group(1)!.trim() : '';
+        if (title.isEmpty) continue;
+
+        // 提取高清封面 (兼容 webp 与 shrink 图片直链)
+        final mImg = RegExp(r'https?://[^\s\x22\x27]*(?:byteimg\.com/novel-pic|tplv-shrink)[^\s\x22\x27]*').firstMatch(c.substring(0, c.length > 800 ? 800 : c.length));
+        final cover = mImg != null ? mImg.group(0)!.replaceAll('&amp;', '&') : '';
+
+        // 提取热度与评分
+        final mHeat = RegExp(r'([0-9.]+[万亿]?热度)').firstMatch(c);
+        final heat = mHeat != null ? mHeat.group(1)! : '';
+
+        final mScore = RegExp(r'评分([0-9.]+)').firstMatch(c);
+        final score = mScore != null ? double.tryParse(mScore.group(1)!) ?? 9.5 : 9.5;
+
+        // 提取简介
+        final mDesc = RegExp(r'<p[^>]*class=[\x22\x27][^\x22\x27]*description[^\x22\x27]*[\x22\x27][^>]*>([^<]+)<').firstMatch(c);
+        final desc = mDesc != null ? mDesc.group(1)!.trim() : '';
+
+        final idInt = int.tryParse(sid) ?? sid.hashCode.abs();
+        if (!rankList.any((x) => x['id'] == idInt)) {
+          rankList.add({
+            'id': idInt,
+            'drama_id': sid,
+            'title': title,
+            'cover': cover,
+            'cover_url': cover,
+            'episode_count': 80,
+            'intro': desc.isNotEmpty ? desc : (heat.isNotEmpty ? '全网热播 $heat' : ''),
+            'description': desc,
+            'score': score,
+            'tags': ['热播榜', if (heat.isNotEmpty) heat],
+          });
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('[DuanjuBridge] 榜单解析异常: $e');
+      }
+    }
+    return rankList;
   }
 
   /// 格式化红果单部短剧数据

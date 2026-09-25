@@ -38,7 +38,7 @@ class ShortDramaDirectService {
     '悬疑脑洞',
   ];
 
-  /// 红果短剧原生与直连拉取
+  /// 红果短剧官方原生与真实分类全库拉取
   static Future<List<RawShortDrama>> _fetchHongguoPage(
     int typeId,
     int page,
@@ -47,19 +47,43 @@ class ShortDramaDirectService {
       String catKey = 'real-drama';
       String catName = '真人短剧';
       switch (typeId) {
-        case 101:
-          catKey = 'real-drama';
-          catName = '真人短剧';
+        case 201:
+          catKey = 'rank-hot';
+          catName = '总热播榜';
           break;
-        case 102:
-          catKey = 'ai-drama';
+        case 202:
+          catKey = 'rank-real';
+          catName = '真人热播';
+          break;
+        case 203:
+          catKey = 'rank-comic';
+          catName = '漫剧热播';
+          break;
+        case 204:
+          catKey = 'rank-ai';
           catName = 'AI 漫剧';
           break;
+        case 101:
+          catKey = 'comeback';
+          catName = '逆袭爽剧';
+          break;
+        case 102:
+          catKey = 'urban';
+          catName = '现代都市';
+          break;
         case 103:
-          catKey = 'comic';
-          catName = '热血漫剧';
+          catKey = 'costume';
+          catName = '古装仙侠';
           break;
         case 104:
+          catKey = 'romance';
+          catName = '甜宠言情';
+          break;
+        case 105:
+          catKey = 'suspense';
+          catName = '悬疑脑洞';
+          break;
+        case 106:
           catKey = 'comic-drama';
           catName = '动漫漫剧';
           break;
@@ -232,23 +256,26 @@ class ShortDramaDirectService {
     return sliced.map(_toShortDrama).toList();
   }
 
-  /// 短剧专区「全部」tab 分页形式：红果官方聚合
+  /// 短剧专区「全部」tab 分页形式：红果官方聚合 (首屏聚合热播榜，后续支持 34 页全量无限下滑)
   static Future<ShortDramaListResponse> getRecommendResponse({
     int page = 1,
-    int size = 60,
+    int size = 40,
     Set<String>? excludeNames,
   }) async {
     final allRaw = <RawShortDrama>[];
 
-    final futures = <Future<List<RawShortDrama>>>[
-      _fetchHongguoPage(101, page),
-      _fetchHongguoPage(102, page),
-      _fetchHongguoPage(103, page),
-      _fetchHongguoPage(104, page),
-    ];
-
-    final results = await Future.wait(futures);
-    for (final r in results) {
+    if (page == 1) {
+      final futures = <Future<List<RawShortDrama>>>[
+        _fetchHongguoPage(201, 1),
+        _fetchHongguoPage(101, 1),
+        _fetchHongguoPage(102, 1),
+      ];
+      final results = await Future.wait(futures);
+      for (final r in results) {
+        allRaw.addAll(r);
+      }
+    } else {
+      final r = await _fetchHongguoPage(0, page);
       allRaw.addAll(r);
     }
 
@@ -267,42 +294,40 @@ class ShortDramaDirectService {
         ? uniqueList
         : uniqueList.where((r) => !excludeNames.contains(r.vodName)).toList();
 
-    filtered.sort((a, b) {
-      final at = DateTime.tryParse(a.vodTime) ?? DateTime(1970);
-      final bt = DateTime.tryParse(b.vodTime) ?? DateTime(1970);
-      return bt.compareTo(at);
-    });
-
-    final sliced = filtered.take(size).toList();
-    final hasMore = page < 12;
-
     return ShortDramaListResponse(
-      list: sliced.map(_toShortDrama).toList(),
-      hasMore: hasMore,
+      list: filtered.map(_toShortDrama).toList(),
+      hasMore: page < 34,
     );
   }
 
-  /// 单个分类 tab 数据拉取
+  /// 单个分类 tab 数据拉取 (榜单整榜加载，题材全库支持 34 页分页)
   static Future<ShortDramaListResponse> getListByTypeId({
     required int typeId,
     int page = 1,
     int size = 20,
   }) async {
     final rawList = await _fetchHongguoPage(typeId, page);
-    final hasMore = rawList.length >= size;
+    final bool isRank = typeId >= 200;
+    final hasMore = isRank ? false : (rawList.length >= 15 && page < 34);
     return ShortDramaListResponse(
       list: rawList.map(_toShortDrama).toList(),
       hasMore: hasMore,
     );
   }
 
-  /// 红果短剧官方 4 大核心分类列表
+  /// 红果短剧官方权威十大分类与热播榜单体系
   static Future<List<ShortDramaCategory>> getCategories() async {
     const priority = [
-      ShortDramaCategory(typeId: 101, typeName: '真人短剧'),
-      ShortDramaCategory(typeId: 102, typeName: 'AI 漫剧'),
-      ShortDramaCategory(typeId: 103, typeName: '热血漫剧'),
-      ShortDramaCategory(typeId: 104, typeName: '动漫漫剧'),
+      ShortDramaCategory(typeId: 201, typeName: '总热播榜'),
+      ShortDramaCategory(typeId: 202, typeName: '真人热播'),
+      ShortDramaCategory(typeId: 203, typeName: '漫剧热播'),
+      ShortDramaCategory(typeId: 204, typeName: 'AI 漫剧'),
+      ShortDramaCategory(typeId: 101, typeName: '逆袭爽剧'),
+      ShortDramaCategory(typeId: 102, typeName: '现代都市'),
+      ShortDramaCategory(typeId: 103, typeName: '古装仙侠'),
+      ShortDramaCategory(typeId: 104, typeName: '甜宠言情'),
+      ShortDramaCategory(typeId: 105, typeName: '悬疑脑洞'),
+      ShortDramaCategory(typeId: 106, typeName: '动漫漫剧'),
     ];
     return priority;
   }
