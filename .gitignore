@@ -1,0 +1,174 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+dist/
+ios-build/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/build-arm64/
+/build-x86_64/
+/coverage/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# Additional Flutter/Dart ignores
+**/ios/Flutter/ephemeral/
+**/macos/Flutter/ephemeral/
+**/linux/flutter/ephemeral/
+**/windows/flutter/ephemeral/
+
+# Android specific
+android/local.properties
+android/.gradle/
+android/build/
+android/captures/
+android/gradlew
+android/gradlew.bat
+android/key.properties
+**/android/**/gradle-wrapper.jar
+**/android/.gradle
+**/android/captures
+**/android/gradlew
+**/android/gradlew.bat
+**/android/local.properties
+**/android/**/GeneratedPluginRegistrant.java
+
+# iOS specific
+**/ios/**/*.mode1v3
+**/ios/**/*.mode2v3
+**/ios/**/*.moved-aside
+**/ios/**/*.pbxuser
+**/ios/**/*.perspectivev3
+**/ios/**/*sync/
+**/ios/**/.sconsign.dblite
+**/ios/**/.tags*
+**/ios/**/.vagrant/
+**/ios/**/DerivedData/
+**/ios/**/Icon?
+**/ios/**/Pods/
+**/ios/**/.symlinks/
+**/ios/**/profile
+**/ios/**/xcuserdata
+**/ios/.generated/
+**/ios/Flutter/App.framework
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/ephemeral/
+**/ios/Flutter/app.flx
+**/ios/Flutter/app.zip
+**/ios/Flutter/flutter_assets/
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/ServiceDefinitions.json
+**/ios/Runner/GeneratedPluginRegistrant.*
+
+# macOS specific
+**/macos/Flutter/GeneratedPluginRegistrant.swift
+**/macos/Flutter/ephemeral/
+
+# Web specific
+**/web/flutter_service_worker.js
+
+# Windows specific
+**/windows/flutter/generated_plugin_registrant.cc
+**/windows/flutter/generated_plugin_registrant.h
+**/windows/flutter/generated_plugins.cmake
+
+# Linux specific
+**/linux/flutter/generated_plugin_registrant.cc
+**/linux/flutter/generated_plugin_registrant.h
+**/linux/flutter/generated_plugins.cmake
+
+# Coverage
+coverage/
+
+# Test related
+test_driver/
+**/test_driver/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE specific
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+.uploads/
+
+# ===== v2.1.26 开源准备: 挡掉根目录临时抓取 / release 残留 =====
+# GitHub Actions 抓的 HTML (调试时缓存, 不应入库)
+actions*.html
+r*.html
+# CI 编译日志 (调试用, 不应入库)
+logs*.txt
+# 仓库抓的 GitHub API 响应 (rels / runs)
+rels*.json
+runs*.json
+# 历史 release APK 残留 (build 完会出, 走 GitHub Release 不走仓库)
+app-release*.zip
+# 老的 CF Worker 包
+corsapi-netlify.tar.gz
+# Flutter plugin 跟踪文件 (已有 .flutter-plugins-dependencies 跟踪, 这个忽略)
+.flutter-plugins
+# ciao-cors README 备份 (项目 README 已经写)
+corsapi_README.md
+
+# ===== v2.1.26: 真实地址过滤规则 (本地用, 不入库) =====
+# 包含用户真实 API/Worker 域名, 只在本地构建时使用, 防止地址泄露到仓库
+.filter-replace.bak
+# v2.1.46: 临时克隆 [djsevenx1/tmdb-proxy] 仓库用, 发完 release 后删.
+# 跟 .git 目录下的 .tmdb-proxy-tmp 不一样 (那个是 git 内部临时目录, 不需要 ignore)
+.tmdb-proxy-tmp/

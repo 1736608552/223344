@@ -1,0 +1,102 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 网络权限 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- 本地网络发现权限 -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- 震动权限 -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 存储权限 - 用于保存图片到相册 -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <!-- Android 13+ 媒体权限 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- v2.1.52: 调起系统 APK 安装器必须 (Android 8.0/API 26+ 要求)
+         没这个权限 PackageInstaller 拒绝, 系统弹 toast "LunaTV
+         没有权限安装" 但安装器界面弹不出来. user 反馈 v2.1.50 →
+         v2.1.51 升级弹 toast "LunaTV 没有权限安装" 但不弹安装
+         界面就是这个原因 (v2.1.46 加内建下载器时漏了).
+         Android 8+ 还要求 user 在系统设置 → 应用 → LunaTV →
+         安装未知应用 里手动授权一次 (Play Store 装的 app 自动
+         授, sideload APK 没 Play 凭证需手动). 跟 FileProvider
+         配合: FileProvider 解决 file:// → content:// 转换避开
+         FileUriExposedException, REQUEST_INSTALL_PACKAGES 解
+         决 PackageInstaller 拒绝. 两个权限都必要. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    
+    <application
+        android:label="LunaTV"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:usesCleartextTraffic="true">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="true">
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. After that, this theme continues
+                 to determine the Window background behind the Flutter UI. -->
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+        <!-- v2.1.46: FileProvider for ApkInstallChannel — app 内建下载器
+             下完 APK 后, FileProvider.getUriForFile 把 file:// 转 content://
+             给系统 APK 安装器. 避开 Android 7+ 严格模式 file:// 暴露
+             (FileUriExposedException). authorities 跟 ApkInstallChannel.kt
+             里 "${packageName}.fileprovider" 对应, 路径白名单在
+             res/xml/file_paths.xml.
+             注: <provider> 必须是 <application> 的子元素, 不是 <manifest> 直接子 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility and
+         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
+
+         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Required for url_launcher -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="http" />
+        </intent>
+    </queries>
+</manifest>

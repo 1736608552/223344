@@ -1,0 +1,164 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, 'trae/**' ]
+    tags: [ 'v*.*.*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# v2.0.8: 撤回 iOS 编译, 只编 Android
+# 之前 v2.0.1 ~ v2.0.7 试过 windows / macos / ios, 全失败或太折腾:
+#   - v2.0.0 windows + macos: 编译报错
+#   - v2.0.1 iOS: BSD sed 失败 (已修)
+#   - v2.0.2 / v2.0.3 iOS: artifact 上传失败
+#   - v2.0.4 iOS xcodebuild archive: 失败
+#   - v2.0.7 iOS zip 打包: 成功但用户装法跟 ad-hoc IPA 一样
+# 用户决定: iOS 撤回, 只编 Android
+jobs:
+  # 单一 job 模式, build-android 直接做 release
+  build:
+    name: android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: |
+          sdkmanager "platforms;android-36"
+          sdkmanager "build-tools;34.0.0"
+          sdkmanager "platform-tools"
+          sdkmanager "ndk;29.0.14033849"
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null
+
+      - uses: subosito/flutter-action@v2
+        with:
+          # v2.5.75: 升 3.44.8 (2026-07-23 patch) — 修 3.44.0 Mali GPU 外纹理资源泄漏
+          #   + 3.44.6 Linux native assets CMake 路径崩溃 + 3.44.8 instrument test crash.
+          #   pubspec SDK constraint 已同步到 >=3.5.0 兼容 3.44 自带 Dart 3.9.
+          #   历史: v2.5.71 #1395 跑过 3.44 通道, v2.5.74 #1402 降回 3.41.9 是因为 APK 体积.
+          #   这次升 3.44.8, 若 APK 体积回归再降.
+          flutter-version: '3.44.8'
+
+      - run: flutter pub get
+
+      # tag 触发时, 把 git tag 同步到 pubspec.yaml (build.gradle.kts 解析 pubspec 拿 version)
+      # 注意: 不能用 `sed -i "..."` (macOS BSD sed 要求 -i 后带 backup 扩展名, e.g. `sed -i ''`,
+      # 否则报 "undefined label" 错; GNU sed 不要求 -i 参数, 所以 Android runner OK,
+      # macOS / Windows runner 必挂). 改用 perl -i -pe (perl 跨平台, Linux/macOS 都预装).
+      - name: Sync version from git tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG=${GITHUB_REF#refs/tags/v}
+          if [[ "$TAG" == *"+"* ]]; then
+            VERSION=${TAG%+*}
+            BUILD=${TAG#*+}
+            perl -i -pe "s/^version: .*/version: $VERSION+$BUILD/" pubspec.yaml
+          else
+            perl -i -pe "s/^version: .*/version: $TAG+1/" pubspec.yaml
+          fi
+          head -5 pubspec.yaml
+
+      # release 签名: keystore 已提交在 android/app/release.keystore
+      # build.gradle.kts 直接读取, 每次 CI 构建签名一致
+      # 镜像 502 时 Flutter 会自动重试 1 次, 但 Aliyun/Huawei/Tencent 同步挂的时候
+      # 重试不够, 这里用 nick-fields/retry 兜底网络瞬时故障
+      # v2.2.0+53 aliyun 持续 502, retry 3 次/30s 不够 → 提到 5 次/60s, 给镜像
+      # 恢复时间. Gradle 失败重跑会复用已下载的 artifact, 重试成本不高.
+      - name: Build Android APK (release)
+        uses: nick-fields/retry@v3
+        with:
+          max_attempts: 5
+          retry_on: error
+          retry_wait_seconds: 60
+          timeout_minutes: 60
+          command: flutter build apk --release --target-platform android-arm,android-arm64 --obfuscate --split-debug-info=build/app/outputs/symbols
+
+      # v2.5.55: 上传 APK 作为 artifact
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30
+
+      # 之前用 softprops/action-gh-release@v2, 同一个 runner (East US) 调
+      # api.github.com/release 端点连续 502/503 — 软错误, 没 retry. v2.2.0+52
+      # 三次重跑都卡在这步. 改用 gh CLI + 显式 retry, 命中率高得多.
+      # v2.2.4 修: release 已存在时 (之前手动 gh release create 过, 或上一轮 CI 跑了一半挂)
+      # 不能直接 gh release create (会报 "a release with the same tag name already exists"),
+      # 改为 gh release upload --clobber 把 APK 挂到现有 release 上, 让 Set release body 步
+      # 接着覆盖 body 即可. 这样手动创建空 release 也能被 CI 自动补 APK + changelog.
+      # v2.5.55: continue-on-error 防止 release 失败阻塞
+      - name: Create GitHub Release (APK)
+        if: startsWith(github.ref, 'refs/tags/v')
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          APK="build/app/outputs/flutter-apk/app-release.apk"
+          SHA="${{ github.sha }}"
+          for i in 1 2 3 4 5; do
+            echo "::group::attempt $i"
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              # release 已存在, 只上传 APK
+              if gh release upload "$TAG" "$APK" --clobber; then
+                echo "asset uploaded on attempt $i"
+                break
+              fi
+            else
+              if gh release create "$TAG" "$APK" \
+                --title "$TAG" \
+                --generate-notes \
+                --target "$SHA"; then
+                echo "release created on attempt $i"
+                break
+              fi
+            fi
+            echo "::endgroup::"
+            if [ "$i" -eq 5 ]; then
+              echo "::error::gh release create/upload failed after 5 attempts"
+              exit 1
+            fi
+            sleep 20
+          done
+
+      # gh release create 用 --generate-notes 自动生成 body, 但跟 .github/changelogs.json
+      # 里维护的版本说明不一致, 所以再走一次 github-script 把当前 tag 的 changelog 写回去
+      # v2.5.55: continue-on-error 防止 release 不存在时失败
+      - name: Set release body
+        if: startsWith(github.ref, 'refs/tags/v')
+        continue-on-error: true
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const tagName = context.ref.replace('refs/tags/', '');
+            const fs = require('fs');
+            // 各版本 changelog 已移到 .github/changelogs.json, 避免内联超长字符串超过 OS 参数长度限制 (Argument list too long)
+            const changelogs = JSON.parse(fs.readFileSync(process.env.GITHUB_WORKSPACE + '/.github/changelogs.json', 'utf8'));
+            const body = changelogs[tagName] || `Release ${tagName}`;
+            const release = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag: tagName,
+            });
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release.data.id,
+              body: body,
+            });
+            core.info(`set body for ${tagName} (id=${release.data.id}, ${body.length} chars)`);
