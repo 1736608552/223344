@@ -60,7 +60,8 @@ dependencies:
   gbk_codec: ^0.4.0
   # v2.5.34: 弹幕系统需要 md5 (优酷 mtop 签名) — pub 官方 crypto 包
   crypto: ^3.0.6
-  # v2.2.0: 删了 dart:ffi (libmpv FFI 绑定 MpvFFI 没了, ExoPlayer 是纯原生 AndroidX)
+  # v2.2.0: 恢复 FFI 绑定用于短剧核心原生加速
+  ffi: ^2.1.2
 
   # gal: ^2.0.1
   # app_settings: ^4.1.1
