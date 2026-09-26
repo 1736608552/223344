@@ -8,6 +8,9 @@ import 'package:luna_tv/screens/player_screen.dart';
 // v2.5.3: 列表/分类/图片走 ShortDramaDirectService (直连 3 源, 不依赖
 //   serverUrl). 播放解析仍走 ShortDramaService.parseEpisode (serverUrl
 //   后端代理, 含反爬/防盗链/CDN 缓存).
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:luna_tv/services/user_data_service.dart';
+import 'package:luna_tv/services/luna_cache_manager.dart';
 import 'package:luna_tv/services/short_drama_direct_service.dart';
 import 'package:luna_tv/services/short_drama_service.dart';
 import 'package:luna_tv/services/theme_service.dart';
