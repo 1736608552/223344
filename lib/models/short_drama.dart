@@ -21,6 +21,7 @@ class ShortDramaCategory {
 /// 短剧列表项数据模型
 class ShortDrama {
   final int id;
+  final String dramaId;
   final String name;
   final String cover;
   final String updateTime;
@@ -33,6 +34,7 @@ class ShortDrama {
 
   const ShortDrama({
     required this.id,
+    this.dramaId = '',
     required this.name,
     required this.cover,
     required this.updateTime,
@@ -45,10 +47,12 @@ class ShortDrama {
   });
 
   factory ShortDrama.fromJson(Map<String, dynamic> json) {
+    final rawDramaId = (json['drama_id'] ?? json['series_id'] ?? json['id'] ?? '').toString();
     return ShortDrama(
       id: json['id'] is int
           ? json['id']
           : int.tryParse(json['id']?.toString() ?? '0') ?? 0,
+      dramaId: rawDramaId,
       name: json['name']?.toString() ?? '',
       cover: json['cover']?.toString() ?? '',
       updateTime: json['update_time']?.toString() ?? '',

@@ -145,6 +145,7 @@ class ShortDramaDirectService {
       if (items.isNotEmpty) {
         return items.map((m) {
           final idVal = m['id'] ?? m['drama_id'] ?? m['book_id'] ?? 0;
+          final realDramaId = (m['drama_id'] ?? m['series_id'] ?? m['id'] ?? idVal).toString();
           final vodId = idVal is int
               ? idVal
               : (int.tryParse(idVal.toString()) ?? idVal.hashCode.abs());
@@ -159,6 +160,7 @@ class ShortDramaDirectService {
 
           return RawShortDrama(
             vodId: vodId,
+            dramaId: realDramaId,
             vodName: RawShortDrama.cleanVodName(name),
             vodPic: RawShortDrama.cleanVodPic(cover),
             vodPicSlide: '',
@@ -380,6 +382,7 @@ class ShortDramaDirectService {
   static ShortDrama _toShortDrama(RawShortDrama raw) {
     return ShortDrama(
       id: raw.vodId,
+      dramaId: raw.dramaId.isNotEmpty ? raw.dramaId : raw.vodId.toString(),
       name: raw.vodName,
       cover: raw.vodPic,
       updateTime: raw.vodTime,

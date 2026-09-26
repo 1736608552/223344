@@ -90,8 +90,9 @@ class _HotShortDramaSectionState extends State<HotShortDramaSection> {
   List<VideoInfo> _convertToVideoInfos() {
     return _dramas.map((drama) {
       final cover = drama.backdrop.isNotEmpty ? drama.backdrop : drama.cover;
+      final realId = drama.dramaId.isNotEmpty ? drama.dramaId : drama.id.toString();
       return VideoInfo(
-        id: drama.id.toString(),
+        id: realId,
         source: 'hongguo',
         title: drama.name,
         sourceName: '红果短剧 (官方原画)',

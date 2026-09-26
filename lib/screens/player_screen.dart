@@ -219,8 +219,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   final Map<int, Offset> _pinchPointers = {};
   double _pinchInitialDistance = 0.0; // pinch 开始时两指距离 (像素)
 
-  // 分辨率 / 清晰度状态 (默认显示「原画」，支持多分辨率平滑切换)
-  String _currentResolution = '原画';
+  // 分辨率 / 清晰度状态 (默认显示「1080P」，支持多分辨率平滑自由切换)
+  String _currentResolution = '1080P';
+  String _userPreferredResolution = '1080P';
   List<String> _availableResolutions = [];
   final Map<String, String> _resolutionUrlMap = {};
   // v2.2.0: 删 _videoParamsSub (libmpv streams.videoParams 替代)
@@ -3421,17 +3422,48 @@ class _PlayerScreenState extends State<PlayerScreen>
         source.source == 'shortdrama' ||
         !originalUrl.startsWith('http')) {
       final dramaId = source.id.isNotEmpty ? source.id : widget.videoInfo.id;
-      final resolved = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
+      String? resolved = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
         dramaId: dramaId,
         episode: index + 1,
         rawUrl: originalUrl.startsWith('http') ? originalUrl : null,
       );
+      // 增强兜底：若首次解析未拿到有效直链，强制重试解析一次
+      if (resolved == null || resolved.isEmpty) {
+        resolved = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
+          dramaId: dramaId,
+          episode: index + 1,
+        );
+      }
       if (resolved != null && resolved.isNotEmpty) {
         actualSourceUrl = resolved;
         if (index < source.episodes.length) {
           source.episodes[index] = resolved;
         }
+        // 自动对齐用户偏好的清晰度 (如用户选了 720P 或 480P，切集后自动用对应码率)
+        final multiMap = DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, index + 1);
+        if (multiMap != null && multiMap.containsKey(_userPreferredResolution)) {
+          final prefUrl = multiMap[_userPreferredResolution];
+          if (prefUrl != null && prefUrl.isNotEmpty) {
+            actualSourceUrl = prefUrl;
+          }
+        }
       }
+    }
+
+    // 绝对安全防线：若尚未成功解析为 http 直链，绝不将纯数字占位符传给播放内核
+    if (!actualSourceUrl.startsWith('http')) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('该集视频直链解析中，请稍候重试...'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+        setState(() {
+          _isBuffering = false;
+        });
+      }
+      return;
     }
 
     final url = await _resolveSharePageUrl(actualSourceUrl);
@@ -5609,11 +5641,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     final pos = _scrubbingValue != null
         ? (_scrubbingValue! * dur).toInt()
         : _currentPosition.inMilliseconds;
-    // 底部栏宽度: 横屏全屏时缩短到 60%, 竖屏时 85% 宽度
+    // 底部栏宽度: 横屏全屏时缩短到 65%, 竖屏时自适应占满可用安全宽度 (两端留 12dp 边距)
     final screenWidth = MediaQuery.of(context).size.width;
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
-    final maxW = isLandscape ? screenWidth * 0.6 : screenWidth * 0.85;
+    final maxW = isLandscape ? screenWidth * 0.65 : double.infinity;
     return Positioned(
       left: 12,
       right: 12,
@@ -5862,16 +5894,16 @@ class _PlayerScreenState extends State<PlayerScreen>
                     if (isSelected) return;
                     final targetUrl = _resolutionUrlMap[res];
                     if (targetUrl != null && targetUrl.isNotEmpty) {
+                      _userPreferredResolution = res;
+                      final currentPos = _currentPosition;
                       setState(() {
                         _currentResolution = res;
                       });
-                      final currentPos = _currentPosition;
-                      _pendingResumeAt = currentPos;
-                      await _player!.open(targetUrl);
+                      await _player!.open(targetUrl, startAt: currentPos);
                       if (mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
-                            content: Text('已切换清晰度至: $res'),
+                            content: Text('已切换画质至: $res (真实码率热切)'),
                             duration: const Duration(seconds: 1),
                           ),
                         );
@@ -6016,28 +6048,50 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (mounted) {
       final isShortDrama = widget.preferredSource == 'hongguo' ||
           widget.videoInfo.source == 'hongguo' ||
-          widget.videoInfo.source == 'shortdrama';
+          widget.videoInfo.source == 'shortdrama' ||
+          (_selectedSource?.source == 'hongguo');
 
-      String dramaRes = '原画';
       if (isShortDrama) {
         final dramaId = _selectedSource?.id.isNotEmpty == true
             ? _selectedSource!.id
             : widget.videoInfo.id;
-        final resFromBridge = DuanjuCoreBridge.instance
-            .getEpisodeResolution(dramaId, _currentEpisodeIndex + 1);
-        if (resFromBridge != null && resFromBridge.isNotEmpty) {
-          dramaRes = resFromBridge;
-        } else if (_videoHeight >= 1080) {
-          dramaRes = '1080P';
-        } else if (_videoHeight >= 720) {
-          dramaRes = '720P';
+
+        // 优先从 Bridge 获取针对该集预计算的三档画质直链字典，或者根据 url 动态生成
+        final multiMap = DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, _currentEpisodeIndex + 1) ??
+            DuanjuCoreBridge.buildMultiResolutionUrls(url);
+
+        final availableList = ['1080P', '720P', '480P'];
+        String currentSel = _userPreferredResolution;
+        if (!availableList.contains(currentSel)) {
+          currentSel = '1080P';
         }
+
+        setState(() {
+          _availableResolutions = availableList;
+          _resolutionUrlMap
+            ..clear()
+            ..addAll(multiMap);
+          _currentResolution = currentSel;
+        });
+        return;
+      }
+
+      // 普通影视源单流兜底
+      String fallbackRes = '1080P';
+      if (_videoHeight >= 1080) {
+        fallbackRes = '1080P';
+      } else if (_videoHeight >= 720) {
+        fallbackRes = '720P';
+      } else if (_videoHeight >= 480) {
+        fallbackRes = '480P';
       }
 
       setState(() {
-        _availableResolutions = [];
-        _resolutionUrlMap.clear();
-        _currentResolution = dramaRes;
+        _availableResolutions = [fallbackRes];
+        _resolutionUrlMap
+          ..clear()
+          ..[fallbackRes] = url;
+        _currentResolution = fallbackRes;
       });
     }
   }

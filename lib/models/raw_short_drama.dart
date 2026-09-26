@@ -11,6 +11,7 @@
 /// - 播放 = 仍走 ShortDramaService.parseEpisode() 走后端解析
 class RawShortDrama {
   final int vodId;
+  final String dramaId;
   final String vodName;
   final String vodPic;
   final String vodPicSlide;
@@ -25,6 +26,7 @@ class RawShortDrama {
 
   const RawShortDrama({
     required this.vodId,
+    this.dramaId = '',
     required this.vodName,
     required this.vodPic,
     required this.vodPicSlide,

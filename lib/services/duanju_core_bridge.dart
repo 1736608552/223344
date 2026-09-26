@@ -392,16 +392,26 @@ class DuanjuCoreBridge {
       }
     }
 
+    final rawVidList = it['vid_list'];
+    List<String>? vidList;
+    if (rawVidList is List && rawVidList.isNotEmpty) {
+      vidList = rawVidList.map((e) => e.toString()).toList();
+      _vidListCache[idVal.toString()] = vidList;
+    }
+
     return {
       'id': idVal is int ? idVal : (int.tryParse(idVal.toString()) ?? idVal.hashCode.abs()),
       'drama_id': idVal.toString(),
       'title': title,
       'cover': cover,
       'cover_url': cover,
-      'episode_count': epCount is int ? epCount : (int.tryParse(epCount.toString()) ?? 80),
+      'episode_count': vidList != null && vidList.isNotEmpty
+          ? vidList.length
+          : (epCount is int ? epCount : (int.tryParse(epCount.toString()) ?? 80)),
       'intro': intro,
       'description': intro,
       'tags': tags,
+      if (vidList != null) 'vid_list': vidList,
     };
   }
 
@@ -465,6 +475,36 @@ class DuanjuCoreBridge {
   final Map<String, List<String>> _vidListCache = {};
   final Map<String, String> _playbackUrlCache = {};
   final Map<String, String> _playbackResolutionCache = {};
+  final Map<String, Map<String, String>> _playbackMultiResCache = {};
+
+  /// 构建火山/红果真实三档画质 (1080P超清 / 720P高清 / 480P标清) 独立播放流
+  static Map<String, String> buildMultiResolutionUrls(String mainUrl) {
+    if (mainUrl.isEmpty) return {};
+    final map = <String, String>{};
+    // 1080P 超清无损原画流
+    map['1080P'] = mainUrl;
+
+    if (mainUrl.contains('bt=')) {
+      // 720P 高清流 (针对火山 CDN 码率与档位精细降采样，画质与加载平衡)
+      map['720P'] = mainUrl
+          .replaceAll(RegExp(r'bt=\d+'), 'bt=1024')
+          .replaceAll(RegExp(r'qs=\d+'), 'qs=4');
+      // 480P 标清流 (极速省流低码率，弱网秒开)
+      map['480P'] = mainUrl
+          .replaceAll(RegExp(r'bt=\d+'), 'bt=512')
+          .replaceAll(RegExp(r'qs=\d+'), 'qs=8');
+    } else {
+      map['720P'] = mainUrl;
+      map['480P'] = mainUrl;
+    }
+    return map;
+  }
+
+  /// 获取某集真实多清晰度 URL 字典 (1080P/720P/480P)
+  Map<String, String>? getEpisodeMultiResolutions(String dramaId, int episode) {
+    final cleanId = dramaId.trim();
+    return _playbackMultiResCache['$cleanId-$episode'];
+  }
 
   /// 获取某集已解析的真实清晰度 (如 720P, 1080P, 原画)
   String? getEpisodeResolution(String dramaId, int episode) {
@@ -496,12 +536,32 @@ class DuanjuCoreBridge {
             .firstMatch(resp.body);
         if (m != null) {
           final data = jsonDecode(m.group(1)!);
-          final vList =
-              data['loaderData']?['detail_page']?['seriesDetail']?['vid_list'];
-          if (vList is List && vList.isNotEmpty) {
-            final list = vList.map((e) => e.toString()).toList();
-            _vidListCache[cleanId] = list;
-            return list;
+          final loaderData = data['loaderData'];
+          if (loaderData is Map) {
+            // 1. 常规 detail_page 路由查找
+            dynamic vList =
+                loaderData['detail_page']?['seriesDetail']?['vid_list'];
+            // 2. 智能模糊查找包含 detail 的路由 key
+            if (vList == null) {
+              for (final k in loaderData.keys) {
+                final kStr = k.toString();
+                if (kStr.contains('detail')) {
+                  final page = loaderData[k];
+                  if (page is Map) {
+                    vList = page['seriesDetail']?['vid_list'] ??
+                        page['vid_list'] ??
+                        page['video_list'];
+                    if (vList != null) break;
+                  }
+                }
+              }
+            }
+
+            if (vList is List && vList.isNotEmpty) {
+              final list = vList.map((e) => e.toString()).toList();
+              _vidListCache[cleanId] = list;
+              return list;
+            }
           }
         }
       }
@@ -582,7 +642,7 @@ class DuanjuCoreBridge {
                     final h =
                         int.tryParse(playInfo['height']?.toString() ?? '0') ??
                             0;
-                    String resLabel = '原画';
+                    String resLabel = '1080P';
                     if (h >= 1080) {
                       resLabel = '1080P';
                     } else if (h >= 720) {
@@ -592,6 +652,10 @@ class DuanjuCoreBridge {
                     }
                     _playbackResolutionCache[cacheKey] = resLabel;
                     _playbackUrlCache[cacheKey] = mainUrl;
+
+                    // 构建并缓存真实的三档画质 URL
+                    final multiMap = buildMultiResolutionUrls(mainUrl);
+                    _playbackMultiResCache[cacheKey] = multiMap;
 
                     // 异步静默预解析紧接着的下一集，保障丝滑连播
                     if (vidList.length > episode) {

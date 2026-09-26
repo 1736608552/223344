@@ -283,13 +283,17 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
 
   /// 点击短剧卡片 - 采用红果短剧 (官方原画) 观看源直出播放
   void _onDramaTap(ShortDrama drama) {
+    final realId = drama.dramaId.isNotEmpty ? drama.dramaId : drama.id.toString();
     final cover = drama.backdrop.isNotEmpty ? drama.backdrop : drama.cover;
     final totalEps = drama.episodeCount > 0 ? drama.episodeCount : 80;
     final eps = List.generate(totalEps, (i) => (i + 1).toString());
     final epTitles = List.generate(totalEps, (i) => '第${i + 1}集');
 
+    // 提前后台静默预拉取整剧 vid_list，消除切集延迟
+    unawaited(DuanjuCoreBridge.instance.fetchEpisodeVidList(realId));
+
     final initialDetail = SearchResult(
-      id: drama.id.toString(),
+      id: realId,
       title: drama.name,
       poster: cover,
       episodes: eps,
@@ -302,7 +306,7 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     );
 
     final videoInfo = VideoInfo(
-      id: drama.id.toString(),
+      id: realId,
       source: 'hongguo',
       title: drama.name,
       sourceName: '红果短剧 (官方原画)',
