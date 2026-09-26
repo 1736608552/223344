@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -5,6 +6,7 @@ import 'package:luna_tv/models/short_drama.dart';
 import 'package:luna_tv/models/video_info.dart';
 import 'package:luna_tv/models/search_result.dart';
 import 'package:luna_tv/screens/player_screen.dart';
+import 'package:luna_tv/services/duanju_core_bridge.dart';
 // v2.5.3: 列表/分类/图片走 ShortDramaDirectService (直连 3 源, 不依赖
 //   serverUrl). 播放解析仍走 ShortDramaService.parseEpisode (serverUrl
 //   后端代理, 含反爬/防盗链/CDN 缓存).
