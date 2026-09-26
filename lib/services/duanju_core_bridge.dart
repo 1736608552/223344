@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
@@ -458,55 +459,85 @@ class DuanjuCoreBridge {
     return [];
   }
 
-  /// 获取短剧全部选集 vid 列表与详情
+  // -------------------------------------------------------------
+  // 官方短剧分集与真实直链高效内存缓存 (保证切集精准、秒开)
+  // -------------------------------------------------------------
+  final Map<String, List<String>> _vidListCache = {};
+  final Map<String, String> _playbackUrlCache = {};
+  final Map<String, String> _playbackResolutionCache = {};
+
+  /// 获取某集已解析的真实清晰度 (如 720P, 1080P, 原画)
+  String? getEpisodeResolution(String dramaId, int episode) {
+    return _playbackResolutionCache['$dramaId-$episode'];
+  }
+
+  /// 获取短剧全部选集 vid 列表与详情 (带内存缓存，整部剧仅需请求一次)
   Future<List<String>> fetchEpisodeVidList(String dramaId) async {
+    final cleanId = dramaId.trim();
+    if (cleanId.isEmpty) return [];
+
+    if (_vidListCache.containsKey(cleanId) &&
+        _vidListCache[cleanId]!.isNotEmpty) {
+      return _vidListCache[cleanId]!;
+    }
+
     try {
-      final detailUri = Uri.parse('https://hongguoduanju.com/detail?series_id=$dramaId');
+      final detailUri =
+          Uri.parse('https://hongguoduanju.com/detail?series_id=$cleanId');
       final resp = await http.get(detailUri, headers: {
         'User-Agent': _defaultUserAgent,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept':
+            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
       }).timeout(const Duration(seconds: 8));
 
       if (resp.statusCode == 200) {
-        final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true).firstMatch(resp.body);
+        final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true)
+            .firstMatch(resp.body);
         if (m != null) {
           final data = jsonDecode(m.group(1)!);
-          final vList = data['loaderData']?['detail_page']?['seriesDetail']?['vid_list'];
-          if (vList is List) {
-            return vList.map((e) => e.toString()).toList();
+          final vList =
+              data['loaderData']?['detail_page']?['seriesDetail']?['vid_list'];
+          if (vList is List && vList.isNotEmpty) {
+            final list = vList.map((e) => e.toString()).toList();
+            _vidListCache[cleanId] = list;
+            return list;
           }
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      if (kDebugMode) {
+        print('[DuanjuBridge] fetchEpisodeVidList 异常: $e');
+      }
+    }
     return [];
   }
 
-  /// 解析单集超清原画播放直链 (官方原画 MP4，秒开不卡死)
+  /// 解析单集超清原画播放直链 (100% 官方真实单集直链，彻底根除切集锁定第一集的bug)
   Future<String?> resolvePlaybackUrl({
     required String dramaId,
     required int episode,
     String? rawUrl,
   }) async {
+    // 已经是完整网络音视频流且不是占位符数字，直接返回
     if (rawUrl != null &&
+        rawUrl.startsWith('http') &&
         (rawUrl.contains('.m3u8') || rawUrl.contains('.mp4'))) {
       return rawUrl;
     }
 
-    if (_isNativeAvailable) {
-      try {
-        final nativeRes = await invokeNative('resolve', {
-          'dramaId': dramaId,
-          'episode': episode,
-        });
-        if (nativeRes != null && nativeRes['url'] != null && nativeRes['url'].toString().isNotEmpty) {
-          return nativeRes['url'].toString();
-        }
-      } catch (_) {}
+    final cleanId = dramaId.trim();
+    final cacheKey = '$cleanId-$episode';
+
+    // 1. 优先命中单集直链缓存
+    if (_playbackUrlCache.containsKey(cacheKey) &&
+        _playbackUrlCache[cacheKey]!.isNotEmpty) {
+      return _playbackUrlCache[cacheKey]!;
     }
 
-    // 官方真 MP4 原画直链解析通道
+    // 2. 官方权威单集直链解析通道 (精准按每集唯一 vid 换取专属直链，绝不串集)
     try {
-      final vidList = await fetchEpisodeVidList(dramaId);
+      final vidList = await fetchEpisodeVidList(cleanId);
       String vid = '';
       if (vidList.isNotEmpty) {
         final idx = (episode - 1).clamp(0, vidList.length - 1);
@@ -514,22 +545,62 @@ class DuanjuCoreBridge {
       }
 
       if (vid.isNotEmpty) {
-        final playerUri = Uri.parse('https://hongguoduanju.com/player/$dramaId/$vid');
+        final playerUri =
+            Uri.parse('https://hongguoduanju.com/player/$cleanId/$vid');
         final resp = await http.get(playerUri, headers: {
           'User-Agent': _defaultUserAgent,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept':
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'zh-CN,zh;q=0.9',
         }).timeout(const Duration(seconds: 8));
 
         if (resp.statusCode == 200) {
-          final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true).firstMatch(resp.body);
+          final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true)
+              .firstMatch(resp.body);
           if (m != null) {
             final data = jsonDecode(m.group(1)!);
-            final pageData = data['loaderData']?['player_(series_id)/(vid)/page'];
-            final playInfo = pageData?['video_player_info'];
-            if (playInfo is Map) {
-              final mainUrl = playInfo['main_url']?.toString();
-              if (mainUrl != null && mainUrl.startsWith('http')) {
-                return mainUrl;
+            final loaderData = data['loaderData'];
+            if (loaderData is Map) {
+              // 智能查找播放页路由 key (例如 player_(series_id)/(vid)/page)
+              dynamic pageData;
+              for (final k in loaderData.keys) {
+                final kStr = k.toString();
+                if (kStr.contains('player_') && kStr.endsWith('/page')) {
+                  pageData = loaderData[k];
+                  break;
+                }
+              }
+              pageData ??= loaderData['player_(series_id)/(vid)/page'] ??
+                  loaderData['player_page'];
+
+              if (pageData is Map) {
+                final playInfo = pageData['video_player_info'];
+                if (playInfo is Map) {
+                  final mainUrl = playInfo['main_url']?.toString();
+                  if (mainUrl != null && mainUrl.startsWith('http')) {
+                    // 记录该集真实视频宽高
+                    final h =
+                        int.tryParse(playInfo['height']?.toString() ?? '0') ??
+                            0;
+                    String resLabel = '原画';
+                    if (h >= 1080) {
+                      resLabel = '1080P';
+                    } else if (h >= 720) {
+                      resLabel = '720P';
+                    } else if (h >= 480) {
+                      resLabel = '480P';
+                    }
+                    _playbackResolutionCache[cacheKey] = resLabel;
+                    _playbackUrlCache[cacheKey] = mainUrl;
+
+                    // 异步静默预解析紧接着的下一集，保障丝滑连播
+                    if (vidList.length > episode) {
+                      unawaited(_preloadNextEpisode(cleanId, episode + 1, vidList[episode]));
+                    }
+
+                    return mainUrl;
+                  }
+                }
               }
             }
           }
@@ -537,10 +608,68 @@ class DuanjuCoreBridge {
       }
     } catch (e) {
       if (kDebugMode) {
-        print('[DuanjuBridge] 直链解析异常: $e');
+        print('[DuanjuBridge] 官方单集直链解析异常: $e');
       }
     }
 
     return null;
+  }
+
+  /// 后台静默预加载下一集播放直链
+  Future<void> _preloadNextEpisode(String dramaId, int nextEpisode, String vid) async {
+    final nextCacheKey = '$dramaId-$nextEpisode';
+    if (_playbackUrlCache.containsKey(nextCacheKey)) return;
+
+    try {
+      final playerUri =
+          Uri.parse('https://hongguoduanju.com/player/$dramaId/$vid');
+      final resp = await http.get(playerUri, headers: {
+        'User-Agent': _defaultUserAgent,
+        'Accept':
+            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+      }).timeout(const Duration(seconds: 8));
+
+      if (resp.statusCode == 200) {
+        final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true)
+            .firstMatch(resp.body);
+        if (m != null) {
+          final data = jsonDecode(m.group(1)!);
+          final loaderData = data['loaderData'];
+          if (loaderData is Map) {
+            dynamic pageData;
+            for (final k in loaderData.keys) {
+              final kStr = k.toString();
+              if (kStr.contains('player_') && kStr.endsWith('/page')) {
+                pageData = loaderData[k];
+                break;
+              }
+            }
+            pageData ??= loaderData['player_(series_id)/(vid)/page'] ??
+                loaderData['player_page'];
+            if (pageData is Map) {
+              final playInfo = pageData['video_player_info'];
+              if (playInfo is Map) {
+                final mainUrl = playInfo['main_url']?.toString();
+                if (mainUrl != null && mainUrl.startsWith('http')) {
+                  final h =
+                      int.tryParse(playInfo['height']?.toString() ?? '0') ?? 0;
+                  String resLabel = '原画';
+                  if (h >= 1080) {
+                    resLabel = '1080P';
+                  } else if (h >= 720) {
+                    resLabel = '720P';
+                  } else if (h >= 480) {
+                    resLabel = '480P';
+                  }
+                  _playbackResolutionCache[nextCacheKey] = resLabel;
+                  _playbackUrlCache[nextCacheKey] = mainUrl;
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
   }
 }

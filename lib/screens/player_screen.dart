@@ -497,6 +497,15 @@ class _PlayerScreenState extends State<PlayerScreen>
           setState(() {
             _videoWidth = w;
             _videoHeight = h;
+            if (_availableResolutions.isEmpty) {
+              if (h >= 1080) {
+                _currentResolution = '1080P';
+              } else if (h >= 720) {
+                _currentResolution = '720P';
+              } else if (h >= 480) {
+                _currentResolution = '480P';
+              }
+            }
           });
         }
         _updateSkipButtonVisibility();
@@ -3406,7 +3415,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     //   "Failed to recognize file format". 修法: 检测是 HTML 就提取 m3u8.
     //   只对明显不是视频流 (非 .m3u8/.mp4/.ts/.flv 后缀) 的 URL 做 fetch,
     //   避免对正常视频流多一次 HTTP 请求.
-    // 红果官方原画观看源直解：调用原生 Go 引擎/直连通道直出 1080p 超清流
+    // 红果官方原画观看源直解：调用单集专属直链解析通道
     String actualSourceUrl = originalUrl;
     if (source.source == 'hongguo' ||
         source.source == 'shortdrama' ||
@@ -3419,6 +3428,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       );
       if (resolved != null && resolved.isNotEmpty) {
         actualSourceUrl = resolved;
+        if (index < source.episodes.length) {
+          source.episodes[index] = resolved;
+        }
       }
     }
 
@@ -5802,7 +5814,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
-  /// 弹出分辨率切换面板
+  /// 弹出分辨率切换面板 (真实反映画质规格，无假清晰度)
   void _showResolutionSelectorSheet() {
     if (_availableResolutions.length > 1) {
       showModalBottomSheet(
@@ -5873,17 +5885,85 @@ class _PlayerScreenState extends State<PlayerScreen>
         ),
       );
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('当前已是官方原画最高清晰度'),
-          duration: Duration(seconds: 2),
-          backgroundColor: Color(0xFF10b981),
+      // 官方原画单清晰度 (例如红果官方超清原画直链)
+      final displayRes = _currentResolution.isNotEmpty ? _currentResolution : '原画';
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: Colors.transparent,
+        builder: (ctx) => Container(
+          decoration: const BoxDecoration(
+            color: Color(0xFF1E1E2E),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    '画质规格',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => Navigator.pop(ctx),
+                    child: const Icon(Icons.close, color: Colors.white54, size: 20),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF10b981).withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: const Color(0xFF10b981).withOpacity(0.4),
+                    width: 1,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.verified, color: Color(0xFF10b981), size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        '$displayRes · 官方原画最高画质',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    const Icon(Icons.check, color: Color(0xFF10b981), size: 18),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                '当前视频由官方超清原画通道直链秒开驱动，画质为无损原片规格，无需转码或手动降质。',
+                style: TextStyle(
+                  color: Colors.white60,
+                  fontSize: 12,
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+          ),
         ),
       );
     }
   }
 
-  /// 异步检测当前流的多分辨率选项，无子流时显示「原画」
+  /// 异步检测当前流的多分辨率选项，无子流时真实显示「720P / 1080P / 原画」
   Future<void> _checkStreamResolutions(String url) async {
     if (!mounted) return;
     try {
@@ -5907,11 +5987,11 @@ class _PlayerScreenState extends State<PlayerScreen>
                 final h = int.tryParse(dims.last) ?? 0;
                 String resName = '${h}P';
                 if (h >= 1080) {
-                  resName = '原画 (1080P)';
+                  resName = '1080P';
                 } else if (h >= 720) {
-                  resName = '超清 (720P)';
+                  resName = '720P';
                 } else if (h >= 480) {
-                  resName = '高清 (480P)';
+                  resName = '480P';
                 }
                 final fullUrl = Uri.parse(url).resolve(subUrl).toString();
                 resolutions.add(resName);
@@ -5937,20 +6017,27 @@ class _PlayerScreenState extends State<PlayerScreen>
       final isShortDrama = widget.preferredSource == 'hongguo' ||
           widget.videoInfo.source == 'hongguo' ||
           widget.videoInfo.source == 'shortdrama';
-      setState(() {
-        if (isShortDrama) {
-          _availableResolutions = ['1080P 超清', '720P 高清', '480P 标清'];
-          _resolutionUrlMap
-            ..clear()
-            ..['1080P 超清'] = url
-            ..['720P 高清'] = url
-            ..['480P 标清'] = url;
-          _currentResolution = '1080P 超清';
-        } else {
-          _availableResolutions = [];
-          _resolutionUrlMap.clear();
-          _currentResolution = '原画';
+
+      String dramaRes = '原画';
+      if (isShortDrama) {
+        final dramaId = _selectedSource?.id.isNotEmpty == true
+            ? _selectedSource!.id
+            : widget.videoInfo.id;
+        final resFromBridge = DuanjuCoreBridge.instance
+            .getEpisodeResolution(dramaId, _currentEpisodeIndex + 1);
+        if (resFromBridge != null && resFromBridge.isNotEmpty) {
+          dramaRes = resFromBridge;
+        } else if (_videoHeight >= 1080) {
+          dramaRes = '1080P';
+        } else if (_videoHeight >= 720) {
+          dramaRes = '720P';
         }
+      }
+
+      setState(() {
+        _availableResolutions = [];
+        _resolutionUrlMap.clear();
+        _currentResolution = dramaRes;
       });
     }
   }
