@@ -3417,16 +3417,21 @@ class _PlayerScreenState extends State<PlayerScreen>
     //   "Failed to recognize file format". 修法: 检测是 HTML 就提取 m3u8.
     //   只对明显不是视频流 (非 .m3u8/.mp4/.ts/.flv 后缀) 的 URL 做 fetch,
     //   避免对正常视频流多一次 HTTP 请求.
-    // 红果官方原画观看源直解：调用单集专属直链解析通道
-    String actualSourceUrl = originalUrl;
-    if (source.source == 'hongguo' ||
+    // 红果短剧专属直解：精准调用单集专属直链解析通道 (切集必须独立换流，绝不冒充)
+    final isShortDrama = source.source == 'hongguo' ||
         source.source == 'shortdrama' ||
-        !originalUrl.startsWith('http')) {
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama';
+
+    String actualSourceUrl = originalUrl;
+    if (isShortDrama || !originalUrl.startsWith('http')) {
       final dramaId = source.id.isNotEmpty ? source.id : widget.videoInfo.id;
+      // 关键：若切换到非第1集，坚决不能把第1集的URL作为rawUrl传入，必须独立解析！
+      final candidateRawUrl = (index == 0 && originalUrl.startsWith('http')) ? originalUrl : null;
       String? resolved = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
         dramaId: dramaId,
         episode: index + 1,
-        rawUrl: originalUrl.startsWith('http') ? originalUrl : null,
+        rawUrl: candidateRawUrl,
       );
       // 增强兜底：若首次解析未拿到有效直链，强制重试解析一次
       if (resolved == null || resolved.isEmpty) {
@@ -3435,6 +3440,14 @@ class _PlayerScreenState extends State<PlayerScreen>
           episode: index + 1,
         );
       }
+      // 校验防冒充：若非第1集，且返回的地址与第1集完全一样，说明拿到试看集，强制重试解析
+      if (resolved != null && index > 0 && source.episodes.isNotEmpty && resolved == source.episodes[0]) {
+        resolved = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
+          dramaId: dramaId,
+          episode: index + 1,
+        );
+      }
+
       if (resolved != null && resolved.isNotEmpty) {
         actualSourceUrl = resolved;
         if (index < source.episodes.length) {
@@ -3460,9 +3473,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (!actualSourceUrl.startsWith('http')) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('该集视频直链解析中，请稍候重试...'),
-            duration: Duration(seconds: 2),
+          SnackBar(
+            content: Text('第${index + 1}集视频地址解析中，请稍候重试...'),
+            duration: const Duration(seconds: 2),
           ),
         );
         setState(() {

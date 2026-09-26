@@ -549,7 +549,7 @@ class DuanjuCoreBridge {
     return _playbackResolutionCache['$dramaId-$episode'];
   }
 
-  /// 获取短剧全部选集 vid 列表与详情 (带内存缓存，整部剧仅需请求一次)
+  /// 获取短剧全部选集 vid 列表与详情 (原生Go核心优先 + 官方Web双重解析 + 内存高速缓存)
   Future<List<String>> fetchEpisodeVidList(String dramaId) async {
     final cleanId = dramaId.trim();
     if (cleanId.isEmpty) return [];
@@ -559,6 +559,48 @@ class DuanjuCoreBridge {
       return _vidListCache[cleanId]!;
     }
 
+    // 通道 1: 原生 Go 核心 detail 接口 (对齐鱼佬 guoapp，双通道 App + Web 提取全部分集 chapters)
+    if (_isNativeAvailable) {
+      try {
+        await ensureInitialized();
+        final res = await invokeNative('detail', {
+          'drama': {
+            'id': 'hongguo:$cleanId',
+            'source': 'hongguo',
+            'title': '短剧',
+          },
+        });
+        if (res != null && res['ok'] == true) {
+          final data = res['data'];
+          if (data is Map && data['chapters'] is List) {
+            final chapters = data['chapters'] as List;
+            final list = <String>[];
+            for (final ch in chapters) {
+              if (ch is Map) {
+                final vUrl = ch['video_url']?.toString() ?? '';
+                final vid = vUrl.replaceFirst('hongguo-cenc://', '').trim();
+                if (vid.isNotEmpty) {
+                  list.add(vid);
+                }
+              }
+            }
+            if (list.isNotEmpty) {
+              _vidListCache[cleanId] = list;
+              if (kDebugMode) {
+                print('[DuanjuBridge] 原生 Go 核心解析章节成功: 剧集=$cleanId, 共${list.length}集');
+              }
+              return list;
+            }
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('[DuanjuBridge] 原生 Go 核心获取章节失败: $e');
+        }
+      }
+    }
+
+    // 通道 2: 官方 Web 协议 SSR 数据提取
     try {
       final detailUri =
           Uri.parse('https://hongguoduanju.com/detail?series_id=$cleanId');
@@ -576,10 +618,8 @@ class DuanjuCoreBridge {
           final data = jsonDecode(m.group(1)!);
           final loaderData = data['loaderData'];
           if (loaderData is Map) {
-            // 1. 常规 detail_page 路由查找
             dynamic vList =
                 loaderData['detail_page']?['seriesDetail']?['vid_list'];
-            // 2. 智能模糊查找包含 detail 的路由 key
             if (vList == null) {
               for (final k in loaderData.keys) {
                 final kStr = k.toString();
@@ -600,6 +640,23 @@ class DuanjuCoreBridge {
               _vidListCache[cleanId] = list;
               return list;
             }
+          }
+        }
+
+        // 通道 3: 正则全量扫描兜底 (直接匹配 HTML 中的字节跳动视频 ID)
+        final allVids = RegExp(r'[\x22\x27](v0[0-9a-zA-Z]{16,40})[\x22\x27]').allMatches(resp.body);
+        if (allVids.isNotEmpty) {
+          final Set<String> seen = {};
+          final list = <String>[];
+          for (final vm in allVids) {
+            final v = vm.group(1)!;
+            if (seen.add(v)) {
+              list.add(v);
+            }
+          }
+          if (list.length >= 3) {
+            _vidListCache[cleanId] = list;
+            return list;
           }
         }
       }
