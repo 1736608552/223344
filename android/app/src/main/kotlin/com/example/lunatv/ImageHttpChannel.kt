@@ -8,6 +8,7 @@ import io.flutter.plugin.common.MethodChannel
 import okhttp3.ConnectionSpec
 import okhttp3.Dispatcher
 import okhttp3.Dns
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -195,7 +196,7 @@ class ImageHttpChannel(messenger: BinaryMessenger) : MethodChannel.MethodCallHan
      * 完美兼容带 ~、:、% 及参数签名的各类 CDN 海报地址.
      */
     private fun parseUrl(url: String): ParsedUrl? {
-        val httpUrl = okhttp3.HttpUrl.parse(url)
+        val httpUrl = url.toHttpUrlOrNull()
         if (httpUrl != null) {
             val scheme = httpUrl.scheme
             val host = httpUrl.host
