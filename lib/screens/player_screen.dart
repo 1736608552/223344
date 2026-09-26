@@ -5256,12 +5256,14 @@ class _PlayerScreenState extends State<PlayerScreen>
     return _SeekLabel(label: forward ? '+30' : '-30');
   }
 
-  /// 圆形小按钮 (40x40, LunaTV Web 控制按钮)
+  /// 圆形小按钮 (LunaTV Web 控制按钮, 支持紧凑宽度与自定义尺寸)
   /// v2.0.33: 加 [iconColor] 可选参数, 「下一集」按钮用绿色突出
   Widget _iconBtn({
     required IconData icon,
     required VoidCallback? onTap,
     Color? iconColor,
+    double width = 40,
+    double size = 22,
   }) {
     return Material(
       color: Colors.transparent,
@@ -5270,13 +5272,13 @@ class _PlayerScreenState extends State<PlayerScreen>
         customBorder: const CircleBorder(),
         onTap: onTap,
         child: SizedBox(
-          width: 40,
+          width: width,
           height: 40,
           child: Icon(
             icon,
             color: iconColor ??
                 (onTap == null ? Colors.white.withOpacity(0.3) : Colors.white),
-            size: 22,
+            size: size,
           ),
         ),
       ),
@@ -5645,6 +5647,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                     SizedBox(
                       height: 44,
                       child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
                           // 左: 播放/暂停
                           _iconBtn(
@@ -5652,16 +5655,18 @@ class _PlayerScreenState extends State<PlayerScreen>
                                 ? Icons.pause
                                 : Icons.play_arrow,
                             onTap: _togglePlayPause,
+                            width: 36,
+                            size: 24,
                           ),
                           // 时间
                           Padding(
                             padding:
-                                const EdgeInsets.symmetric(horizontal: 6),
+                                const EdgeInsets.symmetric(horizontal: 4),
                             child: Text(
                               '${_formatDuration(Duration(milliseconds: pos))} / ${_formatDuration(_currentDuration)}',
                               style: const TextStyle(
                                 color: Colors.white,
-                                fontSize: 12,
+                                fontSize: 11.5,
                                 fontFeatures: [
                                   FontFeature.tabularFigures()
                                 ],
@@ -5669,42 +5674,52 @@ class _PlayerScreenState extends State<PlayerScreen>
                             ),
                           ),
                           const Spacer(),
-                          // v2.5.49: 弹幕按钮 — 点击弹出控制面板 (开关+源列表+设置)
+                          // 弹幕按钮 (紧凑居中)
                           GestureDetector(
+                            behavior: HitTestBehavior.opaque,
                             onTap: _showDanmakuPanel,
-                            child: Container(
-                              width: 40,
+                            child: SizedBox(
+                              width: 32,
                               height: 40,
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                color: _danmakuEnabled
-                                    ? kLunaTheme.withOpacity(0.2)
-                                    : Colors.transparent,
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Icon(
-                                Icons.subtitles,
-                                size: 20,
-                                color: _danmakuEnabled
-                                    ? kLunaTheme
-                                    : Colors.white70,
+                              child: Center(
+                                child: Container(
+                                  width: 26,
+                                  height: 22,
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
+                                    color: _danmakuEnabled
+                                        ? kLunaTheme.withOpacity(0.2)
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Icon(
+                                    Icons.subtitles,
+                                    size: 17,
+                                    color: _danmakuEnabled
+                                        ? kLunaTheme
+                                        : Colors.white70,
+                                  ),
+                                ),
                               ),
                             ),
                           ),
-                          // 分辨率 / 原画切换控件 (无多分辨率时常驻显示原画)
+                          // 分辨率 / 原画切换控件 (高度 24 胶囊、居中对齐、文本精炼)
                           _buildResolutionButton(),
                           // 右: 倍速
                           _iconBtn(
                             icon: Icons.speed,
                             onTap: _showPlaybackRateSheet,
+                            width: 32,
+                            size: 19,
                           ),
                           // 选集
                           _iconBtn(
                             icon: Icons.format_list_bulleted,
                             onTap: _showEpisodeSelectorSheet,
+                            width: 32,
+                            size: 19,
                           ),
-                          // v2.0.33: 手动「下一集」按钮 — 跟自动播下一集用同一播放逻辑
-                          // 只在「还有下一集」时显示, 最后一集隐藏
+                          // 手动「下一集」按钮
                           if (_selectedSource != null &&
                               _currentEpisodeIndex <
                                   _selectedSource!.episodes.length - 1)
@@ -5712,8 +5727,10 @@ class _PlayerScreenState extends State<PlayerScreen>
                               icon: Icons.skip_next,
                               iconColor: const Color(0xFF10b981),
                               onTap: _playNextEpisode,
+                              width: 32,
+                              size: 21,
                             ),
-                          // 全屏
+                          // 全屏 (最核心按钮，确保稳定显示在最右端)
                           _iconBtn(
                             icon: _isFullscreen
                                 ? Icons.fullscreen_exit
@@ -5721,6 +5738,8 @@ class _PlayerScreenState extends State<PlayerScreen>
                             onTap: _isFullscreen
                                 ? _onExitFullscreen
                                 : _onEnterFullscreen,
+                            width: 38,
+                            size: 24,
                           ),
                         ],
                       ),
@@ -5736,29 +5755,47 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
-  /// 构建分辨率 / 清晰度切换控件 (无多分辨率选择时常驻显示「原画」)
+  /// 构建分辨率 / 清晰度切换控件 (高度居中、胶囊圆角、精炼显示且视觉水平完全对齐)
   Widget _buildResolutionButton() {
-    return GestureDetector(
-      onTap: _showResolutionSelectorSheet,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-        margin: const EdgeInsets.symmetric(horizontal: 4),
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.14),
-          borderRadius: BorderRadius.circular(4),
-          border: Border.all(
-            color: Colors.white.withOpacity(0.22),
-            width: 0.8,
+    String label = _currentResolution;
+    if (label.contains('1080')) {
+      label = '1080P';
+    } else if (label.contains('720')) {
+      label = '720P';
+    } else if (label.contains('480')) {
+      label = '480P';
+    } else if (label.contains('原画')) {
+      label = '原画';
+    } else if (label.length > 5) {
+      label = label.substring(0, 4);
+    }
+
+    return Center(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _showResolutionSelectorSheet,
+        child: Container(
+          height: 24,
+          padding: const EdgeInsets.symmetric(horizontal: 7),
+          margin: const EdgeInsets.symmetric(horizontal: 2),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.12),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: Colors.white.withOpacity(0.25),
+              width: 0.8,
+            ),
           ),
-        ),
-        child: Text(
-          _currentResolution, // 无多分辨率选择时默认显示「原画」
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.3,
+          child: Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.2,
+              height: 1.1,
+            ),
           ),
         ),
       ),
