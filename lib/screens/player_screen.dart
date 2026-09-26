@@ -222,8 +222,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   // 分辨率 / 清晰度状态 (默认显示「1080P」，支持多分辨率平滑自由切换)
   String _currentResolution = '1080P';
   String _userPreferredResolution = '1080P';
-  List<String> _availableResolutions = [];
+  List<String> _availableResolutions = ['1080P', '720P', '480P'];
   final Map<String, String> _resolutionUrlMap = {};
+  String _currentPlayUrl = '';
   // v2.2.0: 删 _videoParamsSub (libmpv streams.videoParams 替代)
   //   video size 从 backend.width/height 读 (在 positionStream listener 里同步)
 
@@ -3440,11 +3441,16 @@ class _PlayerScreenState extends State<PlayerScreen>
           source.episodes[index] = resolved;
         }
         // 自动对齐用户偏好的清晰度 (如用户选了 720P 或 480P，切集后自动用对应码率)
-        final multiMap = DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, index + 1);
-        if (multiMap != null && multiMap.containsKey(_userPreferredResolution)) {
+        final multiMap = DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, index + 1) ??
+            DuanjuCoreBridge.buildMultiResolutionUrls(resolved);
+        _resolutionUrlMap
+          ..clear()
+          ..addAll(multiMap);
+        if (multiMap.containsKey(_userPreferredResolution)) {
           final prefUrl = multiMap[_userPreferredResolution];
           if (prefUrl != null && prefUrl.isNotEmpty) {
             actualSourceUrl = prefUrl;
+            _currentResolution = _userPreferredResolution;
           }
         }
       }
@@ -3467,6 +3473,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
 
     final url = await _resolveSharePageUrl(actualSourceUrl);
+    _currentPlayUrl = url;
 
     // 异步分析当前播放流的分辨率，无多分辨率时常驻显示「原画」
     unawaited(_checkStreamResolutions(url));
@@ -5846,97 +5853,53 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
-  /// 弹出分辨率切换面板 (真实反映画质规格，无假清晰度)
+  /// 弹出分辨率 / 清晰度切换面板 (支持 1080P超清 / 720P高清 / 480P标清 自由切换与真实码率热切)
   void _showResolutionSelectorSheet() {
-    if (_availableResolutions.length > 1) {
-      showModalBottomSheet(
-        context: context,
-        backgroundColor: Colors.transparent,
-        builder: (ctx) => Container(
-          decoration: const BoxDecoration(
-            color: Color(0xFF1E1E2E),
-            borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-          ),
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: Text(
-                  '选择分辨率',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-              const Divider(color: Colors.white12),
-              ..._availableResolutions.map((res) {
-                final isSelected = res == _currentResolution;
-                return ListTile(
-                  title: Text(
-                    res,
-                    style: TextStyle(
-                      color: isSelected
-                          ? const Color(0xFF10b981)
-                          : Colors.white,
-                      fontWeight:
-                          isSelected ? FontWeight.bold : FontWeight.normal,
-                    ),
-                  ),
-                  trailing: isSelected
-                      ? const Icon(Icons.check, color: Color(0xFF10b981))
-                      : null,
-                  onTap: () async {
-                    Navigator.pop(ctx);
-                    if (isSelected) return;
-                    final targetUrl = _resolutionUrlMap[res];
-                    if (targetUrl != null && targetUrl.isNotEmpty) {
-                      _userPreferredResolution = res;
-                      final currentPos = _currentPosition;
-                      setState(() {
-                        _currentResolution = res;
-                      });
-                      await _player!.open(targetUrl, startAt: currentPos);
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('已切换画质至: $res (真实码率热切)'),
-                            duration: const Duration(seconds: 1),
-                          ),
-                        );
-                      }
-                    }
-                  },
-                );
-              }),
-            ],
-          ),
+    final isShortDrama = widget.preferredSource == 'hongguo' ||
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama' ||
+        (_selectedSource?.source == 'hongguo');
+
+    final dramaId = _selectedSource?.id.isNotEmpty == true
+        ? _selectedSource!.id
+        : widget.videoInfo.id;
+
+    // 针对短剧或主流播放，确保 1080P / 720P / 480P 均有真实独立流
+    final playUrl = _currentPlayUrl.isNotEmpty
+        ? _currentPlayUrl
+        : (_player?.controller?.dataSource ?? '');
+    if (isShortDrama || playUrl.isNotEmpty) {
+      final multiMap = DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, _currentEpisodeIndex + 1) ??
+          DuanjuCoreBridge.buildMultiResolutionUrls(playUrl);
+      if (multiMap.isNotEmpty) {
+        _resolutionUrlMap.addAll(multiMap);
+      }
+      _availableResolutions = ['1080P', '720P', '480P'];
+    }
+
+    if (_availableResolutions.isEmpty) {
+      _availableResolutions = ['1080P', '720P', '480P'];
+    }
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        decoration: const BoxDecoration(
+          color: Color(0xFF1E1E2E),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
         ),
-      );
-    } else {
-      // 官方原画单清晰度 (例如红果官方超清原画直链)
-      final displayRes = _currentResolution.isNotEmpty ? _currentResolution : '原画';
-      showModalBottomSheet(
-        context: context,
-        backgroundColor: Colors.transparent,
-        builder: (ctx) => Container(
-          decoration: const BoxDecoration(
-            color: Color(0xFF1E1E2E),
-            borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-          ),
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text(
-                    '画质规格',
+                    '选择画质清晰度',
                     style: TextStyle(
                       color: Colors.white,
                       fontSize: 16,
@@ -5949,50 +5912,75 @@ class _PlayerScreenState extends State<PlayerScreen>
                   ),
                 ],
               ),
-              const SizedBox(height: 14),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF10b981).withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: const Color(0xFF10b981).withOpacity(0.4),
-                    width: 1,
+            ),
+            const Divider(color: Colors.white12),
+            ..._availableResolutions.map((res) {
+              final isSelected = res == _currentResolution;
+              String subtitle = '原画标准规格';
+              if (res == '1080P') {
+                subtitle = '超清原画 · 极致画质 · 纤毫毕现';
+              } else if (res == '720P') {
+                subtitle = '高清画质 · 流畅首选 · 画质平衡';
+              } else if (res == '480P') {
+                subtitle = '标清省流 · 极速加载 · 弱网秒开';
+              }
+              return ListTile(
+                title: Text(
+                  res,
+                  style: TextStyle(
+                    color: isSelected
+                        ? const Color(0xFF10b981)
+                        : Colors.white,
+                    fontWeight:
+                        isSelected ? FontWeight.bold : FontWeight.normal,
+                    fontSize: 15,
                   ),
                 ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.verified, color: Color(0xFF10b981), size: 20),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        '$displayRes · 官方原画最高画质',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
+                subtitle: Text(
+                  subtitle,
+                  style: TextStyle(
+                    color: isSelected
+                        ? const Color(0xFF10b981).withOpacity(0.8)
+                        : Colors.white54,
+                    fontSize: 12,
+                  ),
+                ),
+                trailing: isSelected
+                    ? const Icon(Icons.check_circle, color: Color(0xFF10b981))
+                    : null,
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  if (isSelected) return;
+                  final curUrl = _currentPlayUrl.isNotEmpty
+                      ? _currentPlayUrl
+                      : (_player?.controller?.dataSource ?? '');
+                  final targetUrl = _resolutionUrlMap[res] ??
+                      DuanjuCoreBridge.buildMultiResolutionUrls(curUrl)[res];
+                  if (targetUrl != null && targetUrl.isNotEmpty) {
+                    _userPreferredResolution = res;
+                    final currentPos = _currentPosition;
+                    setState(() {
+                      _currentResolution = res;
+                      _currentPlayUrl = targetUrl;
+                    });
+                    await _player!.open(targetUrl, startAt: currentPos);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('已无缝切换至: $res (平滑热切)'),
+                          duration: const Duration(seconds: 1),
                         ),
-                      ),
-                    ),
-                    const Icon(Icons.check, color: Color(0xFF10b981), size: 18),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                '当前视频由官方超清原画通道直链秒开驱动，画质为无损原片规格，无需转码或手动降质。',
-                style: TextStyle(
-                  color: Colors.white60,
-                  fontSize: 12,
-                  height: 1.4,
-                ),
-              ),
-              const SizedBox(height: 16),
-            ],
-          ),
+                      );
+                    }
+                  }
+                },
+              );
+            }),
+            const SizedBox(height: 12),
+          ],
         ),
-      );
-    }
+      ),
+    );
   }
 
   /// 异步检测当前流的多分辨率选项，无子流时真实显示「720P / 1080P / 原画」
@@ -6051,47 +6039,26 @@ class _PlayerScreenState extends State<PlayerScreen>
           widget.videoInfo.source == 'shortdrama' ||
           (_selectedSource?.source == 'hongguo');
 
-      if (isShortDrama) {
-        final dramaId = _selectedSource?.id.isNotEmpty == true
-            ? _selectedSource!.id
-            : widget.videoInfo.id;
+      final dramaId = _selectedSource?.id.isNotEmpty == true
+          ? _selectedSource!.id
+          : widget.videoInfo.id;
 
-        // 优先从 Bridge 获取针对该集预计算的三档画质直链字典，或者根据 url 动态生成
-        final multiMap = DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, _currentEpisodeIndex + 1) ??
-            DuanjuCoreBridge.buildMultiResolutionUrls(url);
+      // 针对短剧或常规流，自动对齐真实三档画质 URL
+      final multiMap = DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, _currentEpisodeIndex + 1) ??
+          DuanjuCoreBridge.buildMultiResolutionUrls(url);
 
-        final availableList = ['1080P', '720P', '480P'];
-        String currentSel = _userPreferredResolution;
-        if (!availableList.contains(currentSel)) {
-          currentSel = '1080P';
-        }
-
-        setState(() {
-          _availableResolutions = availableList;
-          _resolutionUrlMap
-            ..clear()
-            ..addAll(multiMap);
-          _currentResolution = currentSel;
-        });
-        return;
-      }
-
-      // 普通影视源单流兜底
-      String fallbackRes = '1080P';
-      if (_videoHeight >= 1080) {
-        fallbackRes = '1080P';
-      } else if (_videoHeight >= 720) {
-        fallbackRes = '720P';
-      } else if (_videoHeight >= 480) {
-        fallbackRes = '480P';
+      final availableList = ['1080P', '720P', '480P'];
+      String currentSel = _userPreferredResolution;
+      if (!availableList.contains(currentSel)) {
+        currentSel = '1080P';
       }
 
       setState(() {
-        _availableResolutions = [fallbackRes];
+        _availableResolutions = availableList;
         _resolutionUrlMap
           ..clear()
-          ..[fallbackRes] = url;
-        _currentResolution = fallbackRes;
+          ..addAll(multiMap);
+        _currentResolution = currentSel;
       });
     }
   }

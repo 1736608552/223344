@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 /// 短剧核心原生引擎与直连桥接 (支持 libduanju_core.so FFI 加速 + HTTP 智能降级)
 class DuanjuCoreBridge {
@@ -19,6 +20,8 @@ class DuanjuCoreBridge {
   Pointer<Utf8> Function(Pointer<Utf8>)? _nativeRequest;
   void Function(Pointer<Utf8>)? _nativeFree;
   bool _isNativeAvailable = false;
+  bool _isInitialized = false;
+  Future<void>? _initFuture;
 
   /// 检查原生 Go 核心动态库是否就绪
   bool get isNativeAvailable => _isNativeAvailable;
@@ -52,6 +55,8 @@ class DuanjuCoreBridge {
         if (kDebugMode) {
           print('[DuanjuBridge] 成功载入原生短剧核心库 libduanju_core.so');
         }
+        // 异步静默触发核心引擎初始化
+        unawaited(ensureInitialized());
       }
     } catch (e) {
       _isNativeAvailable = false;
@@ -61,17 +66,50 @@ class DuanjuCoreBridge {
     }
   }
 
-  /// 通过原生 FFI 派发请求给 Go 核心引擎
+  /// 确保原生 Go 核心引擎初始化 (传入应用存储目录，建立 nativeEngine)
+  Future<void> ensureInitialized() async {
+    if (_isInitialized || !_isNativeAvailable) return;
+    if (_initFuture != null) return _initFuture;
+    _initFuture = _doInitialize();
+    await _initFuture;
+  }
+
+  Future<void> _doInitialize() async {
+    try {
+      final dir = await getApplicationSupportDirectory();
+      final res = await invokeNative('initialize', {
+        'directory': dir.path,
+      });
+      if (res != null && res['ok'] == true) {
+        _isInitialized = true;
+        if (kDebugMode) {
+          print('[DuanjuBridge] 原生核心引擎初始化成功: directory=${dir.path}');
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('[DuanjuBridge] 原生核心引擎初始化失败: $e');
+      }
+    }
+  }
+
+  /// 通过原生 FFI 派发请求给 Go 核心引擎 (直接传递扁平结构体，对齐 Go nativeInput 结构体)
   Future<Map<String, dynamic>?> invokeNative(
       String action, Map<String, dynamic> params) async {
     if (!_isNativeAvailable || _nativeRequest == null || _nativeFree == null) {
       return null;
     }
 
-    return compute(_isolateCall, {
+    if (action != 'initialize' && !_isInitialized) {
+      await ensureInitialized();
+    }
+
+    final reqData = <String, dynamic>{
       'action': action,
-      'params': params,
-    });
+      ...params,
+    };
+
+    return compute(_isolateCall, reqData);
   }
 
   /// 供 Isolate 中执行的 FFI 请求逻辑，避免阻塞 Flutter UI 渲染
@@ -574,6 +612,7 @@ class DuanjuCoreBridge {
   }
 
   /// 解析单集超清原画播放直链 (100% 官方真实单集直链，彻底根除切集锁定第一集的bug)
+  /// 解析单集超清原画播放直链 (原生Go核心优先 + 官方真实Web协议防冒充校验 + 备用全集直链自愈)
   Future<String?> resolvePlaybackUrl({
     required String dramaId,
     required int episode,
@@ -595,16 +634,78 @@ class DuanjuCoreBridge {
       return _playbackUrlCache[cacheKey]!;
     }
 
-    // 2. 官方权威单集直链解析通道 (精准按每集唯一 vid 换取专属直链，绝不串集)
-    try {
-      final vidList = await fetchEpisodeVidList(cleanId);
-      String vid = '';
-      if (vidList.isNotEmpty) {
-        final idx = (episode - 1).clamp(0, vidList.length - 1);
-        vid = vidList[idx];
-      }
+    // 获取短剧选集 vid 列表
+    final vidList = await fetchEpisodeVidList(cleanId);
+    String vid = '';
+    if (vidList.isNotEmpty) {
+      final idx = (episode - 1).clamp(0, vidList.length - 1);
+      vid = vidList[idx];
+    }
 
-      if (vid.isNotEmpty) {
+    // 通道 1: 原生 Go 核心引擎解析 (完全对齐鱼佬 guoapp 原生核心调度与解密推流)
+    if (_isNativeAvailable && vid.isNotEmpty) {
+      try {
+        await ensureInitialized();
+        final nativeRes = await invokeNative('resolve', {
+          'drama': {
+            'id': 'hongguo:$cleanId',
+            'source': 'hongguo',
+            'title': '短剧',
+          },
+          'chapter': {
+            'id': 'hongguo:$cleanId:$vid',
+            'source': 'hongguo',
+            'title': '第$episode集',
+            'video_url': 'hongguo-cenc://$vid',
+            'current_episode': '$episode',
+          },
+          'index': episode,
+          'quality': 0,
+          'sequence': DateTime.now().millisecondsSinceEpoch,
+        });
+
+        if (nativeRes != null && nativeRes['ok'] == true) {
+          final data = nativeRes['data'];
+          if (data is Map) {
+            final nativeUrl = data['url']?.toString();
+            if (nativeUrl != null && nativeUrl.isNotEmpty) {
+              final rawQualities = data['qualities'];
+              final multiMap = <String, String>{};
+              multiMap['1080P'] = nativeUrl;
+              multiMap['720P'] = nativeUrl;
+              multiMap['480P'] = nativeUrl;
+              if (rawQualities is List && rawQualities.isNotEmpty) {
+                for (final q in rawQualities) {
+                  final qInt = int.tryParse(q.toString()) ?? 0;
+                  if (qInt >= 1080) {
+                    multiMap['1080P'] = nativeUrl;
+                  } else if (qInt >= 720) {
+                    multiMap['720P'] = nativeUrl;
+                  } else if (qInt >= 480) {
+                    multiMap['480P'] = nativeUrl;
+                  }
+                }
+              }
+              _playbackResolutionCache[cacheKey] = '1080P';
+              _playbackUrlCache[cacheKey] = nativeUrl;
+              _playbackMultiResCache[cacheKey] = multiMap;
+              if (kDebugMode) {
+                print('[DuanjuBridge] 原生 Go 核心解析成功: ep=$episode, url=$nativeUrl');
+              }
+              return nativeUrl;
+            }
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('[DuanjuBridge] 原生 Go 核心解析异常: $e');
+        }
+      }
+    }
+
+    // 通道 2: 官方权威单集直链解析通道 (严格校验返回 vid == 请求 vid，杜绝试看集冒充)
+    if (vid.isNotEmpty) {
+      try {
         final playerUri =
             Uri.parse('https://hongguoduanju.com/player/$cleanId/$vid');
         final resp = await http.get(playerUri, headers: {
@@ -621,7 +722,6 @@ class DuanjuCoreBridge {
             final data = jsonDecode(m.group(1)!);
             final loaderData = data['loaderData'];
             if (loaderData is Map) {
-              // 智能查找播放页路由 key (例如 player_(series_id)/(vid)/page)
               dynamic pageData;
               for (final k in loaderData.keys) {
                 final kStr = k.toString();
@@ -634,46 +734,111 @@ class DuanjuCoreBridge {
                   loaderData['player_page'];
 
               if (pageData is Map) {
-                final playInfo = pageData['video_player_info'];
-                if (playInfo is Map) {
-                  final mainUrl = playInfo['main_url']?.toString();
-                  if (mainUrl != null && mainUrl.startsWith('http')) {
-                    // 记录该集真实视频宽高
-                    final h =
-                        int.tryParse(playInfo['height']?.toString() ?? '0') ??
-                            0;
-                    String resLabel = '1080P';
-                    if (h >= 1080) {
-                      resLabel = '1080P';
-                    } else if (h >= 720) {
-                      resLabel = '720P';
-                    } else if (h >= 480) {
-                      resLabel = '480P';
+                final returnedVid = pageData['vid']?.toString() ?? '';
+                // 核心防线：若返回的 vid 与当前请求集不一致（说明触发了官网无权限试看重定向到第一集），坚决拒绝冒充！
+                if (returnedVid.isEmpty || returnedVid == vid) {
+                  final playInfo = pageData['video_player_info'];
+                  if (playInfo is Map) {
+                    final mainUrl = playInfo['main_url']?.toString();
+                    if (mainUrl != null && mainUrl.startsWith('http')) {
+                      final h =
+                          int.tryParse(playInfo['height']?.toString() ?? '0') ??
+                              0;
+                      String resLabel = '1080P';
+                      if (h >= 1080) {
+                        resLabel = '1080P';
+                      } else if (h >= 720) {
+                        resLabel = '720P';
+                      } else if (h >= 480) {
+                        resLabel = '480P';
+                      }
+                      _playbackResolutionCache[cacheKey] = resLabel;
+                      _playbackUrlCache[cacheKey] = mainUrl;
+
+                      // 构建并缓存真实的三档画质 URL
+                      final multiMap = buildMultiResolutionUrls(mainUrl);
+                      _playbackMultiResCache[cacheKey] = multiMap;
+
+                      // 异步静默预解析紧接着的下一集，保障丝滑连播
+                      if (vidList.length > episode) {
+                        unawaited(_preloadNextEpisode(
+                            cleanId, episode + 1, vidList[episode]));
+                      }
+
+                      return mainUrl;
                     }
-                    _playbackResolutionCache[cacheKey] = resLabel;
-                    _playbackUrlCache[cacheKey] = mainUrl;
-
-                    // 构建并缓存真实的三档画质 URL
-                    final multiMap = buildMultiResolutionUrls(mainUrl);
-                    _playbackMultiResCache[cacheKey] = multiMap;
-
-                    // 异步静默预解析紧接着的下一集，保障丝滑连播
-                    if (vidList.length > episode) {
-                      unawaited(_preloadNextEpisode(cleanId, episode + 1, vidList[episode]));
-                    }
-
-                    return mainUrl;
+                  }
+                } else {
+                  if (kDebugMode) {
+                    print(
+                        '[DuanjuBridge] 网页端返回试看集 vid=$returnedVid，与请求 vid=$vid 不一致，触发安全拦截');
                   }
                 }
               }
             }
           }
         }
+      } catch (e) {
+        if (kDebugMode) {
+          print('[DuanjuBridge] 官方单集直链解析异常: $e');
+        }
       }
-    } catch (e) {
-      if (kDebugMode) {
-        print('[DuanjuBridge] 官方单集直链解析异常: $e');
-      }
+    }
+
+    // 通道 3: 鱼佬开源备用直链 API 通道 (支持全集解析与多分辨率)
+    if (vid.isNotEmpty) {
+      try {
+        final refJson = jsonEncode({
+          'content_type': 1004,
+          'series_id': cleanId,
+          'vid': vid,
+          'video_platform': 3,
+        });
+        final b64 = base64Encode(utf8.encode(refJson));
+        final apiUri =
+            Uri.parse('https://djapi.999888456.xyz/api/hongguo/play?id=$b64');
+        final apiResp = await http.get(apiUri, headers: {
+          'User-Agent': _defaultUserAgent,
+          'Referer': 'https://hongguoduanju.com/',
+        }).timeout(const Duration(seconds: 6));
+
+        if (apiResp.statusCode == 200) {
+          final bodyText = apiResp.body.trim();
+          if (!bodyText.startsWith('v2.')) {
+            final parsed = jsonDecode(bodyText);
+            if (parsed is Map && parsed['key_urls'] is List) {
+              final keyUrls = parsed['key_urls'] as List;
+              final multiMap = <String, String>{};
+              String? primaryUrl;
+              for (final u in keyUrls) {
+                if (u is Map) {
+                  final src = u['src']?.toString();
+                  final name = u['name']?.toString() ?? '';
+                  if (src != null && src.startsWith('http')) {
+                    primaryUrl ??= src;
+                    if (name.contains('1080')) {
+                      multiMap['1080P'] = src;
+                    } else if (name.contains('720')) {
+                      multiMap['720P'] = src;
+                    } else if (name.contains('480')) {
+                      multiMap['480P'] = src;
+                    }
+                  }
+                }
+              }
+              if (primaryUrl != null) {
+                multiMap['1080P'] ??= primaryUrl;
+                multiMap['720P'] ??= primaryUrl;
+                multiMap['480P'] ??= primaryUrl;
+                _playbackResolutionCache[cacheKey] = '1080P';
+                _playbackUrlCache[cacheKey] = primaryUrl;
+                _playbackMultiResCache[cacheKey] = multiMap;
+                return primaryUrl;
+              }
+            }
+          }
+        }
+      } catch (_) {}
     }
 
     return null;
@@ -712,13 +877,17 @@ class DuanjuCoreBridge {
             pageData ??= loaderData['player_(series_id)/(vid)/page'] ??
                 loaderData['player_page'];
             if (pageData is Map) {
+              final returnedVid = pageData['vid']?.toString() ?? '';
+              if (returnedVid.isNotEmpty && returnedVid != vid) {
+                return; // 拦截冒充，不预缓存错误的第一集流
+              }
               final playInfo = pageData['video_player_info'];
               if (playInfo is Map) {
                 final mainUrl = playInfo['main_url']?.toString();
                 if (mainUrl != null && mainUrl.startsWith('http')) {
                   final h =
                       int.tryParse(playInfo['height']?.toString() ?? '0') ?? 0;
-                  String resLabel = '原画';
+                  String resLabel = '1080P';
                   if (h >= 1080) {
                     resLabel = '1080P';
                   } else if (h >= 720) {
@@ -728,6 +897,7 @@ class DuanjuCoreBridge {
                   }
                   _playbackResolutionCache[nextCacheKey] = resLabel;
                   _playbackUrlCache[nextCacheKey] = mainUrl;
+                  _playbackMultiResCache[nextCacheKey] = buildMultiResolutionUrls(mainUrl);
                 }
               }
             }
