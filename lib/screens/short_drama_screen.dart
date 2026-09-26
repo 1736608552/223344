@@ -1062,12 +1062,18 @@ class _ShortDramaSearchModalState extends State<_ShortDramaSearchModal> {
                                 contentPadding: EdgeInsets.zero,
                                 leading: ClipRRect(
                                   borderRadius: BorderRadius.circular(6),
-                                  child: Image.network(
-                                    d.cover,
+                                  child: CachedNetworkImage(
+                                    imageUrl: UserDataService.buildShortDramaImageUrl(d.cover),
+                                    cacheManager: LunaCacheManager.instance,
                                     width: 48,
                                     height: 64,
                                     fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) => Container(
+                                    placeholder: (context, url) => Container(
+                                      width: 48,
+                                      height: 64,
+                                      color: isDark ? Colors.white12 : Colors.grey[200],
+                                    ),
+                                    errorWidget: (context, url, error) => Container(
                                       width: 48,
                                       height: 64,
                                       color: isDark ? Colors.white12 : Colors.grey[200],
