@@ -462,6 +462,42 @@ class _PlayerScreenState extends State<PlayerScreen>
           widget.preferredSource == 'hongguo' ||
           widget.preferredSource == 'shortdrama';
       if (isShortDrama) {
+        // 关键自愈：异步根据真实章节列表精确对齐总集数，动态刷新选集网格 (消除假80集上限)
+        unawaited(() async {
+          try {
+            final dramaId = widget.videoInfo.id.isNotEmpty
+                ? widget.videoInfo.id
+                : widget.initialDetail!.id;
+            final realVidList =
+                await DuanjuCoreBridge.instance.fetchEpisodeVidList(dramaId);
+            if (mounted &&
+                realVidList.isNotEmpty &&
+                realVidList.length != _selectedSource?.episodes.length) {
+              final realCount = realVidList.length;
+              final updatedEps =
+                  List.generate(realCount, (i) => (i + 1).toString());
+              final updatedTitles =
+                  List.generate(realCount, (i) => '第${i + 1}集');
+              setState(() {
+                _selectedSource?.episodes
+                  ..clear()
+                  ..addAll(updatedEps);
+                _selectedSource?.episodesTitles
+                  ..clear()
+                  ..addAll(updatedTitles);
+                if (_sourceResults.isNotEmpty) {
+                  _sourceResults[0].episodes
+                    ..clear()
+                    ..addAll(updatedEps);
+                  _sourceResults[0].episodesTitles
+                    ..clear()
+                    ..addAll(updatedTitles);
+                }
+              });
+            }
+          } catch (_) {}
+        }());
+
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted && !_isDisposing) {
             _playEpisode(_currentEpisodeIndex);

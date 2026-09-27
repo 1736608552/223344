@@ -226,7 +226,8 @@ class ShortDramaDirectService {
       final nativeItems = await DuanjuCoreBridge.instance.searchDramas(cleanKw);
       if (nativeItems.isNotEmpty) {
         final list = nativeItems.map((m) {
-          final idVal = m['id'] ?? m['drama_id'] ?? 0;
+          final idVal = m['id'] ?? m['drama_id'] ?? m['series_id'] ?? 0;
+          final realDramaId = (m['drama_id'] ?? m['series_id'] ?? m['id'] ?? idVal).toString();
           final vodId = idVal is int
               ? idVal
               : (int.tryParse(idVal.toString()) ?? idVal.hashCode.abs());
@@ -238,6 +239,7 @@ class ShortDramaDirectService {
 
           return RawShortDrama(
             vodId: vodId,
+            dramaId: realDramaId,
             vodName: RawShortDrama.cleanVodName(name),
             vodPic: RawShortDrama.cleanVodPic(cover),
             vodPicSlide: '',

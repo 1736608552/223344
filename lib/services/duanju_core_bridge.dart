@@ -592,7 +592,16 @@ class DuanjuCoreBridge {
     if (cover.endsWith('.webp')) {
       cover = cover.replaceFirst(RegExp(r'\.webp$'), '.image');
     }
-    final epCount = it['episode_cnt'] ?? it['total_episodes'] ?? it['episode_count'] ?? 80;
+    
+    // 优先从官方接口读取真实的 episode_cnt / total_episodes
+    int finalEpCount = 0;
+    final epRaw = it['episode_cnt'] ?? it['total_episodes'] ?? it['episode_count'];
+    if (epRaw is int) {
+      finalEpCount = epRaw;
+    } else if (epRaw != null) {
+      finalEpCount = int.tryParse(epRaw.toString()) ?? 0;
+    }
+
     final intro = (it['series_intro'] ?? it['intro'] ?? it['description'] ?? '').toString();
     
     final tags = <String>[];
@@ -614,12 +623,16 @@ class DuanjuCoreBridge {
     List<String>? vidList;
     if (rawVidList is List && rawVidList.isNotEmpty) {
       vidList = rawVidList.map((e) => e.toString()).toList();
-      _vidListCache[idVal.toString()] = vidList;
+      // 关键防污染：列表/搜索页返回的 vid_list 通常仅为 3 集试看，绝不能污染全剧集缓存！
+      // 只有当 vidList 达到全量集数时，才认定为完整章节并缓存
+      if (finalEpCount > 0 && vidList.length >= finalEpCount) {
+        _vidListCache[idVal.toString()] = vidList;
+      }
     }
 
     final firstVid = (it['vid'] ?? it['first_vid'])?.toString() ?? '';
-    if (firstVid.isNotEmpty && (_vidListCache[idVal.toString()] == null || _vidListCache[idVal.toString()]!.isEmpty)) {
-      _vidListCache[idVal.toString()] = [firstVid];
+    if (firstVid.isNotEmpty && !_vidListCache.containsKey(idVal.toString())) {
+      // 仅用于单集保底，不污染全剧列表
     }
 
     return {
@@ -628,9 +641,9 @@ class DuanjuCoreBridge {
       'title': title,
       'cover': cover,
       'cover_url': cover,
-      'episode_count': vidList != null && vidList.isNotEmpty
-          ? vidList.length
-          : (epCount is int ? epCount : (int.tryParse(epCount.toString()) ?? 80)),
+      'episode_count': finalEpCount > 0
+          ? finalEpCount
+          : (vidList != null && vidList.isNotEmpty ? vidList.length : 80),
       'intro': intro,
       'description': intro,
       'tags': tags,
@@ -693,7 +706,8 @@ class DuanjuCoreBridge {
               if (it is Map<String, dynamic>) {
                 final vData = it['video_data'];
                 if (vData is Map<String, dynamic>) {
-                  result.add(_formatHongguoItem(vData));
+                  final merged = Map<String, dynamic>.from(it)..addAll(vData);
+                  result.add(_formatHongguoItem(merged));
                 } else if (it['series_name'] != null || it['title'] != null) {
                   result.add(_formatHongguoItem(it));
                 }
@@ -792,7 +806,8 @@ class DuanjuCoreBridge {
     if (cleanId.isEmpty) return [];
 
     if (_vidListCache.containsKey(cleanId) &&
-        _vidListCache[cleanId]!.isNotEmpty) {
+        _vidListCache[cleanId]!.isNotEmpty &&
+        _vidListCache[cleanId]!.length > 3) {
       return _vidListCache[cleanId]!;
     }
 
@@ -1408,7 +1423,10 @@ class DuanjuCoreBridge {
               if (returnedVid.isEmpty || returnedVid == vid) {
                 final playInfo = pageData['video_player_info'];
                 if (playInfo is Map) {
-                  final mainUrl = playInfo['main_url']?.toString();
+                  final mainUrl = (playInfo['main_url'] ??
+                          playInfo['backup_url_1'] ??
+                          playInfo['backup_url'])
+                      ?.toString();
                   if (mainUrl != null && mainUrl.startsWith('http')) {
                     _playbackResolutionCache[cacheKey] = '1080P';
                     _playbackUrlCache[cacheKey] = mainUrl;
