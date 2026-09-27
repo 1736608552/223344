@@ -479,19 +479,17 @@ class _PlayerScreenState extends State<PlayerScreen>
               final updatedTitles =
                   List.generate(realCount, (i) => '第${i + 1}集');
               setState(() {
-                _selectedSource?.episodes
-                  ..clear()
-                  ..addAll(updatedEps);
-                _selectedSource?.episodesTitles
-                  ..clear()
-                  ..addAll(updatedTitles);
+                if (_selectedSource != null) {
+                  _selectedSource!.episodes.clear();
+                  _selectedSource!.episodes.addAll(updatedEps);
+                  _selectedSource!.episodesTitles.clear();
+                  _selectedSource!.episodesTitles.addAll(updatedTitles);
+                }
                 if (_sourceResults.isNotEmpty) {
-                  _sourceResults[0].episodes
-                    ..clear()
-                    ..addAll(updatedEps);
-                  _sourceResults[0].episodesTitles
-                    ..clear()
-                    ..addAll(updatedTitles);
+                  _sourceResults[0].episodes.clear();
+                  _sourceResults[0].episodes.addAll(updatedEps);
+                  _sourceResults[0].episodesTitles.clear();
+                  _sourceResults[0].episodesTitles.addAll(updatedTitles);
                 }
               });
             }
@@ -6284,36 +6282,15 @@ class _PlayerScreenState extends State<PlayerScreen>
                 ],
               ),
             ),
-            if (isShortDrama)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    _userPreferredResolution == '自动' || _currentResolution == '自动'
-                        ? '当前播放 ${actualQ}P（自动根据网络优选最高可用画质）'
-                        : '当前已选择 $_currentResolution 播放档位',
-                    style: const TextStyle(
-                      color: Colors.white54,
-                      fontSize: 12.5,
-                      height: 1.4,
-                    ),
-                  ),
-                ),
-              ),
             const Divider(color: Colors.white12),
             ...resolutionOptions.map((res) {
-              final bool isSelected = isShortDrama
-                  ? (_userPreferredResolution == '自动'
-                      ? res == '自动'
-                      : (res == _currentResolution || res == _userPreferredResolution))
-                  : (res == _currentResolution);
+              final bool isSelected = (res == _currentResolution);
 
               String title = res;
               String subtitle = '原画标准规格';
               if (res == '自动') {
                 title = '自动（优先高清）';
-                subtitle = '使用源站可用最高画质 · 智能优选 (当前 ${actualQ}P)';
+                subtitle = '使用源站可用最高画质 · 智能优选';
               } else if (res == '1080P') {
                 subtitle = '超清原画 · 极致画质 · 纤毫毕现';
               } else if (res == '720P') {

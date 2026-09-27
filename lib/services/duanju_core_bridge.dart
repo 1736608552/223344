@@ -51,6 +51,16 @@ class DuanjuCoreBridge {
   /// 检查原生 Go 核心动态库是否就绪
   bool get isNativeAvailable => _isNativeAvailable;
 
+  /// 统一清洗短剧剧集 ID（去除 hongguo: 前缀并保留纯数字大 ID）
+  static String cleanSeriesId(dynamic raw) {
+    if (raw == null) return '';
+    var s = raw.toString().trim();
+    if (s.startsWith('hongguo:')) {
+      s = s.substring('hongguo:'.length).trim();
+    }
+    return s;
+  }
+
   /// 初始化动态库加载
   void _initNativeLibrary() {
     if (!Platform.isAndroid) {
@@ -237,18 +247,74 @@ class DuanjuCoreBridge {
     required int page,
     required int size,
   }) async {
-    try {
-      String genreKey = 'short_play';
-      String reqScene = 'default';
+    final catLower = category.trim().toLowerCase();
+    final isAll = catLower == 'all' || catLower == 'hot' || catLower.isEmpty || catLower == '全部';
 
-      if (category.contains('comic') || category == 'comic_series') {
-        genreKey = 'comic_series';
-        reqScene = 'comic_series';
-      } else if (category.contains('ai') || category == 'ai_series') {
-        genreKey = 'ai_series';
-        reqScene = 'ai_series';
+    if (isAll) {
+      // 聚合流：对标红果鉴并发调度短剧官方 3 大核心分类 (真人剧、漫剧、AI剧) 并穿插聚合
+      try {
+        final results = await Future.wait([
+          _fetchHongguoSingleGenreLandpage(genreKey: 'short_play', reqScene: 'default', page: page, size: 12),
+          _fetchHongguoSingleGenreLandpage(genreKey: 'comic_series', reqScene: 'comic_series', page: page, size: 6),
+          _fetchHongguoSingleGenreLandpage(genreKey: 'ai_series', reqScene: 'ai_series', page: page, size: 6),
+        ]);
+
+        final realList = results[0];
+        final comicList = results[1];
+        final aiList = results[2];
+
+        final combined = <Map<String, dynamic>>[];
+        final maxLen = [realList.length, comicList.length, aiList.length].reduce((a, b) => a > b ? a : b);
+
+        for (int i = 0; i < maxLen; i++) {
+          if (i * 2 < realList.length) combined.add(realList[i * 2]);
+          if (i * 2 + 1 < realList.length) combined.add(realList[i * 2 + 1]);
+          if (i < comicList.length) combined.add(comicList[i]);
+          if (i < aiList.length) combined.add(aiList[i]);
+        }
+
+        if (combined.isNotEmpty) {
+          final uniqueMap = <String, Map<String, dynamic>>{};
+          for (final it in combined) {
+            final key = it['drama_id'] ?? it['id']?.toString() ?? '';
+            if (key.isNotEmpty && !uniqueMap.containsKey(key)) {
+              uniqueMap[key] = it;
+            }
+          }
+          return uniqueMap.values.toList();
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('[DuanjuBridge] 聚合流拉取异常: $e');
+        }
       }
+      // 聚合异常时走 short_play 兜底
+      return _fetchHongguoSingleGenreLandpage(genreKey: 'short_play', reqScene: 'default', page: page, size: size);
+    }
 
+    // 单分类定向拉取：真人剧 / 漫剧 / AI剧
+    String genreKey = 'short_play';
+    String reqScene = 'default';
+
+    if (catLower.contains('comic') || catLower == 'comic_series' || catLower.contains('漫剧')) {
+      genreKey = 'comic_series';
+      reqScene = 'comic_series';
+    } else if (catLower.contains('ai') || catLower == 'ai_series' || catLower.contains('ai剧')) {
+      genreKey = 'ai_series';
+      reqScene = 'ai_series';
+    }
+
+    return _fetchHongguoSingleGenreLandpage(genreKey: genreKey, reqScene: reqScene, page: page, size: size);
+  }
+
+  /// 请求红果 App 单个题材官方接口
+  Future<List<Map<String, dynamic>>> _fetchHongguoSingleGenreLandpage({
+    required String genreKey,
+    required String reqScene,
+    required int page,
+    required int size,
+  }) async {
+    try {
       final offset = (page - 1) * size;
       final payload = {
         'req_scene': reqScene,
@@ -309,7 +375,7 @@ class DuanjuCoreBridge {
       }
     } catch (e) {
       if (kDebugMode) {
-        print('[DuanjuBridge] App Landpage 接口拉取异常: $e');
+        print('[DuanjuBridge] App Landpage 接口拉取异常 (genre=$genreKey): $e');
       }
     }
     return [];
@@ -398,25 +464,7 @@ class DuanjuCoreBridge {
         }
       }
 
-      // 3. 如果是第 1 页并且是综合推荐「全部」，聚合热播总榜前 20 部短剧，首屏爆满
-      if (page == 1 && (category == 'all' || category == 'hot')) {
-        try {
-          final rankUri = Uri.parse('https://hongguoduanju.com/rank/hot-drama');
-          final rankResp = await http.get(rankUri, headers: {
-            'User-Agent': _defaultUserAgent,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'zh-CN,zh;q=0.9',
-          }).timeout(const Duration(seconds: 5));
-
-          if (rankResp.statusCode == 200) {
-            final topRanks = _parseHongguoRankHtml(rankResp.body);
-            // 将热播榜首剧集插到最前
-            allItems.insertAll(0, topRanks);
-          }
-        } catch (_) {}
-      }
-
-      // 4. 全局智能去重
+      // 3. 全局智能去重
       final Map<String, Map<String, dynamic>> uniqueMap = {};
       for (final item in allItems) {
         final id = item['id']?.toString() ?? '';
@@ -583,9 +631,16 @@ class DuanjuCoreBridge {
 
   /// 格式化红果单部短剧数据
   Map<String, dynamic> _formatHongguoItem(Map<String, dynamic> it, {String? extraTabType}) {
-    final idVal = it['series_id'] ?? it['id'] ?? it['book_id'] ?? 0;
-    final title = (it['series_name'] ?? it['series_title'] ?? it['title'] ?? '').toString();
-    var cover = (it['series_cover'] ?? it['cover'] ?? it['cover_url'] ?? '').toString().trim();
+    final rawId = it['sourceId'] ??
+        it['source_id'] ??
+        it['series_id'] ??
+        it['id'] ??
+        it['book_id'] ??
+        0;
+    final cleanDramaId = cleanSeriesId(rawId);
+    final idVal = int.tryParse(cleanDramaId) ?? (rawId is int ? rawId : rawId.hashCode.abs());
+    final title = (it['series_name'] ?? it['series_title'] ?? it['title'] ?? it['name'] ?? '').toString();
+    var cover = (it['series_cover'] ?? it['cover'] ?? it['cover_url'] ?? it['coverUrl'] ?? '').toString().trim();
     if (cover.startsWith('//')) {
       cover = 'https:$cover';
     }
@@ -593,16 +648,25 @@ class DuanjuCoreBridge {
       cover = cover.replaceFirst(RegExp(r'\.webp$'), '.image');
     }
     
-    // 优先从官方接口读取真实的 episode_cnt / total_episodes
+    // 优先从接口读取真实的集数（全量兼容 Go 原生核心与 Web/App 接口）
     int finalEpCount = 0;
-    final epRaw = it['episode_cnt'] ?? it['total_episodes'] ?? it['episode_count'];
+    final epRaw = it['episodes'] ??
+        it['episode_cnt'] ??
+        it['episode_count'] ??
+        it['episodeCount'] ??
+        it['total_episodes'] ??
+        it['total_episode'] ??
+        it['totalEpisode'] ??
+        it['chapter_count'] ??
+        it['chapterCount'] ??
+        it['total'];
     if (epRaw is int) {
       finalEpCount = epRaw;
     } else if (epRaw != null) {
-      finalEpCount = int.tryParse(epRaw.toString()) ?? 0;
+      finalEpCount = int.tryParse(epRaw.toString().replaceAll(RegExp(r'[^\d]'), '')) ?? 0;
     }
 
-    final intro = (it['series_intro'] ?? it['intro'] ?? it['description'] ?? '').toString();
+    final intro = (it['series_intro'] ?? it['intro'] ?? it['description'] ?? it['desc'] ?? '').toString();
     
     final tags = <String>[];
     if (extraTabType != null && extraTabType.isNotEmpty) {
@@ -626,24 +690,29 @@ class DuanjuCoreBridge {
       // 关键防污染：列表/搜索页返回的 vid_list 通常仅为 3 集试看，绝不能污染全剧集缓存！
       // 只有当 vidList 达到全量集数时，才认定为完整章节并缓存
       if (finalEpCount > 0 && vidList.length >= finalEpCount) {
-        _vidListCache[idVal.toString()] = vidList;
+        _vidListCache[cleanDramaId] = vidList;
       }
     }
 
     final firstVid = (it['vid'] ?? it['first_vid'])?.toString() ?? '';
-    if (firstVid.isNotEmpty && !_vidListCache.containsKey(idVal.toString())) {
+    if (firstVid.isNotEmpty && !_vidListCache.containsKey(cleanDramaId)) {
       // 仅用于单集保底，不污染全剧列表
     }
 
+    final epCountResult = finalEpCount > 0
+        ? finalEpCount
+        : (vidList != null && vidList.isNotEmpty ? vidList.length : 80);
+
     return {
-      'id': idVal is int ? idVal : (int.tryParse(idVal.toString()) ?? idVal.hashCode.abs()),
-      'drama_id': idVal.toString(),
+      'id': idVal,
+      'drama_id': cleanDramaId,
+      'series_id': cleanDramaId,
       'title': title,
       'cover': cover,
       'cover_url': cover,
-      'episode_count': finalEpCount > 0
-          ? finalEpCount
-          : (vidList != null && vidList.isNotEmpty ? vidList.length : 80),
+      'episode_count': epCountResult,
+      'episode_cnt': epCountResult,
+      'episodes': epCountResult,
       'intro': intro,
       'description': intro,
       'tags': tags,

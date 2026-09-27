@@ -9,7 +9,7 @@ import 'package:luna_tv/services/duanju_core_bridge.dart';
 /// 2. **AI 漫剧精选**: 首发支持爆款 AI 生成式短剧与动漫漫剧，专区置顶。
 /// 3. **极速单源纯净**: 彻底剥离第三方低质采集源与星芽，专注超清水准。
 class ShortDramaDirectService {
-  /// 官方独家源配置 (100% 对齐红果短剧官方十大权威分类与榜单)
+  /// 官方独家源配置 (100% 对齐红果鉴官方权威四大分类体系)
   static const List<_DirectSource> _sources = [
     _DirectSource(
       name: '红果短剧',
@@ -17,123 +17,44 @@ class ShortDramaDirectService {
       srcKey: 'hongguo',
       pages: 3,
       categories: [
-        _SourceCategory(201, '总热播榜'),
-        _SourceCategory(202, '真人热播'),
-        _SourceCategory(203, '漫剧热播'),
-        _SourceCategory(204, 'AI 漫剧'),
-        _SourceCategory(101, '逆袭爽剧'),
-        _SourceCategory(102, '现代都市'),
-        _SourceCategory(103, '古装仙侠'),
-        _SourceCategory(104, '甜宠言情'),
-        _SourceCategory(105, '悬疑脑洞'),
-        _SourceCategory(106, '动漫漫剧'),
+        _SourceCategory(1, '真人剧'),
+        _SourceCategory(2, '漫剧'),
+        _SourceCategory(3, 'AI剧'),
       ],
     ),
   ];
 
   static const List<String> SHORT_DRAMA_KEYWORDS = [
-    '总热播榜',
-    '真人热播',
-    '漫剧热播',
-    'AI 漫剧',
-    '逆袭爽剧',
-    '现代都市',
-    '古装仙侠',
-    '甜宠言情',
-    '悬疑脑洞',
-    '动漫漫剧',
+    '真人剧',
+    '漫剧',
+    'AI剧',
+    '热播',
+    '短剧',
   ];
 
-  /// 红果短剧官方原生与真实分类全库拉取 (双通道精准对齐: 支持分类名智能匹配 + typeId严密路由)
+  /// 红果短剧官方原生与真实分类全库拉取 (精准对齐红果鉴三大核心 genre: short_play, comic_series, ai_series)
   static Future<List<RawShortDrama>> _fetchHongguoPage(
     int typeId,
     int page, {
     String? categoryName,
   }) async {
     try {
-      String catKey = 'real-drama';
-      String catName = '真人短剧';
+      String catKey = 'all';
+      String catName = '全部短剧';
 
-      // 1. 优先根据分类名称智能对齐 (彻底根治分类显示与内容错位、完美兼容任意客户端Tab)
       final String name = (categoryName ?? '').trim();
-      if (name.contains('总热播') || name.contains('热播榜') || name.contains('红果精选')) {
-        catKey = 'rank-hot';
-        catName = '总热播榜';
-      } else if (name.contains('真人热播') || name.contains('真人剧榜')) {
-        catKey = 'rank-real';
-        catName = '真人热播';
-      } else if (name.contains('漫剧热播') || name.contains('漫剧总榜')) {
-        catKey = 'rank-comic';
-        catName = '漫剧热播';
-      } else if (name.contains('AI') || name.contains('ai')) {
-        catKey = 'rank-ai';
-        catName = 'AI 漫剧';
-      } else if (name.contains('逆袭') || name.contains('反转') || name.contains('爽剧')) {
-        catKey = 'comeback';
-        catName = '逆袭爽剧';
-      } else if (name.contains('都市')) {
-        catKey = 'urban';
-        catName = '现代都市';
-      } else if (name.contains('古装') || name.contains('仙侠') || name.contains('玄幻')) {
-        catKey = 'costume';
-        catName = '古装仙侠';
-      } else if (name.contains('言情') || name.contains('甜宠') || name.contains('总裁') || name.contains('恋爱')) {
-        catKey = 'romance';
-        catName = '甜宠言情';
-      } else if (name.contains('悬疑') || name.contains('脑洞') || name.contains('惊悚')) {
-        catKey = 'suspense';
-        catName = '悬疑脑洞';
-      } else if (name.contains('动漫') || name.contains('漫画')) {
-        catKey = 'comic-drama';
-        catName = '动漫漫剧';
+      if (name == '真人剧' || typeId == 1) {
+        catKey = 'short_play';
+        catName = '真人剧';
+      } else if (name == '漫剧' || typeId == 2) {
+        catKey = 'comic_series';
+        catName = '漫剧';
+      } else if (name == 'AI剧' || name == 'AI 剧' || typeId == 3) {
+        catKey = 'ai_series';
+        catName = 'AI剧';
       } else {
-        // 2. 按 typeId 严密映射
-        switch (typeId) {
-          case 201:
-            catKey = 'rank-hot';
-            catName = '总热播榜';
-            break;
-          case 202:
-            catKey = 'rank-real';
-            catName = '真人热播';
-            break;
-          case 203:
-            catKey = 'rank-comic';
-            catName = '漫剧热播';
-            break;
-          case 204:
-            catKey = 'rank-ai';
-            catName = 'AI 漫剧';
-            break;
-          case 101:
-            catKey = 'comeback';
-            catName = '逆袭爽剧';
-            break;
-          case 102:
-            catKey = 'urban';
-            catName = '现代都市';
-            break;
-          case 103:
-            catKey = 'costume';
-            catName = '古装仙侠';
-            break;
-          case 104:
-            catKey = 'romance';
-            catName = '甜宠言情';
-            break;
-          case 105:
-            catKey = 'suspense';
-            catName = '悬疑脑洞';
-            break;
-          case 106:
-            catKey = 'comic-drama';
-            catName = '动漫漫剧';
-            break;
-          default:
-            catKey = 'real-drama';
-            catName = '真人短剧';
-            break;
-        }
+        catKey = 'all';
+        catName = '全部短剧';
       }
 
       final items = await DuanjuCoreBridge.instance.fetchCatalog(
@@ -271,22 +192,16 @@ class ShortDramaDirectService {
   }
 
   /// 首页"热门短剧"拉取：100% 对齐红果鉴总热播榜原生排序 (严格保留官方榜单 1~N 名真实顺序，绝不根据时间打乱)
+  /// 首页"热门短剧"拉取：对齐红果鉴官方精选聚合流 (真人剧、漫剧、AI剧多样化呈现)
   static Future<List<ShortDrama>> getRecommend({int size = 60}) async {
     final allRaw = <RawShortDrama>[];
 
-    // 首屏严格以官方总热播榜 (201) 为核心主干
-    final rankHot = await _fetchHongguoPage(201, 1);
-    allRaw.addAll(rankHot);
+    final page1 = await _fetchHongguoPage(0, 1, categoryName: '全部');
+    allRaw.addAll(page1);
 
-    // 随后补充热门题材
     if (allRaw.length < size) {
-      final moreResults = await Future.wait([
-        _fetchHongguoPage(101, 1),
-        _fetchHongguoPage(102, 1),
-      ]);
-      for (final r in moreResults) {
-        allRaw.addAll(r);
-      }
+      final page2 = await _fetchHongguoPage(0, 2, categoryName: '全部');
+      allRaw.addAll(page2);
     }
 
     final unique = <String, RawShortDrama>{};
@@ -300,30 +215,13 @@ class ShortDramaDirectService {
     return sliced.map(_toShortDrama).toList();
   }
 
-  /// 短剧专区「全部」tab 分页形式：对齐红果鉴 (首屏严格以官方总热播榜为先导，后续无缝支持分页)
+  /// 短剧专区「全部」tab 分页形式：对齐红果鉴官方全题材聚合流 (真人剧、漫剧、AI剧交错融合，彻底杜绝内容雷同)
   static Future<ShortDramaListResponse> getRecommendResponse({
     int page = 1,
     int size = 40,
     Set<String>? excludeNames,
   }) async {
-    final allRaw = <RawShortDrama>[];
-
-    if (page == 1) {
-      // 第 1 页：严格保证红果总热播榜前 20 名海报排在最前
-      final rankHot = await _fetchHongguoPage(201, 1);
-      allRaw.addAll(rankHot);
-
-      final otherPages = await Future.wait([
-        _fetchHongguoPage(101, 1),
-        _fetchHongguoPage(102, 1),
-      ]);
-      for (final r in otherPages) {
-        allRaw.addAll(r);
-      }
-    } else {
-      final r = await _fetchHongguoPage(0, page);
-      allRaw.addAll(r);
-    }
+    final allRaw = await _fetchHongguoPage(0, page, categoryName: '全部');
 
     if (allRaw.isEmpty) {
       return const ShortDramaListResponse(list: [], hasMore: false);
@@ -342,11 +240,11 @@ class ShortDramaDirectService {
 
     return ShortDramaListResponse(
       list: filtered.map(_toShortDrama).toList(),
-      hasMore: page < 34,
+      hasMore: page < 50,
     );
   }
 
-  /// 单个分类 tab 数据拉取 (榜单整榜加载，题材全库支持 34 页分页)
+  /// 单个分类 tab 数据拉取 (真人剧、漫剧、AI剧 各自全库定向拉取，独立分页)
   static Future<ShortDramaListResponse> getListByTypeId({
     required int typeId,
     String? categoryName,
@@ -354,27 +252,19 @@ class ShortDramaDirectService {
     int size = 20,
   }) async {
     final rawList = await _fetchHongguoPage(typeId, page, categoryName: categoryName);
-    final bool isRank = typeId >= 200 || (categoryName != null && categoryName.contains('榜'));
-    final hasMore = isRank ? false : (rawList.length >= 15 && page < 34);
+    final hasMore = rawList.length >= 10 && page < 50;
     return ShortDramaListResponse(
       list: rawList.map(_toShortDrama).toList(),
       hasMore: hasMore,
     );
   }
 
-  /// 红果短剧官方权威十大分类与热播榜单体系
+  /// 红果鉴官方四大核心分类体系 (专区 Tab 第一位为「全部」，本方法返回其余官方三大核心题材)
   static Future<List<ShortDramaCategory>> getCategories() async {
     const priority = [
-      ShortDramaCategory(typeId: 201, typeName: '总热播榜'),
-      ShortDramaCategory(typeId: 202, typeName: '真人热播'),
-      ShortDramaCategory(typeId: 203, typeName: '漫剧热播'),
-      ShortDramaCategory(typeId: 204, typeName: 'AI 漫剧'),
-      ShortDramaCategory(typeId: 101, typeName: '逆袭爽剧'),
-      ShortDramaCategory(typeId: 102, typeName: '现代都市'),
-      ShortDramaCategory(typeId: 103, typeName: '古装仙侠'),
-      ShortDramaCategory(typeId: 104, typeName: '甜宠言情'),
-      ShortDramaCategory(typeId: 105, typeName: '悬疑脑洞'),
-      ShortDramaCategory(typeId: 106, typeName: '动漫漫剧'),
+      ShortDramaCategory(typeId: 1, typeName: '真人剧'),
+      ShortDramaCategory(typeId: 2, typeName: '漫剧'),
+      ShortDramaCategory(typeId: 3, typeName: 'AI剧'),
     ];
     return priority;
   }
