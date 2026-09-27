@@ -455,6 +455,19 @@ class _PlayerScreenState extends State<PlayerScreen>
         _error = null;
       });
       _selectSource(widget.initialDetail!);
+
+      // 对齐红果鉴：短剧专区点击卡片进入后直接起播，消除停留详情页与繁琐点击等待
+      final isShortDrama = widget.videoInfo.source == 'hongguo' ||
+          widget.videoInfo.source == 'shortdrama' ||
+          widget.preferredSource == 'hongguo' ||
+          widget.preferredSource == 'shortdrama';
+      if (isShortDrama) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && !_isDisposing) {
+            _playEpisode(_currentEpisodeIndex);
+          }
+        });
+      }
     } else {
       _loadSources();
     }
@@ -5974,8 +5987,10 @@ class _PlayerScreenState extends State<PlayerScreen>
         (_selectedSource?.source == 'hongguo');
 
     String label = _currentResolution;
-    if (isShortDrama && (_userPreferredResolution == '自动' || label == '自动')) {
-      label = '自动';
+    if (isShortDrama) {
+      label = (_userPreferredResolution == '自动' || _userPreferredResolution.isEmpty)
+          ? '自动'
+          : _userPreferredResolution;
     } else if (label.contains('1080')) {
       label = '1080P';
     } else if (label.contains('720')) {
@@ -6045,29 +6060,161 @@ class _PlayerScreenState extends State<PlayerScreen>
       }
     }
 
-    // 短剧模式对齐红果鉴提取当前剧集真实支持档位
-    final List<String> resolutionOptions = [];
-    int actualQ = 1080;
     if (isShortDrama) {
-      resolutionOptions.add('自动');
       final dynamicQualities = DuanjuCoreBridge.instance.getEpisodeQualities(dramaId, _currentEpisodeIndex + 1);
-      actualQ = DuanjuCoreBridge.instance.getEpisodeActualQuality(dramaId, _currentEpisodeIndex + 1) ?? 1080;
+      final actualQ = DuanjuCoreBridge.instance.getEpisodeActualQuality(dramaId, _currentEpisodeIndex + 1) ?? 1080;
+      final qualities = <int>[0];
       if (dynamicQualities != null && dynamicQualities.isNotEmpty) {
         for (final q in dynamicQualities) {
-          final qStr = '${q}P';
-          if (!resolutionOptions.contains(qStr)) {
-            resolutionOptions.add(qStr);
-          }
+          if (q > 0 && !qualities.contains(q)) qualities.add(q);
         }
       } else {
-        resolutionOptions.addAll(['1080P', '720P', '480P']);
+        qualities.addAll([1080, 720, 480]);
       }
-    } else {
-      if (_availableResolutions.isEmpty) {
-        _availableResolutions = ['1080P', '720P', '480P'];
-      }
-      resolutionOptions.addAll(_availableResolutions);
+
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: Colors.transparent,
+        builder: (ctx) => Container(
+          decoration: const BoxDecoration(
+            color: Color(0xFF1F2937),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    '清晰度',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => Navigator.pop(ctx),
+                    child: const Icon(Icons.close, color: Colors.white54, size: 20),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                actualQ > 0 ? '当前播放 ${actualQ}P' : '使用源站可用画质',
+                style: const TextStyle(
+                  color: Colors.white54,
+                  fontSize: 13,
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  for (final q in qualities)
+                    ChoiceChip(
+                      key: ValueKey('menu-quality-$q'),
+                      label: Text(q == 0 ? '自动（优先高清）' : '${q}P'),
+                      selected: (q == 0 && (_userPreferredResolution == '自动' || _userPreferredResolution.isEmpty)) ||
+                          (q > 0 && _userPreferredResolution == '${q}P'),
+                      selectedColor: const Color(0xFF10B981).withOpacity(0.25),
+                      backgroundColor: Colors.white.withOpacity(0.08),
+                      labelStyle: TextStyle(
+                        color: ((q == 0 && (_userPreferredResolution == '自动' || _userPreferredResolution.isEmpty)) ||
+                                (q > 0 && _userPreferredResolution == '${q}P'))
+                            ? const Color(0xFF10B981)
+                            : Colors.white70,
+                        fontWeight: FontWeight.w500,
+                        fontSize: 14,
+                      ),
+                      side: BorderSide(
+                        color: ((q == 0 && (_userPreferredResolution == '自动' || _userPreferredResolution.isEmpty)) ||
+                                (q > 0 && _userPreferredResolution == '${q}P'))
+                            ? const Color(0xFF10B981)
+                            : Colors.white12,
+                      ),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      onSelected: (selected) async {
+                        Navigator.pop(ctx);
+                        final newRes = q == 0 ? '自动' : '${q}P';
+                        if (_userPreferredResolution == newRes) return;
+
+                        setState(() {
+                          _userPreferredResolution = newRes;
+                          _currentResolution = newRes;
+                        });
+
+                        final curUrl = _currentPlayUrl.isNotEmpty
+                            ? _currentPlayUrl
+                            : (_player is ExoPlayerBackend
+                                ? (_player as ExoPlayerBackend).controller?.dataSource ?? ''
+                                : '');
+
+                        String? targetUrl = _resolutionUrlMap[newRes];
+                        if (targetUrl == null || targetUrl.isEmpty) {
+                          if (q == 0) {
+                            targetUrl = _resolutionUrlMap['1080P'] ?? _resolutionUrlMap['720P'] ?? curUrl;
+                          } else {
+                            final plan = await DuanjuCoreBridge.instance.getPlaybackPlan(
+                              dramaId: dramaId,
+                              episode: _currentEpisodeIndex + 1,
+                              quality: q,
+                            );
+                            targetUrl = plan?.url;
+                          }
+                        }
+
+                        if (targetUrl != null && targetUrl.isNotEmpty) {
+                          final currentPos = _currentPosition;
+                          setState(() {
+                            _currentPlayUrl = targetUrl!;
+                          });
+                          final decKey = DuanjuCoreBridge.instance.getDecryptionKey(dramaId, _currentEpisodeIndex + 1);
+                          await _player!.open(targetUrl, startAt: currentPos, decryptionKey: decKey);
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(q == 0 ? '已切换至: 自动（优先高清）' : '已无缝切换至: ${q}P'),
+                                duration: const Duration(seconds: 1),
+                              ),
+                            );
+                          }
+                        }
+                      },
+                    ),
+                ],
+              ),
+              if (_userPreferredResolution != '自动' &&
+                  _userPreferredResolution.isNotEmpty &&
+                  !qualities.any((q) => '${q}P' == _userPreferredResolution))
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(
+                    '已保存 $_userPreferredResolution 偏好，本集暂无此画质。',
+                    style: const TextStyle(
+                      color: Colors.white38,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+      return;
     }
+
+    // 非短剧模式保持原有逻辑
+    final List<String> resolutionOptions = [];
+    if (_availableResolutions.isEmpty) {
+      _availableResolutions = ['1080P', '720P', '480P'];
+    }
+    resolutionOptions.addAll(_availableResolutions);
 
     showModalBottomSheet(
       context: context,

@@ -187,7 +187,13 @@ class DuanjuCoreBridge {
     int page = 1,
     int size = 20,
   }) async {
-    // 1. 尝试原生 Go 核心引擎解析 (若就绪)
+    // 1. 优先调用红果官方 App 原生 Landpage 接口 (对齐红果鉴 provider_hongguo_catalog.go，100% 官方原生排序与海报)
+    final appResult = await _fetchHongguoAppLandpageCatalog(category: category, page: page, size: size);
+    if (appResult.isNotEmpty) {
+      return appResult;
+    }
+
+    // 2. 尝试原生 Go 核心引擎解析 (若就绪)
     if (_isNativeAvailable) {
       try {
         final nativeRes = await invokeNative('catalog', {
@@ -216,12 +222,96 @@ class DuanjuCoreBridge {
       } catch (_) {}
     }
 
-    // 2. 官方真实 Web 协议 SSR 数据抓取通道
+    // 3. 官方真实 Web 协议 SSR 数据抓取通道兜底
     final result = await _fetchOfficialHongguoCatalog(category: category, page: page, size: size);
     if (result.isNotEmpty) {
       return result;
     }
 
+    return [];
+  }
+
+  /// 请求红果 App 官方分类 Landpage 接口 (对齐红果鉴 provider_hongguo_catalog.go)
+  Future<List<Map<String, dynamic>>> _fetchHongguoAppLandpageCatalog({
+    required String category,
+    required int page,
+    required int size,
+  }) async {
+    try {
+      String genreKey = 'short_play';
+      String reqScene = 'default';
+
+      if (category.contains('comic') || category == 'comic_series') {
+        genreKey = 'comic_series';
+        reqScene = 'comic_series';
+      } else if (category.contains('ai') || category == 'ai_series') {
+        genreKey = 'ai_series';
+        reqScene = 'ai_series';
+      }
+
+      final offset = (page - 1) * size;
+      final payload = {
+        'req_scene': reqScene,
+        'offset': offset,
+        'limit': size > 0 ? size : 18,
+        'req_type': 'only_content',
+        'need_selector_panel': false,
+        'client_req_type': offset > 0 ? 2 : 3,
+        'session_id': '',
+        'filter_ids': '',
+        'select_items': {
+          'genre': [genreKey],
+          'sort': ['online_time'],
+          'gender': [],
+          'category_dim_theme': [],
+          'category_dim_role': [],
+          'category_dim_epoch': [],
+          'online_time': [],
+          'creation_status': [],
+        },
+      };
+
+      final bodyBytes = Uint8List.fromList(utf8.encode(jsonEncode(payload)));
+      const qStr = 'aid=8662&app_name=novelread&version_code=73532&device_platform=android&os=android';
+      final uri = Uri.parse('https://api5-normal-sinfonlineb.fqnovel.com/reading/distribution/category/landpage/v/?$qStr');
+
+      final resp = await http.post(
+        uri,
+        headers: {
+          'User-Agent': 'com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)',
+          'Content-Type': 'application/json; charset=utf-8',
+          'Accept': 'application/json',
+          'X-XS-From-Web': '0',
+          'Sdk-Version': '2',
+        },
+        body: bodyBytes,
+      ).timeout(const Duration(seconds: 6));
+
+      if (resp.statusCode == 200) {
+        final resJson = jsonDecode(resp.body);
+        if (resJson is Map && resJson['code'] == 0) {
+          final data = resJson['data'];
+          if (data is Map) {
+            final rawList = data['video_data'];
+            if (rawList is List && rawList.isNotEmpty) {
+              final list = <Map<String, dynamic>>[];
+              for (final it in rawList) {
+                if (it is Map) {
+                  list.add(_formatHongguoItem(Map<String, dynamic>.from(it)));
+                }
+              }
+              if (list.isNotEmpty) {
+                return list;
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('[DuanjuBridge] App Landpage 接口拉取异常: $e');
+      }
+    }
     return [];
   }
 
@@ -527,6 +617,11 @@ class DuanjuCoreBridge {
       _vidListCache[idVal.toString()] = vidList;
     }
 
+    final firstVid = (it['vid'] ?? it['first_vid'])?.toString() ?? '';
+    if (firstVid.isNotEmpty && (_vidListCache[idVal.toString()] == null || _vidListCache[idVal.toString()]!.isEmpty)) {
+      _vidListCache[idVal.toString()] = [firstVid];
+    }
+
     return {
       'id': idVal is int ? idVal : (int.tryParse(idVal.toString()) ?? idVal.hashCode.abs()),
       'drama_id': idVal.toString(),
@@ -539,6 +634,7 @@ class DuanjuCoreBridge {
       'intro': intro,
       'description': intro,
       'tags': tags,
+      if (firstVid.isNotEmpty) 'first_vid': firstVid,
       if (vidList != null) 'vid_list': vidList,
     };
   }
