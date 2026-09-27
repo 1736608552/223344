@@ -221,9 +221,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   final Map<int, Offset> _pinchPointers = {};
   double _pinchInitialDistance = 0.0; // pinch 开始时两指距离 (像素)
 
-  // 分辨率 / 清晰度状态 (默认显示「1080P」，支持多分辨率平滑自由切换)
-  String _currentResolution = '1080P';
-  String _userPreferredResolution = '1080P';
+  // 分辨率 / 清晰度状态 (短剧对齐红果鉴默认「自动」，支持多分辨率平滑自由切换)
+  String _currentResolution = '自动';
+  String _userPreferredResolution = '自动';
   List<String> _availableResolutions = ['1080P', '720P', '480P'];
   final Map<String, String> _resolutionUrlMap = {};
   String _currentPlayUrl = '';
@@ -478,9 +478,18 @@ class _PlayerScreenState extends State<PlayerScreen>
       DiaryService.add('[Player] init FAIL: isShortDrama=$isShortDrama, error=$e\n$st');
       return;
     }
-    if (!mounted) return;
-
     _bindPlayerListeners();
+
+    // 短剧进入时立刻在后台异步预拉取当前集与下一集的播放计划，消除首播等待
+    if (isShortDrama) {
+      final dramaId = widget.videoInfo.id.isNotEmpty
+          ? widget.videoInfo.id
+          : (_selectedSource?.id ?? '');
+      if (dramaId.isNotEmpty) {
+        unawaited(DuanjuCoreBridge.instance.prefetchEpisode(dramaId, _currentEpisodeIndex + 1));
+        unawaited(DuanjuCoreBridge.instance.prefetchEpisode(dramaId, _currentEpisodeIndex + 2));
+      }
+    }
 
     // ★ v2.5.65: 高精度进度条轮询 (100ms 一次, 让白点跟实际位置同步)
     _positionPollTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
@@ -3522,12 +3531,21 @@ class _PlayerScreenState extends State<PlayerScreen>
         _resolutionUrlMap
           ..clear()
           ..addAll(multiMap);
-        if (multiMap.containsKey(_userPreferredResolution)) {
+        // 对齐红果鉴：真实支持的分辨率列表
+        if (duanjuPlan.qualities.isNotEmpty) {
+          _availableResolutions = duanjuPlan.qualities.map((q) => '${q}P').toList();
+        }
+        if (_userPreferredResolution == '自动' || _userPreferredResolution.isEmpty) {
+          _currentResolution = '自动';
+          actualSourceUrl = duanjuPlan.url;
+        } else if (multiMap.containsKey(_userPreferredResolution)) {
           final prefUrl = multiMap[_userPreferredResolution];
           if (prefUrl != null && prefUrl.isNotEmpty) {
             actualSourceUrl = prefUrl;
             _currentResolution = _userPreferredResolution;
           }
+        } else {
+          _currentResolution = '${duanjuPlan.actualQuality}P';
         }
       } else {
         // 兼容兜底: 走 resolvePlaybackUrl
@@ -3589,11 +3607,16 @@ class _PlayerScreenState extends State<PlayerScreen>
       return;
     }
 
-    final url = await _resolveSharePageUrl(actualSourceUrl);
+    final String url;
+    if (isShortDrama) {
+      // 短剧直链由官方接口生成并具备完整解密契约，严禁走 _resolveSharePageUrl 下载视频导致卡顿与数秒超时
+      url = actualSourceUrl;
+    } else {
+      url = await _resolveSharePageUrl(actualSourceUrl);
+      // 传统流异步分析当前播放流的分辨率，无多分辨率时常驻显示「原画」
+      unawaited(_checkStreamResolutions(url));
+    }
     _currentPlayUrl = url;
-
-    // 异步分析当前播放流的分辨率，无多分辨率时常驻显示「原画」
-    unawaited(_checkStreamResolutions(url));
 
     // 切集时先把自动切下一集标志重置, 让新一集播完时能再次触发
     _autoPlayedThisEpisode = false;
@@ -3725,6 +3748,12 @@ class _PlayerScreenState extends State<PlayerScreen>
       }
       if (!mounted) return;
       setState(() => _isBuffering = false);
+
+      // 短剧后台静默预取下一集播放计划，实现连播与连续切集零等待 (对齐红果鉴)
+      if (isShortDrama && index + 2 <= source.episodes.length) {
+        unawaited(DuanjuCoreBridge.instance.prefetchEpisode(dramaId, index + 2));
+      }
+
       // 启动定时器, 并立即保存一条 (标记已开始)
       _startProgressTimer();
       if (resumeAt == null) {
@@ -5932,10 +5961,17 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
-  /// 构建分辨率 / 清晰度切换控件 (高度居中、胶囊圆角、精炼显示且视觉水平完全对齐)
+  /// 构建分辨率 / 清晰度切换控件 (高度居中、胶囊圆角、精炼显示且视觉水平完全对齐，短剧对齐红果鉴)
   Widget _buildResolutionButton() {
+    final isShortDrama = widget.preferredSource == 'hongguo' ||
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama' ||
+        (_selectedSource?.source == 'hongguo');
+
     String label = _currentResolution;
-    if (label.contains('1080')) {
+    if (isShortDrama && (_userPreferredResolution == '自动' || label == '自动')) {
+      label = '自动';
+    } else if (label.contains('1080')) {
       label = '1080P';
     } else if (label.contains('720')) {
       label = '720P';
@@ -5979,7 +6015,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
-  /// 弹出分辨率 / 清晰度切换面板 (支持 1080P超清 / 720P高清 / 480P标清 自由切换与真实码率热切)
+  /// 弹出分辨率 / 清晰度切换面板 (100% 对齐红果鉴：支持自动优先高清与真实档位平滑热切)
   void _showResolutionSelectorSheet() {
     final isShortDrama = widget.preferredSource == 'hongguo' ||
         widget.videoInfo.source == 'hongguo' ||
@@ -5990,23 +6026,42 @@ class _PlayerScreenState extends State<PlayerScreen>
         ? _selectedSource!.id
         : widget.videoInfo.id;
 
-    // 针对短剧或主流播放，确保 1080P / 720P / 480P 均有真实独立流
     final playUrl = _currentPlayUrl.isNotEmpty
         ? _currentPlayUrl
         : (_player is ExoPlayerBackend
             ? (_player as ExoPlayerBackend).controller?.dataSource ?? ''
             : '');
+
     if (isShortDrama || playUrl.isNotEmpty) {
       final multiMap = DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, _currentEpisodeIndex + 1) ??
           DuanjuCoreBridge.buildMultiResolutionUrls(playUrl);
       if (multiMap.isNotEmpty) {
         _resolutionUrlMap.addAll(multiMap);
       }
-      _availableResolutions = ['1080P', '720P', '480P'];
     }
 
-    if (_availableResolutions.isEmpty) {
-      _availableResolutions = ['1080P', '720P', '480P'];
+    // 短剧模式对齐红果鉴提取当前剧集真实支持档位
+    final List<String> resolutionOptions = [];
+    int actualQ = 1080;
+    if (isShortDrama) {
+      resolutionOptions.add('自动');
+      final dynamicQualities = DuanjuCoreBridge.instance.getEpisodeQualities(dramaId, _currentEpisodeIndex + 1);
+      actualQ = DuanjuCoreBridge.instance.getEpisodeActualQuality(dramaId, _currentEpisodeIndex + 1) ?? 1080;
+      if (dynamicQualities != null && dynamicQualities.isNotEmpty) {
+        for (final q in dynamicQualities) {
+          final qStr = '${q}P';
+          if (!resolutionOptions.contains(qStr)) {
+            resolutionOptions.add(qStr);
+          }
+        }
+      } else {
+        resolutionOptions.addAll(['1080P', '720P', '480P']);
+      }
+    } else {
+      if (_availableResolutions.isEmpty) {
+        _availableResolutions = ['1080P', '720P', '480P'];
+      }
+      resolutionOptions.addAll(_availableResolutions);
     }
 
     showModalBottomSheet(
@@ -6041,20 +6096,47 @@ class _PlayerScreenState extends State<PlayerScreen>
                 ],
               ),
             ),
+            if (isShortDrama)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    _userPreferredResolution == '自动' || _currentResolution == '自动'
+                        ? '当前播放 ${actualQ}P（自动根据网络优选最高可用画质）'
+                        : '当前已选择 $_currentResolution 播放档位',
+                    style: const TextStyle(
+                      color: Colors.white54,
+                      fontSize: 12.5,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ),
             const Divider(color: Colors.white12),
-            ..._availableResolutions.map((res) {
-              final isSelected = res == _currentResolution;
+            ...resolutionOptions.map((res) {
+              final bool isSelected = isShortDrama
+                  ? (_userPreferredResolution == '自动'
+                      ? res == '自动'
+                      : (res == _currentResolution || res == _userPreferredResolution))
+                  : (res == _currentResolution);
+
+              String title = res;
               String subtitle = '原画标准规格';
-              if (res == '1080P') {
+              if (res == '自动') {
+                title = '自动（优先高清）';
+                subtitle = '使用源站可用最高画质 · 智能优选 (当前 ${actualQ}P)';
+              } else if (res == '1080P') {
                 subtitle = '超清原画 · 极致画质 · 纤毫毕现';
               } else if (res == '720P') {
                 subtitle = '高清画质 · 流畅首选 · 画质平衡';
               } else if (res == '480P') {
                 subtitle = '标清省流 · 极速加载 · 弱网秒开';
               }
+
               return ListTile(
                 title: Text(
-                  res,
+                  title,
                   style: TextStyle(
                     color: isSelected
                         ? const Color(0xFF10b981)
@@ -6079,19 +6161,31 @@ class _PlayerScreenState extends State<PlayerScreen>
                 onTap: () async {
                   Navigator.pop(ctx);
                   if (isSelected) return;
+
                   final curUrl = _currentPlayUrl.isNotEmpty
                       ? _currentPlayUrl
                       : (_player is ExoPlayerBackend
                           ? (_player as ExoPlayerBackend).controller?.dataSource ?? ''
                           : '');
-                  final targetUrl = _resolutionUrlMap[res] ??
-                      DuanjuCoreBridge.buildMultiResolutionUrls(curUrl)[res];
-                  if (targetUrl != null && targetUrl.isNotEmpty) {
+
+                  String? targetUrl;
+                  if (res == '自动') {
+                    _userPreferredResolution = '自动';
+                    targetUrl = _resolutionUrlMap['自动'] ??
+                        _resolutionUrlMap['1080P'] ??
+                        _resolutionUrlMap['720P'] ??
+                        (curUrl.isNotEmpty ? curUrl : null);
+                  } else {
                     _userPreferredResolution = res;
+                    targetUrl = _resolutionUrlMap[res] ??
+                        DuanjuCoreBridge.buildMultiResolutionUrls(curUrl)[res];
+                  }
+
+                  if (targetUrl != null && targetUrl.isNotEmpty) {
                     final currentPos = _currentPosition;
                     setState(() {
                       _currentResolution = res;
-                      _currentPlayUrl = targetUrl;
+                      _currentPlayUrl = targetUrl!;
                     });
                     final decKey = isShortDrama
                         ? DuanjuCoreBridge.instance.getDecryptionKey(dramaId, _currentEpisodeIndex + 1)
@@ -6100,7 +6194,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text('已无缝切换至: $res (平滑热切)'),
+                          content: Text(res == '自动' ? '已切换至: 自动（优先高清）' : '已无缝切换至: $res (平滑热切)'),
                           duration: const Duration(seconds: 1),
                         ),
                       );

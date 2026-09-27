@@ -291,8 +291,9 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     final eps = List.generate(totalEps, (i) => (i + 1).toString());
     final epTitles = List.generate(totalEps, (i) => '第${i + 1}集');
 
-    // 提前后台静默预拉取整剧 vid_list，消除切集延迟
+    // 提前后台静默预拉取整剧 vid_list 与第 1 集播放计划，实现点击即秒开起播
     unawaited(DuanjuCoreBridge.instance.fetchEpisodeVidList(realId));
+    unawaited(DuanjuCoreBridge.instance.prefetchEpisode(realId, 1));
 
     final initialDetail = SearchResult(
       id: realId,

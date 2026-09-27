@@ -198,7 +198,12 @@ class DuanjuMediaKitBackend implements PlayerBackend {
 
         try {
           await platform.setProperty('demuxer-lavf-o', options);
-          await platform.setProperty('network-timeout', '20');
+          await platform.setProperty('network-timeout', '10');
+          // 极速探测起播：缩短 lavf 分析时长与探测尺寸，大幅缩短首帧与起播等待
+          await platform.setProperty('demuxer-lavf-analyzeduration', '1000000');
+          await platform.setProperty('demuxer-lavf-probesize', '1048576');
+          await platform.setProperty('force-seekable', 'yes');
+          await platform.setProperty('hr-seek', 'default');
         } catch (e) {
           if (kDebugMode) {
             print('[DuanjuMediaKit] setProperty error (handled): $e');

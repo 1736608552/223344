@@ -268,20 +268,23 @@ class ShortDramaDirectService {
     return rawList.map(_toShortDrama).toList();
   }
 
-  /// 首页"热门短剧"拉取：纯红果官方原画热榜
+  /// 首页"热门短剧"拉取：100% 对齐红果鉴总热播榜原生排序 (严格保留官方榜单 1~N 名真实顺序，绝不根据时间打乱)
   static Future<List<ShortDrama>> getRecommend({int size = 60}) async {
     final allRaw = <RawShortDrama>[];
 
-    final futures = <Future<List<RawShortDrama>>>[
-      _fetchHongguoPage(101, 1),
-      _fetchHongguoPage(102, 1),
-      _fetchHongguoPage(103, 1),
-      _fetchHongguoPage(104, 1),
-    ];
+    // 首屏严格以官方总热播榜 (201) 为核心主干
+    final rankHot = await _fetchHongguoPage(201, 1);
+    allRaw.addAll(rankHot);
 
-    final results = await Future.wait(futures);
-    for (final r in results) {
-      allRaw.addAll(r);
+    // 随后补充热门题材
+    if (allRaw.length < size) {
+      final moreResults = await Future.wait([
+        _fetchHongguoPage(101, 1),
+        _fetchHongguoPage(102, 1),
+      ]);
+      for (final r in moreResults) {
+        allRaw.addAll(r);
+      }
     }
 
     final unique = <String, RawShortDrama>{};
@@ -291,17 +294,11 @@ class ShortDramaDirectService {
     }
     final uniqueList = unique.values.toList();
 
-    uniqueList.sort((a, b) {
-      final at = DateTime.tryParse(a.vodTime) ?? DateTime(1970);
-      final bt = DateTime.tryParse(b.vodTime) ?? DateTime(1970);
-      return bt.compareTo(at);
-    });
-
     final sliced = uniqueList.take(size).toList();
     return sliced.map(_toShortDrama).toList();
   }
 
-  /// 短剧专区「全部」tab 分页形式：红果官方聚合 (首屏聚合热播榜，后续支持 34 页全量无限下滑)
+  /// 短剧专区「全部」tab 分页形式：对齐红果鉴 (首屏严格以官方总热播榜为先导，后续无缝支持分页)
   static Future<ShortDramaListResponse> getRecommendResponse({
     int page = 1,
     int size = 40,
@@ -310,13 +307,15 @@ class ShortDramaDirectService {
     final allRaw = <RawShortDrama>[];
 
     if (page == 1) {
-      final futures = <Future<List<RawShortDrama>>>[
-        _fetchHongguoPage(201, 1),
+      // 第 1 页：严格保证红果总热播榜前 20 名海报排在最前
+      final rankHot = await _fetchHongguoPage(201, 1);
+      allRaw.addAll(rankHot);
+
+      final otherPages = await Future.wait([
         _fetchHongguoPage(101, 1),
         _fetchHongguoPage(102, 1),
-      ];
-      final results = await Future.wait(futures);
-      for (final r in results) {
+      ]);
+      for (final r in otherPages) {
         allRaw.addAll(r);
       }
     } else {

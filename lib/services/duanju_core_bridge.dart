@@ -9,13 +9,16 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
-/// 短剧播放计划与CENC解密包模型 (对齐guoapp)
+/// 短剧播放计划与CENC解密包模型 (100%对齐红果鉴)
 class DuanjuPlaybackPlan {
   final String url;
   final String decryptionKey;
   final Map<String, String> headers;
   final Map<String, String> multiMap;
   final String resolution;
+  final int quality;
+  final int actualQuality;
+  final List<int> qualities;
 
   const DuanjuPlaybackPlan({
     required this.url,
@@ -23,6 +26,9 @@ class DuanjuPlaybackPlan {
     this.headers = const {},
     this.multiMap = const {},
     this.resolution = '1080P',
+    this.quality = 0,
+    this.actualQuality = 1080,
+    this.qualities = const [1080, 720, 480],
   });
 }
 
@@ -341,26 +347,27 @@ class DuanjuCoreBridge {
     }
   }
 
-  /// 精准解析红果短剧官方热播排行榜 HTML 页面 (100% 完整匹配每部剧海报与信息)
+  /// 精准解析红果短剧官方热播排行榜 HTML 页面 (100% 对齐红果鉴 DOM 结构与绝对顺序)
   List<Map<String, dynamic>> _parseHongguoRankHtml(String html) {
     final List<Map<String, dynamic>> rankList = [];
     try {
-      // 匹配每个完整的排行榜条目 li 容器
-      final items = RegExp(r'<li[^>]*class=[\x22\x27][^\x22\x27]*item[^\x22\x27]*[\x22\x27][^>]*>([\s\S]*?)</li>').allMatches(html);
-      
-      for (final m in items) {
-        final c = m.group(1) ?? '';
-        final mId = RegExp(r'/detail\?series_id=([0-9]+)').firstMatch(c);
-        if (mId == null) continue;
-        final sid = mId.group(1)!;
+      // 1. 优先精准匹配现代官方排行榜 article 条目容器（与红果鉴 parseHongguoRankingArticle 100%一致）
+      final articles = RegExp(
+        r'<article[^>]*aria-labelledby=[\x22\x27]rank-title-([0-9]+)[\x22\x27][^>]*>([\s\S]*?)</article>',
+      ).allMatches(html);
 
-        // 提取标题
-        final mTitle = RegExp(r'<h[0-9][^>]*class=[\x22\x27][^\x22\x27]*title[^\x22\x27]*[\x22\x27][^>]*>([^<]+)<').firstMatch(c) ??
-            RegExp(r'aria-label=[\x22\x27]查看([^\x22\x27]+)[\x22\x27]').firstMatch(c);
+      for (final m in articles) {
+        final sid = m.group(1)!;
+        final c = m.group(2) ?? '';
+
+        // 提取标题：优先从查看链接的 aria-label 或 h2/h3 标题中提取
+        final mTitle = RegExp(r'aria-label=[\x22\x27]查看([^\x22\x27]+)[\x22\x27]').firstMatch(c) ??
+            RegExp(r'<h[23][^>]*id=[\x22\x27]rank-title-' + sid + r'[\x22\x27][^>]*>([^<]+)<').firstMatch(c) ??
+            RegExp(r'<h[0-9][^>]*class=[\x22\x27][^\x22\x27]*title[^\x22\x27]*[\x22\x27][^>]*>([^<]+)<').firstMatch(c);
         final title = mTitle != null ? mTitle.group(1)!.trim() : '';
         if (title.isEmpty) continue;
 
-        // 提取高清封面 (优先获取字节跳动高清 image 直链)
+        // 提取高清封面 (优先获取字节跳动高清原画 .image 直链)
         final mImg = RegExp(r'<img[^>]+src=[\x22\x27](https?://[^\x22\x27]+)[\x22\x27]').firstMatch(c) ??
             RegExp(r'https?://[^\s\x22\x27]*(?:byteimg\.com/novel-pic|tplv-shrink)[^\s\x22\x27]*').firstMatch(c);
         var cover = mImg != null ? (mImg.group(1) ?? mImg.group(0)!).replaceAll('&amp;', '&') : '';
@@ -376,11 +383,12 @@ class DuanjuCoreBridge {
         final score = mScore != null ? double.tryParse(mScore.group(1)!) ?? 9.5 : 9.5;
 
         // 提取简介
-        final mDesc = RegExp(r'<p[^>]*class=[\x22\x27][^\x22\x27]*description[^\x22\x27]*[\x22\x27][^>]*>([^<]+)<').firstMatch(c);
+        final mDesc = RegExp(r'<p[^>]*class=[\x22\x27][^\x22\x27]*description[^\x22\x27]*[\x22\x27][^>]*>([^<]+)<').firstMatch(c) ??
+            RegExp(r'<p>([^<]+)</p>').firstMatch(c);
         final desc = mDesc != null ? mDesc.group(1)!.trim() : '';
 
         final idInt = int.tryParse(sid) ?? sid.hashCode.abs();
-        if (!rankList.any((x) => x['id'] == idInt)) {
+        if (!rankList.any((x) => x['drama_id'] == sid)) {
           rankList.add({
             'id': idInt,
             'drama_id': sid,
@@ -396,7 +404,55 @@ class DuanjuCoreBridge {
         }
       }
 
-      // 若 li 容器为空则降级按 detail 链接解析
+      // 2. 若无 article 则尝试 li 容器匹配兼容
+      if (rankList.isEmpty) {
+        final items = RegExp(r'<li[^>]*class=[\x22\x27][^\x22\x27]*item[^\x22\x27]*[\x22\x27][^>]*>([\s\S]*?)</li>').allMatches(html);
+        for (final m in items) {
+          final c = m.group(1) ?? '';
+          final mId = RegExp(r'/detail\?series_id=([0-9]+)').firstMatch(c);
+          if (mId == null) continue;
+          final sid = mId.group(1)!;
+
+          final mTitle = RegExp(r'<h[0-9][^>]*class=[\x22\x27][^\x22\x27]*title[^\x22\x27]*[\x22\x27][^>]*>([^<]+)<').firstMatch(c) ??
+              RegExp(r'aria-label=[\x22\x27]查看([^\x22\x27]+)[\x22\x27]').firstMatch(c);
+          final title = mTitle != null ? mTitle.group(1)!.trim() : '';
+          if (title.isEmpty) continue;
+
+          final mImg = RegExp(r'<img[^>]+src=[\x22\x27](https?://[^\x22\x27]+)[\x22\x27]').firstMatch(c) ??
+              RegExp(r'https?://[^\s\x22\x27]*(?:byteimg\.com/novel-pic|tplv-shrink)[^\s\x22\x27]*').firstMatch(c);
+          var cover = mImg != null ? (mImg.group(1) ?? mImg.group(0)!).replaceAll('&amp;', '&') : '';
+          if (cover.endsWith('.webp')) {
+            cover = cover.replaceFirst(RegExp(r'\.webp$'), '.image');
+          }
+
+          final mHeat = RegExp(r'([0-9.]+[万亿]?热度)').firstMatch(c);
+          final heat = mHeat != null ? mHeat.group(1)! : '';
+
+          final mScore = RegExp(r'评分([0-9.]+)').firstMatch(c);
+          final score = mScore != null ? double.tryParse(mScore.group(1)!) ?? 9.5 : 9.5;
+
+          final mDesc = RegExp(r'<p[^>]*class=[\x22\x27][^\x22\x27]*description[^\x22\x27]*[\x22\x27][^>]*>([^<]+)<').firstMatch(c);
+          final desc = mDesc != null ? mDesc.group(1)!.trim() : '';
+
+          final idInt = int.tryParse(sid) ?? sid.hashCode.abs();
+          if (!rankList.any((x) => x['drama_id'] == sid)) {
+            rankList.add({
+              'id': idInt,
+              'drama_id': sid,
+              'title': title,
+              'cover': cover,
+              'cover_url': cover,
+              'episode_count': 80,
+              'intro': desc.isNotEmpty ? desc : (heat.isNotEmpty ? '全网热播 $heat' : ''),
+              'description': desc,
+              'score': score,
+              'tags': ['热播榜', if (heat.isNotEmpty) heat],
+            });
+          }
+        }
+      }
+
+      // 3. 最终兜底按 /detail 出现顺序提取
       if (rankList.isEmpty) {
         final allSids = RegExp(r'/detail\?series_id=([0-9]+)').allMatches(html);
         final Set<String> seen = {};
@@ -411,7 +467,7 @@ class DuanjuCoreBridge {
           var cover = mImg != null ? mImg.group(0)!.replaceAll('&amp;', '&') : '';
           if (cover.endsWith('.webp')) cover = cover.replaceFirst(RegExp(r'\.webp$'), '.image');
           final idInt = int.tryParse(sid) ?? sid.hashCode.abs();
-          if (title.isNotEmpty && !rankList.any((x) => x['id'] == idInt)) {
+          if (title.isNotEmpty && !rankList.any((x) => x['drama_id'] == sid)) {
             rankList.add({
               'id': idInt,
               'drama_id': sid,
@@ -429,7 +485,7 @@ class DuanjuCoreBridge {
       }
     } catch (e) {
       if (kDebugMode) {
-        print('[DuanjuBridge] 榜单解析异常: $e');
+        print('[DuanjuBridge] 解析红果热播榜异常: $e');
       }
     }
     return rankList;
@@ -619,6 +675,18 @@ class DuanjuCoreBridge {
     return _playbackResolutionCache['$dramaId-$episode'];
   }
 
+  /// 获取某集真实支持的清晰度档位列表 (对齐红果鉴, 如 [1080, 720, 480])
+  List<int>? getEpisodeQualities(String dramaId, int episode) {
+    final cleanId = dramaId.trim();
+    return _planCache['$cleanId-$episode']?.qualities;
+  }
+
+  /// 获取某集实际播放的清晰度数值 (如 1080)
+  int? getEpisodeActualQuality(String dramaId, int episode) {
+    final cleanId = dramaId.trim();
+    return _planCache['$cleanId-$episode']?.actualQuality;
+  }
+
   /// 获取短剧全部选集 vid 列表与详情 (原生Go核心优先 + 官方Web双重解析 + 内存高速缓存)
   Future<List<String>> fetchEpisodeVidList(String dramaId) async {
     final cleanId = dramaId.trim();
@@ -757,6 +825,15 @@ class DuanjuCoreBridge {
     return _planCache[key]?.decryptionKey;
   }
 
+  /// 异步预取单集或相邻集的播放计划，提前注入内存缓存，实现秒开起播
+  Future<void> prefetchEpisode(String dramaId, int episode, {int quality = 0}) async {
+    final cleanId = dramaId.trim();
+    if (cleanId.isEmpty || episode < 1) return;
+    final cacheKey = quality == 0 ? '$cleanId-$episode' : '$cleanId-$episode-$quality';
+    if (_planCache.containsKey(cacheKey)) return;
+    unawaited(getPlaybackPlan(dramaId: cleanId, episode: episode, quality: quality));
+  }
+
   /// 获取单集短剧的完整播放计划（包含直链、CENC解密密钥与多分辨率映射）
   Future<DuanjuPlaybackPlan?> getPlaybackPlan({
     required String dramaId,
@@ -780,14 +857,14 @@ class DuanjuCoreBridge {
 
     // 通道 1: 官方 App 原生接口（带 X-Gorgon 签名 + spade_a 解密提取真实 CENC Key）
     if (vid.isNotEmpty) {
-      final appPlan = await _fetchHongguoAppPlaybackPlan(cleanId, vid, episode);
+      final appPlan = await _fetchHongguoAppPlaybackPlan(cleanId, vid, episode, quality: quality);
       if (appPlan != null && appPlan.url.isNotEmpty) {
         _planCache[cacheKey] = appPlan;
         _playbackUrlCache[cacheKey] = appPlan.url;
         _playbackMultiResCache[cacheKey] = appPlan.multiMap;
         _playbackResolutionCache[cacheKey] = appPlan.resolution;
         if (kDebugMode) {
-          print('[DuanjuBridge] 官方App接口解析成功: ep=$episode, decKey=${appPlan.decryptionKey}, url=${appPlan.url}');
+          print('[DuanjuBridge] 官方App接口解析成功: ep=$episode, decKey=${appPlan.decryptionKey}, url=${appPlan.url}, quality=${appPlan.resolution}, qualities=${appPlan.qualities}');
         }
         return appPlan;
       }
@@ -822,8 +899,14 @@ class DuanjuCoreBridge {
           if (data is Map) {
             final nativeUrl = data['url']?.toString();
             final decKey = data['decryptionKey']?.toString() ?? data['key']?.toString() ?? '';
+            final dynamic rawQualities = data['qualities'];
+            final qualities = (rawQualities is List)
+                ? rawQualities.map((e) => int.tryParse(e.toString()) ?? 0).where((q) => q > 0).toList()
+                : [1080, 720, 480];
+            final actQ = int.tryParse(data['quality']?.toString() ?? '') ?? (qualities.isNotEmpty ? qualities.first : 1080);
             if (nativeUrl != null && nativeUrl.isNotEmpty) {
               final multiMap = buildMultiResolutionUrls(nativeUrl);
+              multiMap['自动'] = nativeUrl;
               final plan = DuanjuPlaybackPlan(
                 url: nativeUrl,
                 decryptionKey: decKey,
@@ -832,10 +915,13 @@ class DuanjuCoreBridge {
                   'Referer': 'https://novel.snssdk.com/',
                 },
                 multiMap: multiMap,
-                resolution: '1080P',
+                resolution: '${actQ}P',
+                quality: quality,
+                actualQuality: actQ,
+                qualities: qualities,
               );
               _planCache[cacheKey] = plan;
-              _playbackResolutionCache[cacheKey] = '1080P';
+              _playbackResolutionCache[cacheKey] = '${actQ}P';
               _playbackUrlCache[cacheKey] = nativeUrl;
               _playbackMultiResCache[cacheKey] = multiMap;
               if (kDebugMode) {
@@ -856,6 +942,7 @@ class DuanjuCoreBridge {
     final legacyUrl = await _resolveLegacyWebUrl(cleanId, vid, episode, cacheKey);
     if (legacyUrl != null && legacyUrl.isNotEmpty) {
       final multiMap = buildMultiResolutionUrls(legacyUrl);
+      multiMap['自动'] = legacyUrl;
       final plan = DuanjuPlaybackPlan(
         url: legacyUrl,
         headers: {
@@ -864,6 +951,9 @@ class DuanjuCoreBridge {
         },
         multiMap: multiMap,
         resolution: '1080P',
+        quality: quality,
+        actualQuality: 1080,
+        qualities: const [1080, 720, 480],
       );
       _planCache[cacheKey] = plan;
       return plan;
@@ -873,7 +963,12 @@ class DuanjuCoreBridge {
   }
 
   /// 官方 App 接口请求与 CENC 解密密钥提取
-  Future<DuanjuPlaybackPlan?> _fetchHongguoAppPlaybackPlan(String seriesId, String videoId, int episode) async {
+  Future<DuanjuPlaybackPlan?> _fetchHongguoAppPlaybackPlan(
+    String seriesId,
+    String videoId,
+    int episode, {
+    int quality = 0,
+  }) async {
     try {
       final now = DateTime.now();
       const devId = '3748291048294829104';
@@ -938,7 +1033,8 @@ class DuanjuCoreBridge {
               final vl = vm['video_list'];
               final List<dynamic> options = (vl is List) ? vl : (vl is Map ? vl.values.toList() : []);
               final multiMap = <String, String>{};
-              String primaryUrl = '';
+              final qualityToUrl = <int, String>{};
+              final qualitiesSet = <int>{};
               String cencKey = '';
 
               for (final opt in options) {
@@ -955,6 +1051,19 @@ class DuanjuCoreBridge {
                   cencKey = _hongguoContentKey(spade);
                 }
 
+                // 从 definition 或 vheight/vwidth 提取真实清晰度数值 (对齐红果鉴)
+                int qNum = 0;
+                final defMatch = RegExp(r'(\d+)').firstMatch(defName);
+                if (defMatch != null) {
+                  qNum = int.tryParse(defMatch.group(1)!) ?? 0;
+                }
+                if (qNum == 0) {
+                  final h = int.tryParse(meta['vheight']?.toString() ?? '') ?? 0;
+                  final w = int.tryParse(meta['vwidth']?.toString() ?? '') ?? 0;
+                  qNum = (w > 0 && (h == 0 || w < h)) ? w : h;
+                }
+                if (qNum == 0) qNum = 720;
+
                 String rawUrl = opt['main_url']?.toString() ?? opt['backup_url']?.toString() ?? '';
                 if (rawUrl.isNotEmpty) {
                   if (!rawUrl.startsWith('http')) {
@@ -963,33 +1072,39 @@ class DuanjuCoreBridge {
                     } catch (_) {}
                   }
                   if (rawUrl.startsWith('http')) {
-                    if (defName.contains('1080')) {
-                      multiMap['1080P'] = rawUrl;
-                    } else if (defName.contains('720')) {
-                      multiMap['720P'] = rawUrl;
-                    } else if (defName.contains('480')) {
-                      multiMap['480P'] = rawUrl;
-                    } else if (defName.contains('540')) {
-                      multiMap['540P'] = rawUrl;
-                    }
-                    if (primaryUrl.isEmpty) {
-                      primaryUrl = rawUrl;
-                    }
+                    qualitiesSet.add(qNum);
+                    qualityToUrl[qNum] = rawUrl;
+                    multiMap['${qNum}P'] = rawUrl;
                   }
                 }
               }
 
-              // 优先使用 1080P
-              if (multiMap.containsKey('1080P')) {
-                primaryUrl = multiMap['1080P']!;
-              } else if (multiMap.containsKey('720P')) {
-                primaryUrl = multiMap['720P']!;
+              // 对可用清晰度列表进行降序排列 (例如 [1080, 720, 480])
+              final sortedQualities = qualitiesSet.toList()..sort((a, b) => b.compareTo(a));
+              if (sortedQualities.isEmpty) {
+                sortedQualities.addAll([1080, 720, 480]);
+              }
+
+              String primaryUrl = '';
+              int actualQuality = sortedQualities.first;
+
+              if (quality > 0 && qualityToUrl.containsKey(quality)) {
+                primaryUrl = qualityToUrl[quality]!;
+                actualQuality = quality;
+              } else {
+                primaryUrl = qualityToUrl[actualQuality] ?? (multiMap.isNotEmpty ? multiMap.values.first : '');
               }
 
               if (primaryUrl.isNotEmpty) {
-                multiMap['1080P'] ??= primaryUrl;
-                multiMap['720P'] ??= primaryUrl;
-                multiMap['480P'] ??= primaryUrl;
+                // 补齐「自动」键
+                multiMap['自动'] = primaryUrl;
+                // 如果只解析到 1 档，通过 url 参数构造兜底档位
+                if (multiMap.length <= 2) {
+                  final fallbackUrls = buildMultiResolutionUrls(primaryUrl);
+                  fallbackUrls.forEach((k, v) {
+                    multiMap.putIfAbsent(k, () => v);
+                  });
+                }
 
                 return DuanjuPlaybackPlan(
                   url: primaryUrl,
@@ -999,7 +1114,10 @@ class DuanjuCoreBridge {
                     'Referer': 'https://novel.snssdk.com/',
                   },
                   multiMap: multiMap,
-                  resolution: '1080P',
+                  resolution: '${actualQuality}P',
+                  quality: quality,
+                  actualQuality: actualQuality,
+                  qualities: sortedQualities,
                 );
               }
             }
