@@ -197,6 +197,14 @@ class DuanjuCoreBridge {
     int page = 1,
     int size = 20,
   }) async {
+    // 0. 若为榜单请求 (以 rank- 开头)，直通官方榜单页面抓取与解析通道
+    if (category.startsWith('rank-')) {
+      final rankList = await _fetchOfficialHongguoCatalog(category: category, page: page, size: size);
+      if (rankList.isNotEmpty) {
+        return rankList;
+      }
+    }
+
     // 1. 优先调用红果官方 App 原生 Landpage 接口 (对齐红果鉴 provider_hongguo_catalog.go，100% 官方原生排序与海报)
     final appResult = await _fetchHongguoAppLandpageCatalog(category: category, page: page, size: size);
     if (appResult.isNotEmpty) {

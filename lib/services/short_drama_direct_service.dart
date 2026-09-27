@@ -269,6 +269,131 @@ class ShortDramaDirectService {
     return priority;
   }
 
+  /// 拉取红果官方四大榜单数据 (对标红果鉴总热播榜、真人剧榜、漫剧榜、AI剧榜)
+  static Future<ShortDramaListResponse> getRankingList({
+    required String boardName,
+    int page = 1,
+  }) async {
+    String boardId = 'hongguo-hot';
+    String rankKey = 'rank-hot';
+
+    if (boardName == '真人剧榜' || boardName.contains('真人')) {
+      boardId = 'hongguo-real';
+      rankKey = 'rank-real';
+    } else if (boardName == '漫剧榜' || boardName.contains('漫剧')) {
+      boardId = 'hongguo-comic';
+      rankKey = 'rank-comic';
+    } else if (boardName == 'AI剧榜' || boardName.contains('AI') || boardName.contains('ai')) {
+      boardId = 'hongguo-ai';
+      rankKey = 'rank-ai';
+    }
+
+    try {
+      // 1. 优先调用原生 Go 核心 rankings 动作 (100% 对齐红果鉴官方原生榜单与热度)
+      if (DuanjuCoreBridge.instance.isNativeAvailable) {
+        final nativeRes = await DuanjuCoreBridge.instance.invokeNative('rankings', {
+          'board': boardId,
+          'page': page,
+        });
+        if (nativeRes != null && nativeRes['ok'] == true) {
+          final data = nativeRes['data'];
+          final items = (data is Map && data['items'] is List) ? (data['items'] as List) : null;
+          if (items != null && items.isNotEmpty) {
+            final list = <ShortDrama>[];
+            for (final it in items) {
+              if (it is Map) {
+                final dramaMap = it['drama'] is Map ? (it['drama'] as Map) : it;
+                final rawId = dramaMap['sourceId'] ?? dramaMap['source_id'] ?? dramaMap['id'] ?? 0;
+                final cleanId = DuanjuCoreBridge.cleanSeriesId(rawId);
+                final idVal = int.tryParse(cleanId) ?? cleanId.hashCode.abs();
+                final title = (dramaMap['title'] ?? dramaMap['name'] ?? '').toString();
+                final cover = (dramaMap['cover'] ?? dramaMap['cover_url'] ?? '').toString();
+                final epCount = dramaMap['episodes'] ?? dramaMap['episode_count'] ?? 80;
+                final metric = (it['metric'] ?? '').toString();
+
+                if (title.isNotEmpty) {
+                  list.add(ShortDrama(
+                    id: idVal,
+                    dramaId: cleanId,
+                    name: RawShortDrama.cleanVodName(title),
+                    cover: RawShortDrama.cleanVodPic(cover),
+                    updateTime: DateTime.now().toIso8601String(),
+                    score: 9.8,
+                    episodeCount: epCount is int ? epCount : (int.tryParse(epCount.toString()) ?? 80),
+                    description: metric.isNotEmpty ? '官方热度: $metric' : '红果官方权威热播榜',
+                    author: boardName,
+                    backdrop: RawShortDrama.cleanVodPic(cover),
+                    voteAverage: 9.8,
+                  ));
+                }
+              }
+            }
+            final bool hasMore = (data is Map && data['hasMore'] is bool)
+                ? (data['hasMore'] as bool)
+                : (list.length >= 10 && page < 20);
+            if (list.isNotEmpty) {
+              return ShortDramaListResponse(list: list, hasMore: hasMore);
+            }
+          }
+        }
+      }
+
+      // 2. 网页抓取 /rank/hot-drama 等通道兜底
+      final rawList = await _fetchHongguoRankPage(rankKey, page);
+      if (rawList.isNotEmpty) {
+        return ShortDramaListResponse(
+          list: rawList.map(_toShortDrama).toList(),
+          hasMore: rawList.length >= 10 && page < 20,
+        );
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('[ShortDramaDirect] getRankingList error: $e');
+    }
+
+    return const ShortDramaListResponse(list: [], hasMore: false);
+  }
+
+  /// 榜单网页抓取辅助方法
+  static Future<List<RawShortDrama>> _fetchHongguoRankPage(String rankKey, int page) async {
+    try {
+      final items = await DuanjuCoreBridge.instance.fetchCatalog(
+        category: rankKey,
+        page: page,
+        size: 20,
+      );
+      if (items.isNotEmpty) {
+        return items.map((m) {
+          final idVal = m['id'] ?? m['drama_id'] ?? 0;
+          final realDramaId = (m['drama_id'] ?? m['series_id'] ?? idVal).toString();
+          final vodId = idVal is int ? idVal : (int.tryParse(idVal.toString()) ?? idVal.hashCode.abs());
+          final name = (m['title'] ?? m['name'] ?? '').toString();
+          final cover = (m['cover'] ?? m['cover_url'] ?? '').toString();
+          final ep = m['episode_count'] ?? m['total_episodes'] ?? m['episodes'] ?? 80;
+          final epCount = ep is int ? ep : (int.tryParse(ep.toString()) ?? 80);
+          final desc = (m['intro'] ?? m['description'] ?? '').toString();
+
+          return RawShortDrama(
+            vodId: vodId,
+            dramaId: realDramaId,
+            vodName: RawShortDrama.cleanVodName(name),
+            vodPic: RawShortDrama.cleanVodPic(cover),
+            vodPicSlide: '',
+            vodTime: DateTime.now().toIso8601String(),
+            vodScore: 9.8,
+            vodRemarksEpisodeCount: epCount,
+            vodContent: desc,
+            vodBlurb: desc,
+            vodActor: '红果榜单',
+            typeId: 201,
+            typeName: '热播榜',
+          );
+        }).where((r) => r.vodName.isNotEmpty).toList();
+      }
+    } catch (_) {}
+    return [];
+  }
+
   /// RawShortDrama → ShortDrama 统一映射
   static ShortDrama _toShortDrama(RawShortDrama raw) {
     return ShortDrama(

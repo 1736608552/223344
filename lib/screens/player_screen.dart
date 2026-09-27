@@ -496,11 +496,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           } catch (_) {}
         }());
 
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && !_isDisposing) {
-            _playEpisode(_currentEpisodeIndex);
-          }
-        });
+        // 短剧进入后保持就绪待播状态，由用户主动点击「立即播放」或选择具体集数时起播
       }
     } else {
       _loadSources();
@@ -6150,77 +6146,93 @@ class _PlayerScreenState extends State<PlayerScreen>
                 spacing: 10,
                 runSpacing: 10,
                 children: [
-                  for (final q in qualities)
-                    ChoiceChip(
-                      key: ValueKey('menu-quality-$q'),
-                      label: Text(q == 0 ? '自动（优先高清）' : '${q}P'),
-                      selected: (q == 0 && (_userPreferredResolution == '自动' || _userPreferredResolution.isEmpty)) ||
-                          (q > 0 && _userPreferredResolution == '${q}P'),
-                      selectedColor: const Color(0xFF10B981).withOpacity(0.25),
-                      backgroundColor: Colors.white.withOpacity(0.08),
-                      labelStyle: TextStyle(
-                        color: ((q == 0 && (_userPreferredResolution == '自动' || _userPreferredResolution.isEmpty)) ||
-                                (q > 0 && _userPreferredResolution == '${q}P'))
-                            ? const Color(0xFF10B981)
-                            : Colors.white70,
-                        fontWeight: FontWeight.w500,
-                        fontSize: 14,
-                      ),
-                      side: BorderSide(
-                        color: ((q == 0 && (_userPreferredResolution == '自动' || _userPreferredResolution.isEmpty)) ||
-                                (q > 0 && _userPreferredResolution == '${q}P'))
-                            ? const Color(0xFF10B981)
-                            : Colors.white12,
-                      ),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                      onSelected: (selected) async {
-                        Navigator.pop(ctx);
-                        final newRes = q == 0 ? '自动' : '${q}P';
-                        if (_userPreferredResolution == newRes) return;
+                  for (final q in qualities) () {
+                    final bool isSel = (q == 0 && (_userPreferredResolution == '自动' || _userPreferredResolution.isEmpty)) ||
+                        (q > 0 && _userPreferredResolution == '${q}P');
+                    final String label = q == 0 ? '自动（优先高清）' : '${q}P';
+                    return Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        onTap: () async {
+                          Navigator.pop(ctx);
+                          final newRes = q == 0 ? '自动' : '${q}P';
+                          if (_userPreferredResolution == newRes) return;
 
-                        setState(() {
-                          _userPreferredResolution = newRes;
-                          _currentResolution = newRes;
-                        });
-
-                        final curUrl = _currentPlayUrl.isNotEmpty
-                            ? _currentPlayUrl
-                            : (_player is ExoPlayerBackend
-                                ? (_player as ExoPlayerBackend).controller?.dataSource ?? ''
-                                : '');
-
-                        String? targetUrl = _resolutionUrlMap[newRes];
-                        if (targetUrl == null || targetUrl.isEmpty) {
-                          if (q == 0) {
-                            targetUrl = _resolutionUrlMap['1080P'] ?? _resolutionUrlMap['720P'] ?? curUrl;
-                          } else {
-                            final plan = await DuanjuCoreBridge.instance.getPlaybackPlan(
-                              dramaId: dramaId,
-                              episode: _currentEpisodeIndex + 1,
-                              quality: q,
-                            );
-                            targetUrl = plan?.url;
-                          }
-                        }
-
-                        if (targetUrl != null && targetUrl.isNotEmpty) {
-                          final currentPos = _currentPosition;
                           setState(() {
-                            _currentPlayUrl = targetUrl!;
+                            _userPreferredResolution = newRes;
+                            _currentResolution = newRes;
                           });
-                          final decKey = DuanjuCoreBridge.instance.getDecryptionKey(dramaId, _currentEpisodeIndex + 1);
-                          await _player!.open(targetUrl, startAt: currentPos, decryptionKey: decKey);
-                          if (mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(q == 0 ? '已切换至: 自动（优先高清）' : '已无缝切换至: ${q}P'),
-                                duration: const Duration(seconds: 1),
-                              ),
-                            );
+
+                          final curUrl = _currentPlayUrl.isNotEmpty
+                              ? _currentPlayUrl
+                              : (_player is ExoPlayerBackend
+                                  ? (_player as ExoPlayerBackend).controller?.dataSource ?? ''
+                                  : '');
+
+                          String? targetUrl = _resolutionUrlMap[newRes];
+                          if (targetUrl == null || targetUrl.isEmpty) {
+                            if (q == 0) {
+                              targetUrl = _resolutionUrlMap['1080P'] ?? _resolutionUrlMap['720P'] ?? curUrl;
+                            } else {
+                              final plan = await DuanjuCoreBridge.instance.getPlaybackPlan(
+                                dramaId: dramaId,
+                                episode: _currentEpisodeIndex + 1,
+                                quality: q,
+                              );
+                              targetUrl = plan?.url;
+                            }
                           }
-                        }
-                      },
-                    ),
+
+                          if (targetUrl != null && targetUrl.isNotEmpty) {
+                            final currentPos = _currentPosition;
+                            setState(() {
+                              _currentPlayUrl = targetUrl!;
+                            });
+                            final decKey = DuanjuCoreBridge.instance.getDecryptionKey(dramaId, _currentEpisodeIndex + 1);
+                            await _player!.open(targetUrl, startAt: currentPos, decryptionKey: decKey);
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(q == 0 ? '已切换至: 自动（优先高清）' : '已无缝切换至: ${q}P'),
+                                  duration: const Duration(seconds: 1),
+                                ),
+                              );
+                            }
+                          }
+                        },
+                        borderRadius: BorderRadius.circular(8),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 150),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: isSel ? const Color(0xFF10B981).withOpacity(0.2) : const Color(0xFF2D3748),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: isSel ? const Color(0xFF10B981) : Colors.white24,
+                              width: 1.2,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (isSel) ...[
+                                const Icon(Icons.check_rounded, size: 16, color: Color(0xFF10B981)),
+                                const SizedBox(width: 4),
+                              ],
+                              Text(
+                                label,
+                                style: TextStyle(
+                                  color: isSel ? const Color(0xFF10B981) : Colors.white,
+                                  fontSize: 14,
+                                  fontWeight: isSel ? FontWeight.w600 : FontWeight.normal,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  }(),
                 ],
               ),
               if (_userPreferredResolution != '自动' &&

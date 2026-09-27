@@ -36,6 +36,10 @@ class ShortDramaScreen extends StatefulWidget {
 class _ShortDramaScreenState extends State<ShortDramaScreen> {
   final ScrollController _scrollController = ScrollController();
 
+  // 榜单筛选（对齐红果鉴官方四大核心榜单，首项为「不限」）
+  static const List<String> _rankTabs = ['不限', '总热播榜', '真人剧榜', '漫剧榜', 'AI剧榜'];
+  String _selectedRankTab = '不限';
+
   // 类型筛选（来自 API 的分类列表，去掉名字为"短剧"的项）
   List<String> _typeTabs = const [];
   String _selectedTypeTab = '';
@@ -178,7 +182,13 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
 
     final selectedTypeId = _currentSelectedTypeId();
     ShortDramaListResponse result;
-    if (selectedTypeId == null) {
+    if (_selectedRankTab != '不限') {
+      // 榜单模式：加载红果官方四大榜单
+      result = await ShortDramaDirectService.getRankingList(
+        boardName: _selectedRankTab,
+        page: _page,
+      );
+    } else if (selectedTypeId == null) {
       // 「全部」tab: 3 源聚合推荐
       result = await ShortDramaDirectService.getRecommendResponse(
         page: 1,
@@ -225,7 +235,13 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
 
     final selectedTypeId = _currentSelectedTypeId();
     ShortDramaListResponse result;
-    if (selectedTypeId == null) {
+    if (_selectedRankTab != '不限') {
+      // 榜单模式翻页
+      result = await ShortDramaDirectService.getRankingList(
+        boardName: _selectedRankTab,
+        page: _page,
+      );
+    } else if (selectedTypeId == null) {
       // 「全部」tab 翻页: 拉下一页
       result = await ShortDramaDirectService.getRecommendResponse(
         page: _page,
@@ -271,11 +287,24 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     await _fetchDramaList(isRefresh: true);
   }
 
+  /// 切换榜单
+  void _onRankTabChanged(String tab) {
+    if (_selectedRankTab == tab) return;
+    setState(() {
+      _selectedRankTab = tab;
+      _shownNames.clear();
+      _page = 1;
+    });
+    _fetchDramaList(isRefresh: true);
+  }
+
   /// 切换类型
   void _onTypeTabChanged(String tab) {
-    if (_selectedTypeTab == tab) return;
+    if (_selectedTypeTab == tab && _selectedRankTab == '不限') return;
     setState(() {
       _selectedTypeTab = tab;
+      // 用户主动切换类型筛选时，榜单归位为「不限」
+      _selectedRankTab = '不限';
       // v2.5.6: 切 tab 时清空去重 set (「全部」和子分类的去重不能混)
       _shownNames.clear();
       _page = 1;
@@ -599,14 +628,11 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     );
   }
 
-  /// 构建筛选区（白底圆角容器，仅保留类型胶囊标签）
+  /// 构建筛选区（与电视剧页风格一致：白底/半透明圆角卡片，双行筛选：榜单 + 类型）
   Widget _buildFilterSection(ThemeService themeService) {
-    if (_typeTabs.isEmpty) {
-      return const SizedBox.shrink();
-    }
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.all(16),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
       decoration: BoxDecoration(
         color: themeService.isDarkMode
@@ -614,11 +640,27 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
             : Colors.white.withOpacity(0.8),
         borderRadius: BorderRadius.circular(12),
       ),
-      child: _buildFilterRow(
-        label: '类型',
-        tabs: _typeTabs,
-        selectedTab: _selectedTypeTab,
-        onTabChanged: _onTypeTabChanged,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 第一行：榜单（红果鉴官方四大核心榜单）
+          _buildFilterRow(
+            label: '榜单',
+            tabs: _rankTabs,
+            selectedTab: _selectedRankTab,
+            onTabChanged: _onRankTabChanged,
+          ),
+          if (_typeTabs.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            // 第二行：类型（真人剧、漫剧、AI剧题材分类）
+            _buildFilterRow(
+              label: '类型',
+              tabs: _typeTabs,
+              selectedTab: _selectedTypeTab,
+              onTabChanged: _onTypeTabChanged,
+            ),
+          ],
+        ],
       ),
     );
   }
