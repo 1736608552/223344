@@ -166,12 +166,27 @@ class DuanjuCoreBridge {
     if (_isNativeAvailable) {
       try {
         final nativeRes = await invokeNative('catalog', {
-          'category': category,
+          'source': 'hongguo',
+          'category': (category == 'hot' || category == 'all') ? 'all' : category,
           'page': page,
           'size': size,
         });
-        if (nativeRes != null && nativeRes['list'] is List && (nativeRes['list'] as List).isNotEmpty) {
-          return List<Map<String, dynamic>>.from(nativeRes['list']);
+        if (nativeRes != null && nativeRes['ok'] == true) {
+          final data = nativeRes['data'];
+          final rawItems = (data is Map && data['items'] is List)
+              ? (data['items'] as List)
+              : (nativeRes['list'] is List ? nativeRes['list'] as List : null);
+          if (rawItems != null && rawItems.isNotEmpty) {
+            final list = <Map<String, dynamic>>[];
+            for (final it in rawItems) {
+              if (it is Map) {
+                list.add(_formatHongguoItem(Map<String, dynamic>.from(it)));
+              }
+            }
+            if (list.isNotEmpty) {
+              return list;
+            }
+          }
         }
       } catch (_) {}
     }
@@ -461,12 +476,27 @@ class DuanjuCoreBridge {
 
     if (_isNativeAvailable) {
       try {
-        final nativeRes = await invokeNative('search', {
+        final nativeRes = await invokeNative('catalog', {
+          'source': 'hongguo',
           'query': q,
           'page': page,
         });
-        if (nativeRes != null && nativeRes['list'] is List && (nativeRes['list'] as List).isNotEmpty) {
-          return List<Map<String, dynamic>>.from(nativeRes['list']);
+        if (nativeRes != null && nativeRes['ok'] == true) {
+          final data = nativeRes['data'];
+          final rawItems = (data is Map && data['items'] is List)
+              ? (data['items'] as List)
+              : (nativeRes['list'] is List ? nativeRes['list'] as List : null);
+          if (rawItems != null && rawItems.isNotEmpty) {
+            final list = <Map<String, dynamic>>[];
+            for (final it in rawItems) {
+              if (it is Map) {
+                list.add(_formatHongguoItem(Map<String, dynamic>.from(it)));
+              }
+            }
+            if (list.isNotEmpty) {
+              return list;
+            }
+          }
         }
       } catch (_) {}
     }
@@ -522,19 +552,40 @@ class DuanjuCoreBridge {
     // 1080P 超清无损原画流
     map['1080P'] = mainUrl;
 
+    // 针对火山/字节跳动 CDN 进行多参数动态采样匹配
+    String url720 = mainUrl;
+    String url480 = mainUrl;
+
+    bool hasParam = false;
     if (mainUrl.contains('bt=')) {
-      // 720P 高清流 (针对火山 CDN 码率与档位精细降采样，画质与加载平衡)
-      map['720P'] = mainUrl
-          .replaceAll(RegExp(r'bt=\d+'), 'bt=1024')
-          .replaceAll(RegExp(r'qs=\d+'), 'qs=4');
-      // 480P 标清流 (极速省流低码率，弱网秒开)
-      map['480P'] = mainUrl
-          .replaceAll(RegExp(r'bt=\d+'), 'bt=512')
-          .replaceAll(RegExp(r'qs=\d+'), 'qs=8');
-    } else {
-      map['720P'] = mainUrl;
-      map['480P'] = mainUrl;
+      hasParam = true;
+      url720 = url720.replaceAll(RegExp(r'bt=\d+'), 'bt=1024');
+      url480 = url480.replaceAll(RegExp(r'bt=\d+'), 'bt=512');
     }
+    if (mainUrl.contains('qs=')) {
+      hasParam = true;
+      url720 = url720.replaceAll(RegExp(r'qs=\d+'), 'qs=4');
+      url480 = url480.replaceAll(RegExp(r'qs=\d+'), 'qs=8');
+    }
+    if (mainUrl.contains('ratio=')) {
+      hasParam = true;
+      url720 = url720.replaceAll(RegExp(r'ratio=[^&]+'), 'ratio=720p');
+      url480 = url480.replaceAll(RegExp(r'ratio=[^&]+'), 'ratio=480p');
+    }
+    if (mainUrl.contains('resolution=')) {
+      hasParam = true;
+      url720 = url720.replaceAll(RegExp(r'resolution=[^&]+'), 'resolution=720p');
+      url480 = url480.replaceAll(RegExp(r'resolution=[^&]+'), 'resolution=480p');
+    }
+
+    if (!hasParam) {
+      final separator = mainUrl.contains('?') ? '&' : '?';
+      url720 = '$mainUrl${separator}ratio=720p&resolution=720p&bt=1024&qs=4';
+      url480 = '$mainUrl${separator}ratio=480p&resolution=480p&bt=512&qs=8';
+    }
+
+    map['720P'] = url720;
+    map['480P'] = url480;
     return map;
   }
 
@@ -572,13 +623,24 @@ class DuanjuCoreBridge {
         });
         if (res != null && res['ok'] == true) {
           final data = res['data'];
-          if (data is Map && data['chapters'] is List) {
-            final chapters = data['chapters'] as List;
+          final rawChapters = (data is Map && data['chapters'] is List)
+              ? (data['chapters'] as List)
+              : ((data is Map && data['episodes'] is List) ? (data['episodes'] as List) : null);
+          if (rawChapters != null && rawChapters.isNotEmpty) {
             final list = <String>[];
-            for (final ch in chapters) {
+            for (final ch in rawChapters) {
               if (ch is Map) {
-                final vUrl = ch['video_url']?.toString() ?? '';
-                final vid = vUrl.replaceFirst('hongguo-cenc://', '').trim();
+                // 关键兼容：Go 核心 Chapter 结构体为 json:"videoUrl"，同时向下兼容 video_url
+                final vUrl = (ch['videoUrl'] ?? ch['video_url'] ?? ch['url'])?.toString() ?? '';
+                var vid = vUrl.replaceFirst('hongguo-cenc://', '').trim();
+                if (vid.isEmpty) {
+                  final idStr = (ch['id'] ?? ch['vid'])?.toString() ?? '';
+                  if (idStr.contains(':')) {
+                    vid = idStr.split(':').last.trim();
+                  } else {
+                    vid = idStr.trim();
+                  }
+                }
                 if (vid.isNotEmpty) {
                   list.add(vid);
                 }
@@ -713,7 +775,9 @@ class DuanjuCoreBridge {
             'id': 'hongguo:$cleanId:$vid',
             'source': 'hongguo',
             'title': '第$episode集',
+            'videoUrl': 'hongguo-cenc://$vid',
             'video_url': 'hongguo-cenc://$vid',
+            'currentEpisode': episode,
             'current_episode': '$episode',
           },
           'index': episode,
@@ -726,23 +790,7 @@ class DuanjuCoreBridge {
           if (data is Map) {
             final nativeUrl = data['url']?.toString();
             if (nativeUrl != null && nativeUrl.isNotEmpty) {
-              final rawQualities = data['qualities'];
-              final multiMap = <String, String>{};
-              multiMap['1080P'] = nativeUrl;
-              multiMap['720P'] = nativeUrl;
-              multiMap['480P'] = nativeUrl;
-              if (rawQualities is List && rawQualities.isNotEmpty) {
-                for (final q in rawQualities) {
-                  final qInt = int.tryParse(q.toString()) ?? 0;
-                  if (qInt >= 1080) {
-                    multiMap['1080P'] = nativeUrl;
-                  } else if (qInt >= 720) {
-                    multiMap['720P'] = nativeUrl;
-                  } else if (qInt >= 480) {
-                    multiMap['480P'] = nativeUrl;
-                  }
-                }
-              }
+              final multiMap = buildMultiResolutionUrls(nativeUrl);
               _playbackResolutionCache[cacheKey] = '1080P';
               _playbackUrlCache[cacheKey] = nativeUrl;
               _playbackMultiResCache[cacheKey] = multiMap;
@@ -884,9 +932,10 @@ class DuanjuCoreBridge {
                 }
               }
               if (primaryUrl != null) {
+                final fallbackMap = buildMultiResolutionUrls(primaryUrl);
                 multiMap['1080P'] ??= primaryUrl;
-                multiMap['720P'] ??= primaryUrl;
-                multiMap['480P'] ??= primaryUrl;
+                multiMap['720P'] ??= fallbackMap['720P'] ?? primaryUrl;
+                multiMap['480P'] ??= fallbackMap['480P'] ?? primaryUrl;
                 _playbackResolutionCache[cacheKey] = '1080P';
                 _playbackUrlCache[cacheKey] = primaryUrl;
                 _playbackMultiResCache[cacheKey] = multiMap;

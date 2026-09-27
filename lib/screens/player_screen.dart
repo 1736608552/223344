@@ -2400,6 +2400,23 @@ class _PlayerScreenState extends State<PlayerScreen>
         _error = null;
       });
       _selectSource(dramaSource);
+
+      // 异步根据真实章节列表精确对齐总集数 (消除硬编码80集限制)
+      unawaited(() async {
+        try {
+          final realVidList = await DuanjuCoreBridge.instance.fetchEpisodeVidList(widget.videoInfo.id);
+          if (mounted && realVidList.isNotEmpty && realVidList.length != dramaSource.episodes.length) {
+            final realCount = realVidList.length;
+            final updatedEps = List.generate(realCount, (i) => (i + 1).toString());
+            final updatedTitles = List.generate(realCount, (i) => '第${i + 1}集');
+            setState(() {
+              dramaSource.episodes = updatedEps;
+              dramaSource.episodesTitles = updatedTitles;
+              widget.videoInfo.totalEpisodes = realCount;
+            });
+          }
+        } catch (_) {}
+      }());
       return;
     }
 
