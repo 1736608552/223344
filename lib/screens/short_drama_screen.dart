@@ -44,6 +44,9 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
   static const List<String> _rankTabs = ['全部', '总热播榜', '真人剧榜', '漫剧榜', 'AI剧榜'];
   String _selectedRankTab = '全部';
 
+  // 题材分类列表（来自 API 的分类列表，用于映射及向后兼容）
+  List<String> _typeTabs = const [];
+
   // 类型 -> 分类 typeId 的映射. 「全部」tab 不进 map, 走 _fetchDramaList 兜底逻辑.
   final Map<String, int> _typeToCategoryId = {};
   // 「全部」tab 的 key (selectedCategoryTab 用这个字符串表示「全部」)
