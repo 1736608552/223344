@@ -174,6 +174,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   //   - _isCasting: 投屏成功后 true, 顶部栏 cast 按钮变 cast_connected 绿色
   //   - _currentCastDevice: 当前投屏设备引用, 停止投屏时调 device.stop()
   //   - 投屏成功后停本地 player, 切回 detail 视图, 提示 "已投屏到 XXX, 回到本地播放"
+  // 播放器异步初始化 Future，用于防止用户快点播放时发生重复创建和销毁竞争
+  Future<void>? _initPlayerFuture;
+
   bool _isCasting = false;
   DLNADevice? _currentCastDevice;
 
@@ -385,12 +388,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   @override
   void initState() {
     super.initState();
-    // v2.2.0: 卸 libmpv 改 ExoPlayer (AndroidX Media3).
-    //   ExoPlayerBackend.create 异步装配 video_player VideoPlayerController
-    //   (底层就是 Media3 ExoPlayer 1.4.x). 必须在 initState 里 await 才能
-    //   拿到底层 controller. 之前的 MpvFFI.applyPlaybackTuning 不需要
-    //   (Media3 默认就是硬解 + 自适应 buffer, 不需要手动配).
-    unawaited(_initPlayerAsync());
+    // v2.2.0 / v2.6.80+: 异步初始化播放器并记录 Future，守门避免快速点起播重复重建
+    _initPlayerFuture = _initPlayerAsync();
     // v2.0.51: 选集 PageView 初始化
     _episodesPageController = PageController();
     _pageControllerNotifier.value = _episodesPageController;
@@ -609,6 +608,7 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     if (!mounted) return;
     _bindPlayerListeners();
+    _initPlayerFuture = null;
     setState(() {});
   }
 
@@ -3501,6 +3501,11 @@ class _PlayerScreenState extends State<PlayerScreen>
         source.source == 'shortdrama' ||
         widget.videoInfo.source == 'hongguo' ||
         widget.videoInfo.source == 'shortdrama';
+
+    // 等待异步初始化完成，杜绝快速点击播放时并发重建播放器
+    if (_initPlayerFuture != null) {
+      await _initPlayerFuture;
+    }
 
     // 播放器后端类型自适应：短剧使用 DuanjuMediaKitBackend，非短剧维持原有 ExoPlayerBackend
     if (isShortDrama && _player is! DuanjuMediaKitBackend) {

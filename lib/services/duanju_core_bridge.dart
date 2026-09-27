@@ -687,7 +687,10 @@ class DuanjuCoreBridge {
     return _planCache['$cleanId-$episode']?.actualQuality;
   }
 
-  /// 获取短剧全部选集 vid 列表与详情 (原生Go核心优先 + 官方Web双重解析 + 内存高速缓存)
+  final Map<String, Future<List<String>>> _pendingVidRequests = {};
+  final Map<String, Future<DuanjuPlaybackPlan?>> _pendingPlanRequests = {};
+
+  /// 获取短剧全部选集 vid 列表与详情 (原生Go核心优先 + 官方Web双重解析 + 内存高速缓存 + In-Flight合并)
   Future<List<String>> fetchEpisodeVidList(String dramaId) async {
     final cleanId = dramaId.trim();
     if (cleanId.isEmpty) return [];
@@ -697,6 +700,20 @@ class DuanjuCoreBridge {
       return _vidListCache[cleanId]!;
     }
 
+    if (_pendingVidRequests.containsKey(cleanId)) {
+      return await _pendingVidRequests[cleanId]!;
+    }
+
+    final future = _doFetchEpisodeVidList(cleanId);
+    _pendingVidRequests[cleanId] = future;
+    try {
+      return await future;
+    } finally {
+      _pendingVidRequests.remove(cleanId);
+    }
+  }
+
+  Future<List<String>> _doFetchEpisodeVidList(String cleanId) async {
     // 通道 1: 原生 Go 核心 detail 接口 (对齐鱼佬 guoapp，双通道 App + Web 提取全部分集 chapters)
     if (_isNativeAvailable) {
       try {
@@ -834,7 +851,7 @@ class DuanjuCoreBridge {
     unawaited(getPlaybackPlan(dramaId: cleanId, episode: episode, quality: quality));
   }
 
-  /// 获取单集短剧的完整播放计划（包含直链、CENC解密密钥与多分辨率映射）
+  /// 获取单集短剧的完整播放计划（包含直链、CENC解密密钥与多分辨率映射 + In-Flight合并）
   Future<DuanjuPlaybackPlan?> getPlaybackPlan({
     required String dramaId,
     required int episode,
@@ -847,6 +864,25 @@ class DuanjuCoreBridge {
       return _planCache[cacheKey];
     }
 
+    if (_pendingPlanRequests.containsKey(cacheKey)) {
+      return await _pendingPlanRequests[cacheKey]!;
+    }
+
+    final future = _doGetPlaybackPlan(cleanId, episode, quality, cacheKey);
+    _pendingPlanRequests[cacheKey] = future;
+    try {
+      return await future;
+    } finally {
+      _pendingPlanRequests.remove(cacheKey);
+    }
+  }
+
+  Future<DuanjuPlaybackPlan?> _doGetPlaybackPlan(
+    String cleanId,
+    int episode,
+    int quality,
+    String cacheKey,
+  ) async {
     // 获取短剧选集 vid 列表
     final vidList = await fetchEpisodeVidList(cleanId);
     String vid = '';

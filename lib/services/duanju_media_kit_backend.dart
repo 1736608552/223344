@@ -199,11 +199,22 @@ class DuanjuMediaKitBackend implements PlayerBackend {
         try {
           await platform.setProperty('demuxer-lavf-o', options);
           await platform.setProperty('network-timeout', '10');
-          // 极速探测起播：缩短 lavf 分析时长与探测尺寸，大幅缩短首帧与起播等待
+          // 极速探测起播：缩短 lavf 分析时长与探测尺寸，大幅缩短首帧与起播等待 (完全对齐红果鉴)
           await platform.setProperty('demuxer-lavf-analyzeduration', '1000000');
           await platform.setProperty('demuxer-lavf-probesize', '1048576');
           await platform.setProperty('force-seekable', 'yes');
           await platform.setProperty('hr-seek', 'default');
+          await platform.setProperty('hwdec', 'auto-safe');
+          await platform.setProperty('hwdec-codecs', 'all');
+          await platform.setProperty('framedrop', 'no');
+          await platform.setProperty('video-sync', 'audio');
+          await platform.setProperty('scale', 'bilinear');
+          await platform.setProperty('demuxer-max-bytes', '${16 * 1024 * 1024}');
+          await platform.setProperty('demuxer-max-back-bytes', '${2 * 1024 * 1024}');
+          await platform.setProperty('demuxer-readahead-secs', '10');
+          await platform.setProperty('audio-buffer', '0.8');
+          await platform.setProperty('audio-pitch-correction', 'no');
+          await platform.setProperty('autosync', '0');
         } catch (e) {
           if (kDebugMode) {
             print('[DuanjuMediaKit] setProperty error (handled): $e');
