@@ -36,16 +36,17 @@ class ShortDramaScreen extends StatefulWidget {
 class _ShortDramaScreenState extends State<ShortDramaScreen> {
   final ScrollController _scrollController = ScrollController();
 
-  // 榜单筛选（对齐红果鉴官方四大核心榜单，首项为「不限」）
-  static const List<String> _rankTabs = ['不限', '总热播榜', '真人剧榜', '漫剧榜', 'AI剧榜'];
-  String _selectedRankTab = '不限';
+  // 首行：主分类（全部、真人剧、漫剧、AI剧）
+  static const List<String> _categoryTabs = ['全部', '真人剧', '漫剧', 'AI剧'];
+  String _selectedCategoryTab = '全部';
 
-  // 类型筛选（来自 API 的分类列表，去掉名字为"短剧"的项）
-  List<String> _typeTabs = const [];
-  String _selectedTypeTab = '';
+  // 次行：排行（对标红果鉴官方四大榜单，与主分类双向联动）
+  static const List<String> _rankTabs = ['全部', '总热播榜', '真人剧榜', '漫剧榜', 'AI剧榜'];
+  String _selectedRankTab = '全部';
+
   // 类型 -> 分类 typeId 的映射. 「全部」tab 不进 map, 走 _fetchDramaList 兜底逻辑.
   final Map<String, int> _typeToCategoryId = {};
-  // 「全部」tab 的 key (selectedTypeTab 用这个字符串表示「全部」)
+  // 「全部」tab 的 key (selectedCategoryTab 用这个字符串表示「全部」)
   static const String _kAllTabKey = '全部';
 
   // 列表数据
@@ -119,10 +120,9 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
       _typeToCategoryId
         ..clear()
         ..addAll(typeToId);
-      // v2.5.15: 只在未初始化时设回「全部」. 避免覆盖用户在 await
-      //   期间已切到「其他」tab 的选择.
-      if (_selectedTypeTab.isEmpty) {
-        _selectedTypeTab = _kAllTabKey;
+      // 只在未初始化时设回「全部」
+      if (_selectedCategoryTab.isEmpty) {
+        _selectedCategoryTab = _kAllTabKey;
       }
     });
 
@@ -182,23 +182,24 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
 
     final selectedTypeId = _currentSelectedTypeId();
     ShortDramaListResponse result;
-    if (_selectedRankTab != '不限') {
-      // 榜单模式：加载红果官方四大榜单
+    if (_selectedRankTab != '全部') {
+      // 榜单/排行模式：加载红果官方四大榜单
       result = await ShortDramaDirectService.getRankingList(
         boardName: _selectedRankTab,
         page: _page,
       );
     } else if (selectedTypeId == null) {
-      // 「全部」tab: 3 源聚合推荐
+      // 首行「全部」且次行「全部」: 3 源聚合推荐
       result = await ShortDramaDirectService.getRecommendResponse(
         page: 1,
         size: 60,
         excludeNames: isRefresh ? null : _shownNames,
       );
     } else {
+      // 具体题材全库 (如真人剧全库、漫剧全库、AI剧全库)
       result = await ShortDramaDirectService.getListByTypeId(
         typeId: selectedTypeId,
-        categoryName: _selectedTypeTab,
+        categoryName: _selectedCategoryTab,
         page: _page,
         size: 20,
       );
@@ -235,14 +236,14 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
 
     final selectedTypeId = _currentSelectedTypeId();
     ShortDramaListResponse result;
-    if (_selectedRankTab != '不限') {
-      // 榜单模式翻页
+    if (_selectedRankTab != '全部') {
+      // 排行模式翻页
       result = await ShortDramaDirectService.getRankingList(
         boardName: _selectedRankTab,
         page: _page,
       );
     } else if (selectedTypeId == null) {
-      // 「全部」tab 翻页: 拉下一页
+      // 「全部」tab 翻页: 拉下一页推荐
       result = await ShortDramaDirectService.getRecommendResponse(
         page: _page,
         size: 60,
@@ -251,7 +252,7 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     } else {
       result = await ShortDramaDirectService.getListByTypeId(
         typeId: selectedTypeId,
-        categoryName: _selectedTypeTab,
+        categoryName: _selectedCategoryTab,
         page: _page,
         size: 20,
       );
@@ -274,10 +275,13 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     });
   }
 
-  /// v2.5.5: 当前选中 tab 的 typeId. 返回 null 表示「全部」(走聚合).
+  /// 当前选中主分类的 typeId. 返回 null 表示「全部」(走聚合).
   int? _currentSelectedTypeId() {
-    if (_selectedTypeTab == _kAllTabKey) return null;
-    final id = _typeToCategoryId[_selectedTypeTab];
+    if (_selectedCategoryTab == _kAllTabKey) return null;
+    if (_selectedCategoryTab == '真人剧') return 1;
+    if (_selectedCategoryTab == '漫剧') return 2;
+    if (_selectedCategoryTab == 'AI剧' || _selectedCategoryTab == 'AI 剧') return 3;
+    final id = _typeToCategoryId[_selectedCategoryTab];
     if (id == null || id <= 0) return null;
     return id;
   }
@@ -287,27 +291,50 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     await _fetchDramaList(isRefresh: true);
   }
 
-  /// 切换榜单
-  void _onRankTabChanged(String tab) {
-    if (_selectedRankTab == tab) return;
+  /// 切换主分类（首行）并联动次行排行
+  void _onCategoryChanged(String category) {
+    if (_selectedCategoryTab == category && _selectedRankTab != '全部') return;
     setState(() {
-      _selectedRankTab = tab;
+      _selectedCategoryTab = category;
       _shownNames.clear();
       _page = 1;
+
+      // 联动次行排行
+      if (category == '全部') {
+        if (_selectedRankTab != '总热播榜' && _selectedRankTab != '全部') {
+          _selectedRankTab = '全部';
+        }
+      } else if (category == '真人剧') {
+        _selectedRankTab = '真人剧榜';
+      } else if (category == '漫剧') {
+        _selectedRankTab = '漫剧榜';
+      } else if (category == 'AI剧') {
+        _selectedRankTab = 'AI剧榜';
+      }
     });
     _fetchDramaList(isRefresh: true);
   }
 
-  /// 切换类型
-  void _onTypeTabChanged(String tab) {
-    if (_selectedTypeTab == tab && _selectedRankTab == '不限') return;
+  /// 切换排行（次行）并联动首行主分类
+  void _onRankChanged(String rank) {
+    if (_selectedRankTab == rank) return;
     setState(() {
-      _selectedTypeTab = tab;
-      // 用户主动切换类型筛选时，榜单归位为「不限」
-      _selectedRankTab = '不限';
-      // v2.5.6: 切 tab 时清空去重 set (「全部」和子分类的去重不能混)
+      _selectedRankTab = rank;
       _shownNames.clear();
       _page = 1;
+
+      // 联动首行主分类
+      if (rank == '总热播榜') {
+        _selectedCategoryTab = '全部';
+      } else if (rank == '真人剧榜') {
+        _selectedCategoryTab = '真人剧';
+      } else if (rank == '漫剧榜') {
+        _selectedCategoryTab = '漫剧';
+      } else if (rank == 'AI剧榜') {
+        _selectedCategoryTab = 'AI剧';
+      } else if (rank == '全部') {
+        // 次行选中「全部」表示退出榜单，查看首行当前选中的分类全库
+      }
     });
     _fetchDramaList(isRefresh: true);
   }
@@ -628,7 +655,7 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     );
   }
 
-  /// 构建筛选区（与电视剧页风格一致：白底/半透明圆角卡片，双行筛选：榜单 + 类型）
+  /// 构建筛选区（与电视剧页风格一致：白底/半透明圆角卡片，首行主分类 + 次行排行，双向互动）
   Widget _buildFilterSection(ThemeService themeService) {
     return Container(
       width: double.infinity,
@@ -643,23 +670,21 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 第一行：榜单（红果鉴官方四大核心榜单）
+          // 首行：主分类（全部、真人剧、漫剧、AI剧）
           _buildFilterRow(
-            label: '榜单',
+            label: '分类',
+            tabs: _categoryTabs,
+            selectedTab: _selectedCategoryTab,
+            onTabChanged: _onCategoryChanged,
+          ),
+          const SizedBox(height: 12),
+          // 次行：排行（对标红果鉴官方四大榜单，与主分类双向联动）
+          _buildFilterRow(
+            label: '排行',
             tabs: _rankTabs,
             selectedTab: _selectedRankTab,
-            onTabChanged: _onRankTabChanged,
+            onTabChanged: _onRankChanged,
           ),
-          if (_typeTabs.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            // 第二行：类型（真人剧、漫剧、AI剧题材分类）
-            _buildFilterRow(
-              label: '类型',
-              tabs: _typeTabs,
-              selectedTab: _selectedTypeTab,
-              onTabChanged: _onTypeTabChanged,
-            ),
-          ],
         ],
       ),
     );
