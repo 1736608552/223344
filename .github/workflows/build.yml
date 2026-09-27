@@ -88,64 +88,87 @@ jobs:
           timeout_minutes: 60
           command: flutter build apk --release --target-platform android-arm,android-arm64 --obfuscate --split-debug-info=build/app/outputs/symbols
 
-      # 优先创建 GitHub Release 并上传正式 APK
-      - name: Create GitHub Release (APK)
-        if: startsWith(github.ref, 'refs/tags/v')
+      # 对齐 guoapp: 自动创建或更新 GitHub Release 并上传正式 APK 及校验文件
+      - name: Create or Update GitHub Release (APK)
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.ref_name }}"
+          set -euo pipefail
+
+          # 提取当前版本号与 Tag
+          VERSION=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1 | tr -d '\r\n')
+          BASE_VERSION="${VERSION%+*}"
+
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v${BASE_VERSION}"
+          fi
+
+          echo "准备发布版本: $TAG (pubspec: $VERSION)"
+
+          # 准备发布产物目录
+          mkdir -p release_dist
           APK="build/app/outputs/flutter-apk/app-release.apk"
-          SHA="${{ github.sha }}"
+          if [ -f "$APK" ]; then
+            cp "$APK" "release_dist/LunaTV-Mobile-${TAG}.apk"
+            cp "$APK" "release_dist/app-release.apk"
+          else
+            echo "::error::未找到构建生成的 APK 文件: $APK"
+            exit 1
+          fi
+
+          # 生成 SHA-256 校验清单
+          cd release_dist
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          cd ..
+
+          # 编写发布说明
+          cat << 'EOF' > release_notes.md
+## LunaTV Mobile 正式版发布
+
+### 核心特性与修复
+- **短剧硬件解密推流通道**：全新接入官方 CENC (AES-128-CTR) 原生硬件解密推流，彻底终结红果等火山 CDN 视频流“无限转圈无法播放”的历史问题；
+- **多清晰度平滑切换**：全面支持 1080P / 720P / 480P 解密流平滑热切；
+- **非短剧业务零影响**：电影、电视剧、动漫、直播等业务 100% 保持稳定原生播放链路；
+- **自动化发布就绪**：对齐 guoapp 规范，构建完成后自动挂载正式安装包与 SHA256 校验清单。
+
+### 安装包下载
+- **LunaTV-Mobile-*.apk**：正式版完整安装包（推荐安装）
+- **SHA256SUMS.txt**：安装包完整性校验值
+EOF
+
+          TITLE="LunaTV Mobile ${TAG}"
+
+          # 重试循环确保网络波动下稳定发布
           for i in 1 2 3 4 5; do
-            echo "::group::attempt $i"
+            echo "::group::Release attempt $i"
             if gh release view "$TAG" >/dev/null 2>&1; then
-              # release 已存在, 只上传 APK
-              if gh release upload "$TAG" "$APK" --clobber; then
-                echo "asset uploaded on attempt $i"
+              echo "Release $TAG 已存在，更新产物附件与发布说明..."
+              if gh release upload "$TAG" release_dist/* --clobber && \
+                 gh release edit "$TAG" --title "$TITLE" --notes-file release_notes.md; then
+                echo "Release 资源更新成功 (attempt $i)"
                 break
               fi
             else
-              if gh release create "$TAG" "$APK" \
-                --title "$TAG" \
-                --generate-notes \
-                --target "$SHA"; then
-                echo "release created on attempt $i"
+              echo "创建全新 Release $TAG..."
+              if gh release create "$TAG" release_dist/* \
+                --title "$TITLE" \
+                --notes-file release_notes.md \
+                --target "${{ github.sha }}"; then
+                echo "Release 创建成功 (attempt $i)"
                 break
               fi
             fi
             echo "::endgroup::"
             if [ "$i" -eq 5 ]; then
-              echo "::error::gh release create/upload failed after 5 attempts"
+              echo "::error::gh release create/upload 5次重试均失败"
               exit 1
             fi
-            sleep 20
+            sleep 15
           done
-
-      # 写入版本更新说明
-      - name: Set release body
-        if: startsWith(github.ref, 'refs/tags/v')
-        continue-on-error: true
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const tagName = context.ref.replace('refs/tags/', '');
-            const fs = require('fs');
-            const changelogs = JSON.parse(fs.readFileSync(process.env.GITHUB_WORKSPACE + '/.github/changelogs.json', 'utf8'));
-            const body = changelogs[tagName] || `Release ${tagName}`;
-            const release = await github.rest.repos.getReleaseByTag({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag: tagName,
-            });
-            await github.rest.repos.updateRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: release.data.id,
-              body: body,
-            });
-            core.info(`set body for ${tagName} (id=${release.data.id}, ${body.length} chars)`);
 
       # 备用上传 APK 作为 action artifact (加 continue-on-error 防止私有库免费存储配额满导致中断)
       - name: Upload APK artifact

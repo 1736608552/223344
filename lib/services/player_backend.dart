@@ -70,6 +70,7 @@ abstract class PlayerBackend {
     String url, {
     Map<String, String>? headers,
     Duration? startAt,
+    String? decryptionKey,
   });
   Future<void> play();
   Future<void> pause();

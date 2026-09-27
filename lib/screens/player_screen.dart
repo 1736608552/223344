@@ -25,6 +25,8 @@ import 'package:luna_tv/services/duanju_core_bridge.dart';
 //   - video_proxy_server.dart 已删
 //   - cf_optimizer.dart 已删
 import 'package:luna_tv/services/exo_player_backend.dart';
+import 'package:luna_tv/services/duanju_media_kit_backend.dart';
+import 'package:luna_tv/widgets/duanju_media_kit_view.dart';
 import 'package:luna_tv/models/douban_movie.dart';
 import 'package:luna_tv/models/play_record.dart';
 import 'package:luna_tv/models/search_result.dart';
@@ -133,7 +135,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   //     走 video_player 2.10.1 内部 ExoPlayer (1.4.x) + 默认
   //     DefaultLoadControl. [ExoPlayerView] 渲染 [VideoPlayer] widget.
   //     跟 v2.3.0 行为一致.
-  ExoPlayerBackend? _player;
+  PlayerBackend? _player;
   // v2.3.0: 视频加速链路整个删了, 以下字段跟着删:
   //   - VideoProxyServer _videoProxy  (本地代理服务, 整个文件删了)
   //   - bool _videoProxyActive        (顶部「加速状态」指示器状态, 没人 trigger 了)
@@ -459,24 +461,43 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
-  /// v2.2.0: 异步初始化 ExoPlayer + 订阅所有 stream.
-  ///   initState 同步段不能 await, 包到 unawaited 里跑.
-  ///   必须等 backend 创建完才能订阅流 (否则 NPE).
+  /// 异步初始化播放器 (短剧采用 DuanjuMediaKitBackend，非短剧维持原有 ExoPlayerBackend)
   Future<void> _initPlayerAsync() async {
+    final isShortDrama = widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama' ||
+        widget.preferredSource == 'hongguo' ||
+        widget.preferredSource == 'shortdrama';
+
     try {
-      _player = await ExoPlayerBackend.create();
+      if (isShortDrama) {
+        _player = await DuanjuMediaKitBackend.create();
+      } else {
+        _player = await ExoPlayerBackend.create();
+      }
     } catch (e, st) {
-      DiaryService.add('[ExoPlayer] init FAIL: $e\n$st');
+      DiaryService.add('[Player] init FAIL: isShortDrama=$isShortDrama, error=$e\n$st');
       return;
     }
     if (!mounted) return;
 
-    // v2.2.0: 订阅 backend 的所有 stream. libmpv 时代是 _player!.XStream,
-    //   现在统一走 _player!.XStream. 注意所有 stream listener 都要判
-    //   !mounted 或 _isDisposing 提前 return, 防止 setState 在 widget 销毁后触发.
-    // v2.5.20: 之前 3 个 listener (playingStream / completedStream / bufferingStream)
-    //   没存字段, dispose 时无法 cancel. 现在存到 _playingSub / _completedSub /
-    //   _bufferingSub, dispose 统一 cancel.
+    _bindPlayerListeners();
+
+    // ★ v2.5.65: 高精度进度条轮询 (100ms 一次, 让白点跟实际位置同步)
+    _positionPollTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if (_isDisposing || !mounted || _scrubbingValue != null) return;
+      if (_isSwiping) return;
+      if (!_isPlaying) return;
+      final newPos = _player?.position ?? Duration.zero;
+      if (newPos != _currentPosition && newPos > Duration.zero) {
+        setState(() => _currentPosition = newPos);
+      }
+    });
+  }
+
+  /// 绑定播放器状态流监听
+  void _bindPlayerListeners() {
+    if (_player == null) return;
+
     _positionSub = _player!.positionStream.listen((pos) {
       if (_isDisposing) return;
       if (!mounted) return;
@@ -492,7 +513,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (_isControlsVisible) {
           setState(() {});
         }
-        // 视频宽高同步 (替代 libmpv 的 videoParams)
+        // 视频宽高同步
         final w = _player!.width;
         final h = _player!.height;
         if (w > 0 && h > 0 && (w != _videoWidth || h != _videoHeight)) {
@@ -514,35 +535,18 @@ class _PlayerScreenState extends State<PlayerScreen>
         _maybeAutoPlayNext();
       }
     });
-    // ★ v2.5.65: 高精度进度条轮询 (100ms 一次, 让白点跟实际位置同步)
-    _positionPollTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
-      if (_isDisposing || !mounted || _scrubbingValue != null) return;
-      // v2.6.2: 滑动中不更新, 同 position stream 处理
-      if (_isSwiping) return;
-      // v2.5.90: 用 _isPlaying 代替 c.value.isPlaying,
-      //   后者在某些情况下跟实际播放状态不一致
-      if (!_isPlaying) return;
-      final c = _player?.controller;
-      if (c == null) return;
-      final newPos = c.value.position;
-      // v2.5.90: seek guard 已移除, 100ms 轮询直接更新
-      if (newPos != _currentPosition) {
-        setState(() => _currentPosition = newPos);
-      }
-    });
+
     _durationSub = _player!.durationStream.listen((dur) {
       if (_isDisposing) return;
       if (!mounted) return;
       _currentDuration = dur;
     });
-    // v2.2.0: completedStream 替代 streams.completed
-    // v2.5.20: 存到 _completedSub, dispose 时 cancel; 业务逻辑 _autoPlayNextEpisode
-    //   加 _isDisposing 守门, 防止 widget 销毁后还在切下一集
+
     _completedSub = _player!.completedStream.listen((_) {
       if (_isDisposing) return;
       _autoPlayNextEpisode();
     });
-    // v2.5.20: 存到 _playingSub + 业务逻辑加 _isDisposing 守门
+
     _playingSub = _player!.playingStream.listen((playing) {
       if (_isDisposing) return;
       if (!mounted) return;
@@ -555,8 +559,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         _showControls();
       }
     });
-    // v2.2.0: bufferingStream — Media3 缓冲状态变化, 给 UI 决定是否显示 spinner
-    // v2.5.20: 存到 _bufferingSub + _isDisposing 守门
+
     _bufferingSub = _player!.bufferingStream.listen((b) {
       if (_isDisposing) return;
       if (!mounted) return;
@@ -564,6 +567,40 @@ class _PlayerScreenState extends State<PlayerScreen>
         _isBuffering = b;
       });
     });
+  }
+
+  /// 动态平滑切换后端 (当发生跨类型源切换时自愈)
+  Future<void> _switchPlayerBackend(bool toShortDrama) async {
+    if (_isDisposing) return;
+    await _positionSub?.cancel();
+    _positionSub = null;
+    await _durationSub?.cancel();
+    _durationSub = null;
+    await _completedSub?.cancel();
+    _completedSub = null;
+    await _playingSub?.cancel();
+    _playingSub = null;
+    await _bufferingSub?.cancel();
+    _bufferingSub = null;
+
+    try {
+      await _player?.dispose();
+    } catch (_) {}
+
+    try {
+      if (toShortDrama) {
+        _player = await DuanjuMediaKitBackend.create();
+      } else {
+        _player = await ExoPlayerBackend.create();
+      }
+    } catch (e, st) {
+      DiaryService.add('[Player] switch FAIL: toShortDrama=$toShortDrama, error=$e\n$st');
+      return;
+    }
+
+    if (!mounted) return;
+    _bindPlayerListeners();
+    setState(() {});
   }
 
   @override
@@ -3443,39 +3480,32 @@ class _PlayerScreenState extends State<PlayerScreen>
         widget.videoInfo.source == 'hongguo' ||
         widget.videoInfo.source == 'shortdrama';
 
+    // 播放器后端类型自适应：短剧使用 DuanjuMediaKitBackend，非短剧维持原有 ExoPlayerBackend
+    if (isShortDrama && _player is! DuanjuMediaKitBackend) {
+      await _switchPlayerBackend(true);
+    } else if (!isShortDrama && _player is! ExoPlayerBackend) {
+      await _switchPlayerBackend(false);
+    }
+
     String actualSourceUrl = originalUrl;
+    DuanjuPlaybackPlan? duanjuPlan;
     if (isShortDrama || !originalUrl.startsWith('http')) {
       final dramaId = source.id.isNotEmpty ? source.id : widget.videoInfo.id;
-      // 关键：若切换到非第1集，坚决不能把第1集的URL作为rawUrl传入，必须独立解析！
-      final candidateRawUrl = (index == 0 && originalUrl.startsWith('http')) ? originalUrl : null;
-      String? resolved = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
+      // 优先获取短剧专属播放计划 (包含真实 CENC 解密密钥与直链)
+      duanjuPlan = await DuanjuCoreBridge.instance.getPlaybackPlan(
         dramaId: dramaId,
         episode: index + 1,
-        rawUrl: candidateRawUrl,
       );
-      // 增强兜底：若首次解析未拿到有效直链，强制重试解析一次
-      if (resolved == null || resolved.isEmpty) {
-        resolved = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
-          dramaId: dramaId,
-          episode: index + 1,
-        );
-      }
-      // 校验防冒充：若非第1集，且返回的地址与第1集完全一样，说明拿到试看集，强制重试解析
-      if (resolved != null && index > 0 && source.episodes.isNotEmpty && resolved == source.episodes[0]) {
-        resolved = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
-          dramaId: dramaId,
-          episode: index + 1,
-        );
-      }
 
-      if (resolved != null && resolved.isNotEmpty) {
-        actualSourceUrl = resolved;
+      if (duanjuPlan != null && duanjuPlan.url.isNotEmpty) {
+        actualSourceUrl = duanjuPlan.url;
         if (index < source.episodes.length) {
-          source.episodes[index] = resolved;
+          source.episodes[index] = duanjuPlan.url;
         }
-        // 自动对齐用户偏好的清晰度 (如用户选了 720P 或 480P，切集后自动用对应码率)
-        final multiMap = DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, index + 1) ??
-            DuanjuCoreBridge.buildMultiResolutionUrls(resolved);
+        final multiMap = duanjuPlan.multiMap.isNotEmpty
+            ? duanjuPlan.multiMap
+            : (DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, index + 1) ??
+                DuanjuCoreBridge.buildMultiResolutionUrls(duanjuPlan.url));
         _resolutionUrlMap
           ..clear()
           ..addAll(multiMap);
@@ -3484,6 +3514,47 @@ class _PlayerScreenState extends State<PlayerScreen>
           if (prefUrl != null && prefUrl.isNotEmpty) {
             actualSourceUrl = prefUrl;
             _currentResolution = _userPreferredResolution;
+          }
+        }
+      } else {
+        // 兼容兜底: 走 resolvePlaybackUrl
+        final candidateRawUrl = (index == 0 && originalUrl.startsWith('http')) ? originalUrl : null;
+        String? resolved = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
+          dramaId: dramaId,
+          episode: index + 1,
+          rawUrl: candidateRawUrl,
+        );
+        // 增强兜底：若首次解析未拿到有效直链，强制重试解析一次
+        if (resolved == null || resolved.isEmpty) {
+          resolved = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
+            dramaId: dramaId,
+            episode: index + 1,
+          );
+        }
+        // 校验防冒充：若非第1集，且返回的地址与第1集完全一样，说明拿到试看集，强制重试解析
+        if (resolved != null && index > 0 && source.episodes.isNotEmpty && resolved == source.episodes[0]) {
+          resolved = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
+            dramaId: dramaId,
+            episode: index + 1,
+          );
+        }
+
+        if (resolved != null && resolved.isNotEmpty) {
+          actualSourceUrl = resolved;
+          if (index < source.episodes.length) {
+            source.episodes[index] = resolved;
+          }
+          final multiMap = DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, index + 1) ??
+              DuanjuCoreBridge.buildMultiResolutionUrls(resolved);
+          _resolutionUrlMap
+            ..clear()
+            ..addAll(multiMap);
+          if (multiMap.containsKey(_userPreferredResolution)) {
+            final prefUrl = multiMap[_userPreferredResolution];
+            if (prefUrl != null && prefUrl.isNotEmpty) {
+              actualSourceUrl = prefUrl;
+              _currentResolution = _userPreferredResolution;
+            }
           }
         }
       }
@@ -3616,7 +3687,16 @@ class _PlayerScreenState extends State<PlayerScreen>
       //   prepare + seekTo(startAt) + play 全部按这个顺序排好了
       //   (见 exo_player_backend.dart open()), Dart 端传 startAt 即可.
       //   保留 verify + 重试 seek 兜底, 万一 open() 内 seek 失败.
-      await _player!.open(playUrl, startAt: resumeAt);
+      final dramaId = source.id.isNotEmpty ? source.id : widget.videoInfo.id;
+      final decKey = duanjuPlan?.decryptionKey.isNotEmpty == true
+          ? duanjuPlan!.decryptionKey
+          : (isShortDrama ? DuanjuCoreBridge.instance.getDecryptionKey(dramaId, index + 1) : null);
+      await _player!.open(
+        playUrl,
+        headers: duanjuPlan?.headers,
+        startAt: resumeAt,
+        decryptionKey: decKey,
+      );
       if (resumeAt != null) {
         // v1.0.61 fix: 验证 seek 是否生效. open() 内 seek + play 都按
         //   正确顺序排了, 但保险起见仍 verify. 不命中再重试一次.
@@ -5900,7 +5980,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     // 针对短剧或主流播放，确保 1080P / 720P / 480P 均有真实独立流
     final playUrl = _currentPlayUrl.isNotEmpty
         ? _currentPlayUrl
-        : (_player?.controller?.dataSource ?? '');
+        : (_player is ExoPlayerBackend
+            ? (_player as ExoPlayerBackend).controller?.dataSource ?? ''
+            : '');
     if (isShortDrama || playUrl.isNotEmpty) {
       final multiMap = DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, _currentEpisodeIndex + 1) ??
           DuanjuCoreBridge.buildMultiResolutionUrls(playUrl);
@@ -5986,7 +6068,9 @@ class _PlayerScreenState extends State<PlayerScreen>
                   if (isSelected) return;
                   final curUrl = _currentPlayUrl.isNotEmpty
                       ? _currentPlayUrl
-                      : (_player?.controller?.dataSource ?? '');
+                      : (_player is ExoPlayerBackend
+                          ? (_player as ExoPlayerBackend).controller?.dataSource ?? ''
+                          : '');
                   final targetUrl = _resolutionUrlMap[res] ??
                       DuanjuCoreBridge.buildMultiResolutionUrls(curUrl)[res];
                   if (targetUrl != null && targetUrl.isNotEmpty) {
@@ -5996,7 +6080,10 @@ class _PlayerScreenState extends State<PlayerScreen>
                       _currentResolution = res;
                       _currentPlayUrl = targetUrl;
                     });
-                    await _player!.open(targetUrl, startAt: currentPos);
+                    final decKey = isShortDrama
+                        ? DuanjuCoreBridge.instance.getDecryptionKey(dramaId, _currentEpisodeIndex + 1)
+                        : null;
+                    await _player!.open(targetUrl, startAt: currentPos, decryptionKey: decKey);
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
@@ -6322,7 +6409,13 @@ class _PlayerScreenState extends State<PlayerScreen>
                   child: Stack(
                     alignment: Alignment.center,
                     children: [
-                      ExoPlayerView(backend: _player!),
+                      if (_player is DuanjuMediaKitBackend)
+                        DuanjuMediaKitView(
+                            backend: _player as DuanjuMediaKitBackend)
+                      else if (_player is ExoPlayerBackend)
+                        ExoPlayerView(backend: _player as ExoPlayerBackend)
+                      else
+                        const ColoredBox(color: Colors.black),
                       if (_danmakuEnabled)
                         DanmakuOverlay(
                           key: _danmakuKey,
