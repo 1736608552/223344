@@ -125,20 +125,18 @@ jobs:
           cat SHA256SUMS.txt
           cd ..
 
-          # 编写发布说明
-          cat << 'EOF' > release_notes.md
-## LunaTV Mobile 正式版发布
-
-### 核心特性与修复
-- **短剧硬件解密推流通道**：全新接入官方 CENC (AES-128-CTR) 原生硬件解密推流，彻底终结红果等火山 CDN 视频流“无限转圈无法播放”的历史问题；
-- **多清晰度平滑切换**：全面支持 1080P / 720P / 480P 解密流平滑热切；
-- **非短剧业务零影响**：电影、电视剧、动漫、直播等业务 100% 保持稳定原生播放链路；
-- **自动化发布就绪**：对齐 guoapp 规范，构建完成后自动挂载正式安装包与 SHA256 校验清单。
-
-### 安装包下载
-- **LunaTV-Mobile-*.apk**：正式版完整安装包（推荐安装）
-- **SHA256SUMS.txt**：安装包完整性校验值
-EOF
+          # 编写发布说明 (采用 printf 避免 YAML 缩进解析干扰)
+          {
+            printf '%s\n\n' "## LunaTV Mobile 正式版发布"
+            printf '%s\n' "### 核心特性与修复"
+            printf '%s\n' "- 短剧硬件解密推流通道：全新接入官方 CENC (AES-128-CTR) 原生硬件解密推流，彻底终结红果等火山 CDN 视频流无限转圈无法播放的历史问题；"
+            printf '%s\n' "- 多清晰度平滑切换：全面支持 1080P / 720P / 480P 解密流平滑热切；"
+            printf '%s\n' "- 非短剧业务零影响：电影、电视剧、动漫、直播等业务 100% 保持稳定原生播放链路；"
+            printf '%s\n' "- 自动化发布就绪：对齐 guoapp 规范，构建完成后自动挂载正式安装包与 SHA256 校验清单。"
+            printf '\n%s\n' "### 安装包下载"
+            printf '%s\n' "- LunaTV-Mobile-*.apk：正式版完整安装包（推荐安装）"
+            printf '%s\n' "- SHA256SUMS.txt：安装包完整性校验值"
+          } > release_notes.md
 
           TITLE="LunaTV Mobile ${TAG}"
 
