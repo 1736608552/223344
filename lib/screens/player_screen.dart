@@ -3243,12 +3243,19 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (source == null) return;
     final nextIndex = _currentEpisodeIndex + 1;
     if (nextIndex >= source.episodes.length) return; // 最后一集
-    if (source.episodes[nextIndex].isEmpty) return; // 下一集没 url
+
+    final isShortDrama = source.source == 'hongguo' ||
+        source.source == 'shortdrama' ||
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama';
+
+    // 短剧通过 getPlaybackPlan 动态取流与获取解密密钥，非短剧才需校验预填充直链
+    if (!isShortDrama && source.episodes[nextIndex].isEmpty) return; // 下一集没 url
 
     // v1.0.55: 兜底守门 (堵 streams.completed 误触发)
     final dur = _currentDuration;
     if (dur <= Duration.zero) return; // 时长还没拿到
-    if (dur < const Duration(seconds: 30)) return; // 时长太短, 直播流/异常
+    if (!isShortDrama && dur < const Duration(seconds: 30)) return; // 传统影视时长太短防异常，短剧不拦截
     if (_currentPosition < dur - const Duration(milliseconds: 1500)) {
       // pos 还没到结尾附近, completed 误触发, 不切
       return;
@@ -3269,7 +3276,13 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (source == null) return;
     final nextIndex = _currentEpisodeIndex + 1;
     if (nextIndex >= source.episodes.length) return; // 最后一集
-    if (source.episodes[nextIndex].isEmpty) return; // 下一集没 url
+
+    final isShortDrama = source.source == 'hongguo' ||
+        source.source == 'shortdrama' ||
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama';
+
+    if (!isShortDrama && source.episodes[nextIndex].isEmpty) return; // 下一集没 url
     _autoPlayedThisEpisode = true;
     _playEpisode(nextIndex);
     // 给个轻提示 (主路是控制栏图标变了, 提示只是兜底)
