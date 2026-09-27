@@ -736,6 +736,7 @@ class DuanjuCoreBridge {
     required String dramaId,
     required int episode,
     String? rawUrl,
+    int quality = 0,
   }) async {
     // 已经是完整网络音视频流且不是占位符数字，直接返回
     if (rawUrl != null &&
@@ -745,7 +746,7 @@ class DuanjuCoreBridge {
     }
 
     final cleanId = dramaId.trim();
-    final cacheKey = '$cleanId-$episode';
+    final cacheKey = quality == 0 ? '$cleanId-$episode' : '$cleanId-$episode-$quality';
 
     // 1. 优先命中单集直链缓存
     if (_playbackUrlCache.containsKey(cacheKey) &&
@@ -781,7 +782,7 @@ class DuanjuCoreBridge {
             'current_episode': '$episode',
           },
           'index': episode,
-          'quality': 0,
+          'quality': quality,
           'sequence': DateTime.now().millisecondsSinceEpoch,
         });
 

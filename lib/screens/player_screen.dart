@@ -2410,9 +2410,12 @@ class _PlayerScreenState extends State<PlayerScreen>
             final updatedEps = List.generate(realCount, (i) => (i + 1).toString());
             final updatedTitles = List.generate(realCount, (i) => '第${i + 1}集');
             setState(() {
-              dramaSource.episodes = updatedEps;
-              dramaSource.episodesTitles = updatedTitles;
-              widget.videoInfo.totalEpisodes = realCount;
+              dramaSource.episodes
+                ..clear()
+                ..addAll(updatedEps);
+              dramaSource.episodesTitles
+                ..clear()
+                ..addAll(updatedTitles);
             });
           }
         } catch (_) {}
