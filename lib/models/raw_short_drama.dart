@@ -11,6 +11,7 @@
 /// - 播放 = 仍走 ShortDramaService.parseEpisode() 走后端解析
 class RawShortDrama {
   final int vodId;
+  final String dramaId;
   final String vodName;
   final String vodPic;
   final String vodPicSlide;
@@ -25,6 +26,7 @@ class RawShortDrama {
 
   const RawShortDrama({
     required this.vodId,
+    this.dramaId = '',
     required this.vodName,
     required this.vodPic,
     required this.vodPicSlide,
@@ -62,6 +64,9 @@ class RawShortDrama {
     var p = raw.trim();
     if (p.startsWith('//')) {
       p = 'https:$p';
+    }
+    if (p.endsWith('.webp')) {
+      p = p.replaceFirst(RegExp(r'\.webp$'), '.image');
     }
     return p;
   }

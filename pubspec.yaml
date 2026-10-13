@@ -1,7 +1,7 @@
 name: luna_tv
 description: "LunaTV-inspired Flutter client"
 publish_to: 'none'
-version: 2.6.67+1
+version: 2.6.88+88
 
 environment:
   sdk: ">=3.5.0 <4.0.0"
@@ -60,7 +60,12 @@ dependencies:
   gbk_codec: ^0.4.0
   # v2.5.34: 弹幕系统需要 md5 (优酷 mtop 签名) — pub 官方 crypto 包
   crypto: ^3.0.6
-  # v2.2.0: 删了 dart:ffi (libmpv FFI 绑定 MpvFFI 没了, ExoPlayer 是纯原生 AndroidX)
+  # v2.2.0: 恢复 FFI 绑定用于短剧核心原生加速
+  ffi: ^2.1.2
+  # 红果短剧专用：底层 CENC 硬件解密推流引擎，对齐 guoapp
+  media_kit: 1.2.6
+  media_kit_video: 2.0.1
+  media_kit_libs_video: ^1.0.7
 
   # gal: ^2.0.1
   # app_settings: ^4.1.1

@@ -157,6 +157,7 @@ class ExoPlayerBackend implements PlayerBackend {
     String url, {
     Map<String, String>? headers,
     Duration? startAt,
+    String? decryptionKey,
   }) async {
     if (_disposed) {
       throw StateError('ExoPlayerBackend disposed');

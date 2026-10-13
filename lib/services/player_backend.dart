@@ -58,6 +58,7 @@ abstract class PlayerBackend {
 
   // ── 流 (异步订阅) ──────────────────────────────────────────
   Stream<bool> get playingStream;
+  Stream<bool> get bufferingStream;
   Stream<Duration> get positionStream;
   Stream<Duration> get durationStream;
   Stream<bool> get completedStream;
@@ -70,6 +71,7 @@ abstract class PlayerBackend {
     String url, {
     Map<String, String>? headers,
     Duration? startAt,
+    String? decryptionKey,
   });
   Future<void> play();
   Future<void> pause();

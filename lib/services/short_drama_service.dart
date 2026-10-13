@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:luna_tv/services/user_data_service.dart';
 import 'package:luna_tv/models/short_drama.dart';
+import 'package:luna_tv/services/duanju_core_bridge.dart';
 
 /// 短剧服务
 class ShortDramaService {
@@ -201,6 +202,30 @@ class ShortDramaService {
     String? name,
     bool useProxy = true,
   }) async {
+    // 优先尝试原生短剧核心 / 官方直链解析引擎 (支持免后端服务器运行)
+    try {
+      final nativeUrl = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
+        dramaId: id.toString(),
+        episode: episode,
+      );
+      if (nativeUrl != null && nativeUrl.isNotEmpty) {
+        return ShortDramaParseResult(
+          code: 0,
+          msg: 'ok',
+          data: ShortDramaParseData(
+            videoId: id,
+            videoName: name ?? '',
+            currentEpisode: episode,
+            totalEpisodes: 100,
+            parsedUrl: nativeUrl,
+            proxyUrl: '',
+            cover: '',
+            description: '',
+          ),
+        );
+      }
+    } catch (_) {}
+
     // ignore: avoid_print
     print('[shortdrama/parse] id=$id episode=$episode name=$name useProxy=$useProxy');
     final result = await _parseEpisodeOnce(

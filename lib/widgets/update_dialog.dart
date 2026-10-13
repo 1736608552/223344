@@ -92,37 +92,61 @@ class _UpdateDialogState extends State<UpdateDialog> {
       final fileName = 'luna-tv-update-v${widget.versionInfo.latestVersion}.apk';
       final filePath = '${dir.path}/$fileName';
 
-      // 老 APK 残留先清掉, 避免「下载了 5MB 失败再重试, 文件被截断」
-      final oldFile = File(filePath);
-      if (await oldFile.exists()) {
-        try {
-          await oldFile.delete();
-        } catch (_) {/* 忽略, 删不掉就走覆盖 */}
+      // 构建多通道加速镜像候选列表（国内直连高可用）
+      final candidateUrls = <String>[];
+      if (apkUrl.startsWith('https://github.com/')) {
+        candidateUrls.add('https://ghfast.top/$apkUrl');
+        candidateUrls.add(apkUrl);
+      } else {
+        candidateUrls.add(apkUrl);
       }
 
       final dio = Dio();
-      await dio.download(
-        apkUrl,
-        filePath,
-        cancelToken: _cancelToken,
-        options: Options(
-          // github.com/objects.githubusercontent.com 不需要特殊头
-          // worker 代理 (配了的话) 也不需要
-          responseType: ResponseType.bytes,
-          followRedirects: true,
-          // 流式 body, 大 APK 不爆内存
-          receiveTimeout: const Duration(minutes: 5),
-        ),
-        onReceiveProgress: (received, total) {
-          if (!mounted) return;
-          setState(() {
-            _downloaded = received;
-            _total = total <= 0 ? 0 : total;
-            _progress =
-                _total > 0 ? (_downloaded / _total).clamp(0.0, 1.0) : 0.0;
-          });
-        },
-      );
+      bool downloadedSuccessfully = false;
+      dynamic lastDownloadError;
+
+      for (final currentTryUrl in candidateUrls) {
+        if (_cancelToken?.isCancelled ?? false) break;
+
+        // 老 APK 残留先清掉, 避免「下载了 5MB 失败再重试, 文件被截断」
+        final oldFile = File(filePath);
+        if (await oldFile.exists()) {
+          try {
+            await oldFile.delete();
+          } catch (_) {/* 忽略, 删不掉就走覆盖 */}
+        }
+
+        try {
+          await dio.download(
+            currentTryUrl,
+            filePath,
+            cancelToken: _cancelToken,
+            options: Options(
+              responseType: ResponseType.bytes,
+              followRedirects: true,
+              receiveTimeout: const Duration(minutes: 5),
+            ),
+            onReceiveProgress: (received, total) {
+              if (!mounted) return;
+              setState(() {
+                _downloaded = received;
+                _total = total <= 0 ? 0 : total;
+                _progress =
+                    _total > 0 ? (_downloaded / _total).clamp(0.0, 1.0) : 0.0;
+              });
+            },
+          );
+          downloadedSuccessfully = true;
+          break;
+        } catch (e) {
+          lastDownloadError = e;
+          if (_cancelToken?.isCancelled ?? false) break;
+        }
+      }
+
+      if (!downloadedSuccessfully) {
+        throw lastDownloadError ?? Exception('下载更新包失败');
+      }
 
       if (!mounted) return;
       setState(() {

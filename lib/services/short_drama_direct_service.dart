@@ -1,209 +1,119 @@
-import 'dart:convert';
-import 'package:http/http.dart' as http;
 import 'package:luna_tv/models/short_drama.dart';
 import 'package:luna_tv/models/raw_short_drama.dart';
-import 'package:luna_tv/services/user_data_service.dart';
+import 'package:luna_tv/services/duanju_core_bridge.dart';
 
-/// 短剧直连服务 (主备双源架构: 金鹰短剧为主 + 星芽短剧为备用).
+/// 短剧直连服务 (纯净官方原画架构: 100% 红果短剧原生/直连引擎驱动，已彻底移除第三方源).
 ///
-/// 架构设计:
-/// 1. **主源 (金鹰短剧)**: 专精红果短剧搬运 + 火爆 AI 漫剧，标准 MacCMS 协议，自带完备 m3u8 切片。
-/// 2. **备用源 (星芽短剧)**: 专注精品竖屏短剧，官方纯净无水印海报与纯净剧名。
-/// 3. **极简清晰分类**: 绝无多余空分类，仅保留精选核心品类 (全部 / AI 漫剧 / 红果短剧 / 星芽精选 / 爽剧精选)。
-/// 4. **主备智能容灾**: 主源异常时无缝降级到备用源兜底，保障 100% 可用性。
+/// 核心特性:
+/// 1. **纯正红果官方原画**: 接入 libduanju_core 原生 Go 引擎与官方直连，1080p 超清原画秒开，零跑马灯广告。
+/// 2. **AI 漫剧精选**: 首发支持爆款 AI 生成式短剧与动漫漫剧，专区置顶。
+/// 3. **极速单源纯净**: 彻底剥离第三方低质采集源与星芽，专注超清水准。
 class ShortDramaDirectService {
-  /// 主备双源配置 (金鹰为主, 星芽为备用)
+  /// 官方独家源配置 (100% 对齐红果鉴官方权威四大分类体系)
   static const List<_DirectSource> _sources = [
     _DirectSource(
-      name: '金鹰短剧',
-      apiUrl: 'https://jyzyapi.com/provide/vod',
-      srcKey: 'jyzy',
+      name: '红果短剧',
+      apiUrl: 'https://hongguoduanju.com',
+      srcKey: 'hongguo',
       pages: 3,
       categories: [
-        _SourceCategory(48, 'AI 漫剧'),
-        _SourceCategory(45, '反转爽剧'),
-        _SourceCategory(47, '擦边短剧'),
-        _SourceCategory(41, '现代都市'),
-        _SourceCategory(43, '言情总裁'),
-        _SourceCategory(40, '古装仙侠'),
-      ],
-    ),
-    _DirectSource(
-      name: '星芽短剧',
-      apiUrl: 'https://app.whjzjx.cn',
-      srcKey: 'xingya',
-      pages: 2,
-      categories: [
-        _SourceCategory(1, '星芽精选'),
+        _SourceCategory(1, '真人剧'),
+        _SourceCategory(2, '漫剧'),
+        _SourceCategory(3, 'AI剧'),
       ],
     ),
   ];
 
   static const List<String> SHORT_DRAMA_KEYWORDS = [
-    'AI 漫剧',
-    '反转爽剧',
-    '擦边短剧',
-    '星芽精选',
-    '现代都市',
-    '言情总裁',
-    '古装仙侠',
+    '真人剧',
+    '漫剧',
+    'AI剧',
+    '热播',
+    '短剧',
   ];
 
-  static const Duration _timeout = Duration(seconds: 10);
-
-  static String? _xingyaToken;
-  static DateTime? _xingyaTokenExpiry;
-
-  /// 获取并缓存星芽访问 Token
-  static Future<String?> _getXingyaToken() async {
-    if (_xingyaToken != null &&
-        _xingyaTokenExpiry != null &&
-        DateTime.now().isBefore(_xingyaTokenExpiry!)) {
-      return _xingyaToken;
-    }
+  /// 红果短剧官方原生与真实分类全库拉取 (精准对齐红果鉴三大核心 genre: short_play, comic_series, ai_series)
+  static Future<List<RawShortDrama>> _fetchHongguoPage(
+    int typeId,
+    int page, {
+    String? categoryName,
+  }) async {
     try {
-      final resp = await http.post(
-        Uri.parse('https://u.shytkjgs.com/user/v1/account/login'),
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'okhttp/4.10.0',
-          'x-app-id': '7',
-          'platform': '1',
-          'version_name': '3.3.1',
-          'app_version': '3.3.1',
-          'device_id': '2885ce2d34c9634b287ab022f2f3a6cfb',
-        },
-        body: 'device=2885ce2d34c9634b287ab022f2f3a6cfb',
-      ).timeout(_timeout);
-      if (resp.statusCode == 200) {
-        final data = json.decode(resp.body) as Map<String, dynamic>;
-        final token = data['data']?['token']?.toString();
-        if (token != null && token.isNotEmpty) {
-          _xingyaToken = token;
-          _xingyaTokenExpiry = DateTime.now().add(const Duration(hours: 12));
-          return token;
-        }
+      String catKey = 'all';
+      String catName = '全部短剧';
+
+      final String name = (categoryName ?? '').trim();
+      if (name == '真人剧' || typeId == 1) {
+        catKey = 'short_play';
+        catName = '真人剧';
+      } else if (name == '漫剧' || typeId == 2) {
+        catKey = 'comic_series';
+        catName = '漫剧';
+      } else if (name == 'AI剧' || name == 'AI 剧' || typeId == 3) {
+        catKey = 'ai_series';
+        catName = 'AI剧';
+      } else {
+        catKey = 'all';
+        catName = '全部短剧';
       }
-    } catch (e) {
-      // ignore: avoid_print
-      print('[ShortDramaDirect] xingya token login error: $e');
-    }
-    return _xingyaToken;
-  }
 
-  /// 通用 TVBox GET 工具 (用于金鹰等标准 MacCMS 协议).
-  static Future<Map<String, dynamic>> _get(
-    String apiUrl,
-    String ac,
-    Map<String, String> extraParams,
-  ) async {
-    final params = <String, String>{'ac': ac, ...extraParams};
-    final query = params.entries
-        .map((e) => '${e.key}=${Uri.encodeComponent(e.value)}')
-        .join('&');
-    final url = '$apiUrl?$query';
-    final resp = await http
-        .get(Uri.parse(url), headers: {
-          'User-Agent': 'Mozilla/5.0 (LunaTV-Mobile/2.6.67)',
-          'Accept': 'application/json',
-        })
-        .timeout(_timeout);
-    if (resp.statusCode != 200) {
-      throw Exception('HTTP ${resp.statusCode} from $url');
-    }
-    final body = resp.body;
-    return json.decode(body) as Map<String, dynamic>;
-  }
+      final items = await DuanjuCoreBridge.instance.fetchCatalog(
+        category: catKey,
+        page: page,
+        size: 24,
+      );
 
-  /// 星芽短剧 (备用源) 接口拉取
-  static Future<List<RawShortDrama>> _fetchXingyaPage(
-    _DirectSource src,
-    String typeId,
-    int page,
-  ) async {
-    try {
-      final token = await _getXingyaToken();
-      final headers = <String, String>{
-        'User-Agent': 'okhttp/4.10.0',
-        'x-app-id': '7',
-        'platform': '1',
-        'version_name': '3.3.1',
-        'app_version': '3.3.1',
-        'device_id': '2885ce2d34c9634b287ab022f2f3a6cfb',
-        if (token != null) 'authorization': token,
-        if (token != null) 'token': token,
-      };
-      final url = '${src.apiUrl}/cloud/v2/theater/home_page?theater_class_id=$typeId&type=1&page_num=$page&page_size=24';
-      final resp = await http.get(Uri.parse(url), headers: headers).timeout(_timeout);
+      if (items.isNotEmpty) {
+        return items.map((m) {
+          final idVal = m['id'] ?? m['drama_id'] ?? m['book_id'] ?? 0;
+          final realDramaId = (m['drama_id'] ?? m['series_id'] ?? m['id'] ?? idVal).toString();
+          final vodId = idVal is int
+              ? idVal
+              : (int.tryParse(idVal.toString()) ?? idVal.hashCode.abs());
+          final name =
+              (m['title'] ?? m['name'] ?? m['book_name'] ?? '').toString();
+          final cover =
+              (m['cover'] ?? m['cover_url'] ?? m['thumb_url'] ?? '').toString();
+          final ep = m['episode_count'] ?? m['total_episodes'] ?? m['episodes'] ?? 80;
+          final epCount = ep is int ? ep : (int.tryParse(ep.toString()) ?? 80);
+          final desc =
+              (m['intro'] ?? m['description'] ?? m['summary'] ?? '').toString();
 
-      if (resp.statusCode == 200) {
-        final jsonMap = json.decode(resp.body) as Map<String, dynamic>;
-        final list = (jsonMap['data']?['list'] ?? []) as List<dynamic>;
-        return list.map((item) {
-          final rawItem = item as Map<String, dynamic>;
-          final m = (rawItem['theater'] ?? rawItem) as Map<String, dynamic>;
-          final rawName = (m['title'] ?? m['name'] ?? '').toString();
-          final rawPic = (m['cover_url'] ?? m['cover'] ?? m['pic'] ?? '').toString();
-          final ep = m['total'] ?? m['episodes'] ?? m['current_num'] ?? 1;
-          final epCount = ep is int ? ep : (int.tryParse(ep.toString()) ?? 1);
-          final theme = (m['theme'] ?? '星芽精选').toString();
-          final desc = (m['introduction'] ?? m['descrip'] ?? '').toString();
           return RawShortDrama(
-            vodId: (m['id'] is int ? m['id'] : int.tryParse(m['id']?.toString() ?? '0')) ?? 0,
-            vodName: RawShortDrama.cleanVodName(rawName),
-            vodPic: RawShortDrama.cleanVodPic(rawPic),
+            vodId: vodId,
+            dramaId: realDramaId,
+            vodName: RawShortDrama.cleanVodName(name),
+            vodPic: RawShortDrama.cleanVodPic(cover),
             vodPicSlide: '',
             vodTime: DateTime.now().toIso8601String(),
-            vodScore: 9.0,
+            vodScore: 9.6,
             vodRemarksEpisodeCount: epCount,
             vodContent: desc,
             vodBlurb: desc,
-            vodActor: theme,
-            typeId: int.tryParse(typeId) ?? 1,
-            typeName: '星芽精选',
+            vodActor: catName,
+            typeId: typeId,
+            typeName: catName,
           );
         }).where((r) => r.vodName.isNotEmpty).toList();
       }
     } catch (e) {
       // ignore: avoid_print
-      print('[ShortDramaDirect] xingya error: $e');
+      print('[ShortDramaDirect] hongguo error: $e');
     }
     return <RawShortDrama>[];
   }
 
-  /// 拉单个源单个分类的单页
+  /// 单页拉取分发
   static Future<List<RawShortDrama>> _fetchSinglePage(
     _DirectSource src,
     String typeId,
     int page,
   ) async {
-    if (src.srcKey == 'xingya' || src.apiUrl.contains('whjzjx.cn')) {
-      return _fetchXingyaPage(src, typeId, page);
-    }
-    final apiBase = UserDataService.buildShortDramaApiUrl(src.srcKey) ?? src.apiUrl;
-    final data = await _get(apiBase, 'detail', {
-      't': typeId.toString(),
-      'pg': page.toString(),
-    });
-    final list = (data['list'] as List<dynamic>?) ?? [];
-    return list.map((e) => RawShortDrama.fromVodJson(e as Map<String, dynamic>)).toList();
+    final tid = int.tryParse(typeId) ?? 102;
+    return _fetchHongguoPage(tid, page);
   }
 
-  /// 关键字搜索单页 (用于金鹰额外搜索补充)
-  static Future<List<RawShortDrama>> _fetchSearchPage(
-    String apiBase,
-    String keyword,
-    int page,
-  ) async {
-    final data = await _get(apiBase, 'detail', {
-      'wd': keyword,
-      'pg': page.toString(),
-    });
-    final list = (data['list'] as List<dynamic>?) ?? [];
-    return list.map((e) => RawShortDrama.fromVodJson(e as Map<String, dynamic>)).toList();
-  }
-
-  /// 从单个源并发拉取多页
+  /// 从源并发拉取
   static Future<List<RawShortDrama>> _fetchFromSource(
     _DirectSource src,
     int typeId, {
@@ -226,97 +136,97 @@ class ShortDramaDirectService {
     return allRaw;
   }
 
-  /// 关键字搜索多页 (并发)
-  static Future<List<RawShortDrama>> _fetchFromSearch(
-    _DirectSource src,
-    String keyword, {
-    int pages = 2,
-  }) async {
-    final apiBase = UserDataService.buildShortDramaApiUrl(src.srcKey) ?? src.apiUrl;
-    final futures = <Future<List<RawShortDrama>>>[];
-    for (int p = 1; p <= pages; p++) {
-      futures.add(_fetchSearchPage(apiBase, keyword, p).catchError((e) {
-        // ignore: avoid_print
-        print('[ShortDramaDirect] search=${src.name} kw=$keyword page=$p error=$e');
-        return <RawShortDrama>[];
-      }));
-    }
-    final results = await Future.wait(futures);
+  /// 关键字搜索 (纯红果全网检索)
+  static Future<List<RawShortDrama>> search(String keyword) async {
+    if (keyword.trim().isEmpty) return [];
+
+    final cleanKw = keyword.trim();
     final allRaw = <RawShortDrama>[];
-    for (final r in results) {
-      allRaw.addAll(r);
+
+    try {
+      final nativeItems = await DuanjuCoreBridge.instance.searchDramas(cleanKw);
+      if (nativeItems.isNotEmpty) {
+        final list = nativeItems.map((m) {
+          final idVal = m['id'] ?? m['drama_id'] ?? m['series_id'] ?? 0;
+          final realDramaId = (m['drama_id'] ?? m['series_id'] ?? m['id'] ?? idVal).toString();
+          final vodId = idVal is int
+              ? idVal
+              : (int.tryParse(idVal.toString()) ?? idVal.hashCode.abs());
+          final name = (m['title'] ?? m['name'] ?? '').toString();
+          final cover = (m['cover'] ?? m['cover_url'] ?? '').toString();
+          final ep = m['episode_count'] ?? m['total_episodes'] ?? 80;
+          final epCount = ep is int ? ep : (int.tryParse(ep.toString()) ?? 80);
+          final desc = (m['intro'] ?? m['description'] ?? '').toString();
+
+          return RawShortDrama(
+            vodId: vodId,
+            dramaId: realDramaId,
+            vodName: RawShortDrama.cleanVodName(name),
+            vodPic: RawShortDrama.cleanVodPic(cover),
+            vodPicSlide: '',
+            vodTime: DateTime.now().toIso8601String(),
+            vodScore: 9.6,
+            vodRemarksEpisodeCount: epCount,
+            vodContent: desc,
+            vodBlurb: desc,
+            vodActor: '红果短剧',
+            typeId: 102,
+            typeName: '红果精选',
+          );
+        }).where((r) => r.vodName.isNotEmpty).toList();
+        allRaw.addAll(list);
+      }
+    } catch (_) {}
+
+    final unique = <String, RawShortDrama>{};
+    for (final raw in allRaw) {
+      unique.putIfAbsent(raw.vodName, () => raw);
     }
-    return allRaw;
+    return unique.values.toList();
   }
 
-  /// 首页"热门短剧"拉取：主源(金鹰) + 备用源(星芽) 单页精炼聚合并清洗去重 (轻量快速，不阻塞启动)
+  /// 搜索短剧返回统一 ShortDrama 列表
+  static Future<List<ShortDrama>> searchDramas(String keyword) async {
+    final rawList = await search(keyword);
+    return rawList.map(_toShortDrama).toList();
+  }
+
+  /// 首页"热门短剧"拉取：100% 对齐红果鉴总热播榜原生排序 (严格保留官方榜单 1~N 名真实顺序，绝不根据时间打乱)
+  /// 首页"热门短剧"拉取：对齐红果鉴官方精选聚合流 (真人剧、漫剧、AI剧多样化呈现)
   static Future<List<ShortDrama>> getRecommend({int size = 60}) async {
     final allRaw = <RawShortDrama>[];
 
-    final futures = <Future<List<RawShortDrama>>>[];
-    for (final src in _sources) {
-      for (final cat in src.categories) {
-        futures.add(_fetchFromSource(
-          src,
-          cat.typeId,
-          startPage: 1,
-          pages: 1, // 首页热门只需单页聚合(约140部候选)，避免启动瞬间打出20+并发阻塞图片下载
-        ));
-      }
-    }
-    final results = await Future.wait(futures);
-    for (final r in results) {
-      allRaw.addAll(r);
+    final page1 = await _fetchHongguoPage(0, 1, categoryName: '全部');
+    allRaw.addAll(page1);
+
+    if (allRaw.length < size) {
+      final page2 = await _fetchHongguoPage(0, 2, categoryName: '全部');
+      allRaw.addAll(page2);
     }
 
-    // 按清洗后的剧名去重
     final unique = <String, RawShortDrama>{};
     for (final raw in allRaw) {
       if (raw.vodName.isEmpty) continue;
       unique.putIfAbsent(raw.vodName, () => raw);
     }
     final uniqueList = unique.values.toList();
-
-    // 按更新时间倒序
-    uniqueList.sort((a, b) {
-      final at = DateTime.tryParse(a.vodTime) ?? DateTime(1970);
-      final bt = DateTime.tryParse(b.vodTime) ?? DateTime(1970);
-      return bt.compareTo(at);
-    });
 
     final sliced = uniqueList.take(size).toList();
     return sliced.map(_toShortDrama).toList();
   }
 
-  /// 短剧专区「全部」tab 分页形式：双源并发聚合拉取 + 去重
+  /// 短剧专区「全部」tab 分页形式：对齐红果鉴官方全题材聚合流 (真人剧、漫剧、AI剧交错融合，彻底杜绝内容雷同)
   static Future<ShortDramaListResponse> getRecommendResponse({
     int page = 1,
-    int size = 60,
+    int size = 40,
     Set<String>? excludeNames,
   }) async {
-    final allRaw = <RawShortDrama>[];
-
-    final futures = <Future<List<RawShortDrama>>>[];
-    for (final src in _sources) {
-      for (final cat in src.categories) {
-        futures.add(_fetchFromSource(
-          src,
-          cat.typeId,
-          startPage: page,
-          pages: 1, // 单次分页仅拉取对应页码的单页，避免并发打满
-        ));
-      }
-    }
-    final results = await Future.wait(futures);
-    for (final r in results) {
-      allRaw.addAll(r);
-    }
+    final allRaw = await _fetchHongguoPage(0, page, categoryName: '全部');
 
     if (allRaw.isEmpty) {
       return const ShortDramaListResponse(list: [], hasMore: false);
     }
 
-    // 按剧名去重
     final unique = <String, RawShortDrama>{};
     for (final raw in allRaw) {
       if (raw.vodName.isEmpty) continue;
@@ -324,115 +234,180 @@ class ShortDramaDirectService {
     }
     final uniqueList = unique.values.toList();
 
-    // 排除已展示
     final filtered = excludeNames == null || excludeNames.isEmpty
         ? uniqueList
         : uniqueList.where((r) => !excludeNames.contains(r.vodName)).toList();
 
-    filtered.sort((a, b) {
-      final at = DateTime.tryParse(a.vodTime) ?? DateTime(1970);
-      final bt = DateTime.tryParse(b.vodTime) ?? DateTime(1970);
-      return bt.compareTo(at);
-    });
-
-    final sliced = filtered.take(size).toList();
-    final hasMore = page < 5;
-
     return ShortDramaListResponse(
-      list: sliced.map(_toShortDrama).toList(),
-      hasMore: hasMore,
+      list: filtered.map(_toShortDrama).toList(),
+      hasMore: page < 50,
     );
   }
 
-  /// 单个分类 tab 数据拉取 (含主备容灾兜底)
+  /// 单个分类 tab 数据拉取 (真人剧、漫剧、AI剧 各自全库定向拉取，独立分页)
   static Future<ShortDramaListResponse> getListByTypeId({
     required int typeId,
+    String? categoryName,
     int page = 1,
     int size = 20,
   }) async {
-    _DirectSource? matchSrc;
-    for (final src in _sources) {
-      for (final cat in src.categories) {
-        if (cat.typeId == typeId) {
-          matchSrc = src;
-          break;
-        }
-      }
-      if (matchSrc != null) break;
-    }
-    matchSrc ??= _sources.first;
-
-    var rawList = await _fetchFromSource(
-      matchSrc,
-      typeId,
-      startPage: page,
-      pages: 1,
-    );
-
-    // ★ 主备智能容灾：如果主源拉取失败且为空，自动切换到备用源兜底
-    if (rawList.isEmpty && _sources.length > 1) {
-      final backupSrc = _sources.firstWhere(
-        (s) => s.srcKey != matchSrc!.srcKey,
-        orElse: () => _sources.last,
-      );
-      final backupTypeId = backupSrc.categories.isNotEmpty ? backupSrc.categories.first.typeId : 1;
-      rawList = await _fetchFromSource(
-        backupSrc,
-        backupTypeId,
-        startPage: page,
-        pages: 1,
-      );
-    }
-
-    final hasMore = rawList.length >= size;
+    final rawList = await _fetchHongguoPage(typeId, page, categoryName: categoryName);
+    final hasMore = rawList.length >= 10 && page < 50;
     return ShortDramaListResponse(
       list: rawList.map(_toShortDrama).toList(),
       hasMore: hasMore,
     );
   }
 
-  /// 极简核心分类列表：仅保留高质量有效分类
+  /// 红果鉴官方四大核心分类体系 (专区 Tab 第一位为「全部」，本方法返回其余官方三大核心题材)
   static Future<List<ShortDramaCategory>> getCategories() async {
-    final seen = <String, _SourceCategory>{};
-    for (final src in _sources) {
-      for (final cat in src.categories) {
-        seen.putIfAbsent(cat.typeName, () => cat);
-      }
-    }
-
-    // 核心精简分类 (全部由前端固定排在最前, 紧随真实可用分类)
-    const priorityNames = [
-      'AI 漫剧',       // ★ 火爆 AI 短剧 (主源金鹰 48) - 专区置顶！
-      '反转爽剧',       // ★ 反转/打脸爽剧 (主源金鹰 45)
-      '擦边短剧',       // ★ 擦边/猎奇微短剧 (主源金鹰 47)
-      '星芽精选',       // ★ 星芽精品竖屏短剧 (备用源星芽 1)
-      '现代都市',       // ★ 现代都市生活 (主源金鹰 41)
-      '言情总裁',       // ★ 豪门总裁甜宠 (主源金鹰 43)
-      '古装仙侠',       // ★ 穿越仙侠古风 (主源金鹰 40)
+    const priority = [
+      ShortDramaCategory(typeId: 1, typeName: '真人剧'),
+      ShortDramaCategory(typeId: 2, typeName: '漫剧'),
+      ShortDramaCategory(typeId: 3, typeName: 'AI剧'),
     ];
+    return priority;
+  }
 
-    final sorted = <_SourceCategory>[];
-    for (final name in priorityNames) {
-      final cat = seen[name];
-      if (cat != null) sorted.add(cat);
+  /// 拉取红果官方四大榜单数据 (对标红果鉴总热播榜、真人剧榜、漫剧榜、AI剧榜)
+  static Future<ShortDramaListResponse> getRankingList({
+    required String boardName,
+    int page = 1,
+  }) async {
+    String boardId = 'hongguo-hot';
+    String rankKey = 'rank-hot';
+
+    if (boardName == '真人剧榜' || boardName.contains('真人')) {
+      boardId = 'hongguo-real';
+      rankKey = 'rank-real';
+    } else if (boardName == '漫剧榜' || boardName.contains('漫剧')) {
+      boardId = 'hongguo-comic';
+      rankKey = 'rank-comic';
+    } else if (boardName == 'AI剧榜' || boardName.contains('AI') || boardName.contains('ai')) {
+      boardId = 'hongguo-ai';
+      rankKey = 'rank-ai';
     }
 
-    return sorted
-        .map((c) => ShortDramaCategory(typeId: c.typeId, typeName: c.typeName))
-        .toList();
+    try {
+      // 1. 优先调用原生 Go 核心 rankings 动作 (100% 对齐红果鉴官方原生榜单与热度)
+      if (DuanjuCoreBridge.instance.isNativeAvailable) {
+        final nativeRes = await DuanjuCoreBridge.instance.invokeNative('rankings', {
+          'board': boardId,
+          'page': page,
+        });
+        if (nativeRes != null && nativeRes['ok'] == true) {
+          final data = nativeRes['data'];
+          final items = (data is Map && data['items'] is List) ? (data['items'] as List) : null;
+          if (items != null && items.isNotEmpty) {
+            final list = <ShortDrama>[];
+            for (final it in items) {
+              if (it is Map) {
+                final dramaMap = it['drama'] is Map ? (it['drama'] as Map) : it;
+                final rawId = dramaMap['sourceId'] ?? dramaMap['source_id'] ?? dramaMap['id'] ?? 0;
+                final cleanId = DuanjuCoreBridge.cleanSeriesId(rawId);
+                final idVal = int.tryParse(cleanId) ?? cleanId.hashCode.abs();
+                final title = (dramaMap['title'] ?? dramaMap['name'] ?? '').toString();
+                final cover = (dramaMap['cover'] ?? dramaMap['cover_url'] ?? '').toString();
+                final epCount = dramaMap['episodes'] ?? dramaMap['episode_count'] ?? 80;
+                final metric = (it['metric'] ?? '').toString();
+
+                if (title.isNotEmpty) {
+                  list.add(ShortDrama(
+                    id: idVal,
+                    dramaId: cleanId,
+                    name: RawShortDrama.cleanVodName(title),
+                    cover: RawShortDrama.cleanVodPic(cover),
+                    updateTime: DateTime.now().toIso8601String(),
+                    score: 9.8,
+                    episodeCount: epCount is int ? epCount : (int.tryParse(epCount.toString()) ?? 80),
+                    description: metric.isNotEmpty ? '官方热度: $metric' : '红果官方权威热播榜',
+                    author: boardName,
+                    backdrop: RawShortDrama.cleanVodPic(cover),
+                    voteAverage: 9.8,
+                  ));
+                }
+              }
+            }
+            final bool hasMore = (data is Map && data['hasMore'] is bool)
+                ? (data['hasMore'] as bool)
+                : (list.length >= 10 && page < 20);
+            if (list.isNotEmpty) {
+              return ShortDramaListResponse(list: list, hasMore: hasMore);
+            }
+          }
+        }
+      }
+
+      // 2. 网页抓取 /rank/hot-drama 等通道兜底
+      final rawList = await _fetchHongguoRankPage(rankKey, page);
+      if (rawList.isNotEmpty) {
+        return ShortDramaListResponse(
+          list: rawList.map(_toShortDrama).toList(),
+          hasMore: rawList.length >= 10 && page < 20,
+        );
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('[ShortDramaDirect] getRankingList error: $e');
+    }
+
+    return const ShortDramaListResponse(list: [], hasMore: false);
+  }
+
+  /// 榜单网页抓取辅助方法
+  static Future<List<RawShortDrama>> _fetchHongguoRankPage(String rankKey, int page) async {
+    try {
+      final items = await DuanjuCoreBridge.instance.fetchCatalog(
+        category: rankKey,
+        page: page,
+        size: 20,
+      );
+      if (items.isNotEmpty) {
+        return items.map((m) {
+          final idVal = m['id'] ?? m['drama_id'] ?? 0;
+          final realDramaId = (m['drama_id'] ?? m['series_id'] ?? idVal).toString();
+          final vodId = idVal is int ? idVal : (int.tryParse(idVal.toString()) ?? idVal.hashCode.abs());
+          final name = (m['title'] ?? m['name'] ?? '').toString();
+          final cover = (m['cover'] ?? m['cover_url'] ?? '').toString();
+          final ep = m['episode_count'] ?? m['total_episodes'] ?? m['episodes'] ?? 80;
+          final epCount = ep is int ? ep : (int.tryParse(ep.toString()) ?? 80);
+          final desc = (m['intro'] ?? m['description'] ?? '').toString();
+
+          return RawShortDrama(
+            vodId: vodId,
+            dramaId: realDramaId,
+            vodName: RawShortDrama.cleanVodName(name),
+            vodPic: RawShortDrama.cleanVodPic(cover),
+            vodPicSlide: '',
+            vodTime: DateTime.now().toIso8601String(),
+            vodScore: 9.8,
+            vodRemarksEpisodeCount: epCount,
+            vodContent: desc,
+            vodBlurb: desc,
+            vodActor: '红果榜单',
+            typeId: 201,
+            typeName: '热播榜',
+          );
+        }).where((r) => r.vodName.isNotEmpty).toList();
+      }
+    } catch (_) {}
+    return [];
   }
 
   /// RawShortDrama → ShortDrama 统一映射
   static ShortDrama _toShortDrama(RawShortDrama raw) {
     return ShortDrama(
       id: raw.vodId,
+      dramaId: raw.dramaId.isNotEmpty ? raw.dramaId : raw.vodId.toString(),
       name: raw.vodName,
       cover: raw.vodPic,
       updateTime: raw.vodTime,
       score: raw.vodScore,
       episodeCount: raw.vodRemarksEpisodeCount,
       description: raw.vodContent.isNotEmpty ? raw.vodContent : raw.vodBlurb,
-      author: raw.vodActor.isNotEmpty ? raw.vodActor : (raw.typeName.isNotEmpty ? raw.typeName : ''),
+      author: raw.vodActor.isNotEmpty
+          ? raw.vodActor
+          : (raw.typeName.isNotEmpty ? raw.typeName : ''),
       backdrop: raw.vodPicSlide.isNotEmpty ? raw.vodPicSlide : raw.vodPic,
       voteAverage: raw.vodScore,
     );

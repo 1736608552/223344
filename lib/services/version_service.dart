@@ -12,11 +12,13 @@ class VersionService {
   static const String githubApiUrl = 'https://api.github.com/repos/djsevenx1/LunaTV-Mobile/releases/latest';
   static const String _dismissedVersionKey = 'dismissed_version';
 
-  // 极速高可用 CDN 镜像源列表（国内免梯秒连）
+  // 极速高可用国内直连 CDN 镜像源列表（毫秒级响应，杜绝 GFW 阻断）
   static const List<String> _cdnPubspecMirrors = [
     'https://fastly.jsdelivr.net/gh/djsevenx1/LunaTV-Mobile@main/pubspec.yaml',
     'https://testingcf.jsdelivr.net/gh/djsevenx1/LunaTV-Mobile@main/pubspec.yaml',
     'https://cdn.jsdelivr.net/gh/djsevenx1/LunaTV-Mobile@main/pubspec.yaml',
+    'https://raw.gitmirror.com/djsevenx1/LunaTV-Mobile/main/pubspec.yaml',
+    'https://ghfast.top/https://raw.githubusercontent.com/djsevenx1/LunaTV-Mobile/main/pubspec.yaml',
     'https://raw.githubusercontent.com/djsevenx1/LunaTV-Mobile/main/pubspec.yaml',
   ];
 

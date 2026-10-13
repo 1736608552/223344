@@ -4,9 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
-// v2.2.0: 卸 media_kit (libmpv) 改 ExoPlayer (AndroidX Media3).
-//   MediaKit.ensureInitialized() 不再需要 — ExoPlayer 是 AndroidX Java 库,
-//   Android 进程启动时平台侧自动加载, Dart 端零额外动作.
+import 'package:media_kit/media_kit.dart';
 
 import 'package:luna_tv/screens/bilibili_screen.dart';
 import 'package:luna_tv/screens/douban_detail_screen.dart';
@@ -35,6 +33,7 @@ import 'package:luna_tv/widgets/update_dialog.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
 
   // v2.4.4: 全局信任所有 SSL 证书 (跟 web Node.js undici 默认行为对齐).
   //   之前 source_browser_service.dart:44 注释撒谎说"main() 全局 HttpOverrides

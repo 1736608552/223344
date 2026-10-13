@@ -1,12 +1,18 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:luna_tv/models/short_drama.dart';
 import 'package:luna_tv/models/video_info.dart';
+import 'package:luna_tv/models/search_result.dart';
 import 'package:luna_tv/screens/player_screen.dart';
+import 'package:luna_tv/services/duanju_core_bridge.dart';
 // v2.5.3: 列表/分类/图片走 ShortDramaDirectService (直连 3 源, 不依赖
 //   serverUrl). 播放解析仍走 ShortDramaService.parseEpisode (serverUrl
 //   后端代理, 含反爬/防盗链/CDN 缓存).
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:luna_tv/services/user_data_service.dart';
+import 'package:luna_tv/services/luna_cache_manager.dart';
 import 'package:luna_tv/services/short_drama_direct_service.dart';
 import 'package:luna_tv/services/short_drama_service.dart';
 import 'package:luna_tv/services/theme_service.dart';
@@ -30,12 +36,20 @@ class ShortDramaScreen extends StatefulWidget {
 class _ShortDramaScreenState extends State<ShortDramaScreen> {
   final ScrollController _scrollController = ScrollController();
 
-  // 类型筛选（来自 API 的分类列表，去掉名字为"短剧"的项）
+  // 首行：主分类（全部、真人剧、漫剧、AI剧）
+  static const List<String> _categoryTabs = ['全部', '真人剧', '漫剧', 'AI剧'];
+  String _selectedCategoryTab = '全部';
+
+  // 次行：排行（对标红果鉴官方四大榜单，与主分类双向联动）
+  static const List<String> _rankTabs = ['全部', '总热播榜', '真人剧榜', '漫剧榜', 'AI剧榜'];
+  String _selectedRankTab = '全部';
+
+  // 题材分类列表（来自 API 的分类列表，用于映射及向后兼容）
   List<String> _typeTabs = const [];
-  String _selectedTypeTab = '';
+
   // 类型 -> 分类 typeId 的映射. 「全部」tab 不进 map, 走 _fetchDramaList 兜底逻辑.
   final Map<String, int> _typeToCategoryId = {};
-  // 「全部」tab 的 key (selectedTypeTab 用这个字符串表示「全部」)
+  // 「全部」tab 的 key (selectedCategoryTab 用这个字符串表示「全部」)
   static const String _kAllTabKey = '全部';
 
   // 列表数据
@@ -109,10 +123,9 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
       _typeToCategoryId
         ..clear()
         ..addAll(typeToId);
-      // v2.5.15: 只在未初始化时设回「全部」. 避免覆盖用户在 await
-      //   期间已切到「其他」tab 的选择.
-      if (_selectedTypeTab.isEmpty) {
-        _selectedTypeTab = _kAllTabKey;
+      // 只在未初始化时设回「全部」
+      if (_selectedCategoryTab.isEmpty) {
+        _selectedCategoryTab = _kAllTabKey;
       }
     });
 
@@ -172,16 +185,24 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
 
     final selectedTypeId = _currentSelectedTypeId();
     ShortDramaListResponse result;
-    if (selectedTypeId == null) {
-      // 「全部」tab: 3 源聚合推荐
+    if (_selectedRankTab != '全部') {
+      // 榜单/排行模式：加载红果官方四大榜单
+      result = await ShortDramaDirectService.getRankingList(
+        boardName: _selectedRankTab,
+        page: _page,
+      );
+    } else if (selectedTypeId == null) {
+      // 首行「全部」且次行「全部」: 3 源聚合推荐
       result = await ShortDramaDirectService.getRecommendResponse(
         page: 1,
         size: 60,
         excludeNames: isRefresh ? null : _shownNames,
       );
     } else {
+      // 具体题材全库 (如真人剧全库、漫剧全库、AI剧全库)
       result = await ShortDramaDirectService.getListByTypeId(
         typeId: selectedTypeId,
+        categoryName: _selectedCategoryTab,
         page: _page,
         size: 20,
       );
@@ -218,8 +239,14 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
 
     final selectedTypeId = _currentSelectedTypeId();
     ShortDramaListResponse result;
-    if (selectedTypeId == null) {
-      // 「全部」tab 翻页: 拉下一页
+    if (_selectedRankTab != '全部') {
+      // 排行模式翻页
+      result = await ShortDramaDirectService.getRankingList(
+        boardName: _selectedRankTab,
+        page: _page,
+      );
+    } else if (selectedTypeId == null) {
+      // 「全部」tab 翻页: 拉下一页推荐
       result = await ShortDramaDirectService.getRecommendResponse(
         page: _page,
         size: 60,
@@ -228,6 +255,7 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     } else {
       result = await ShortDramaDirectService.getListByTypeId(
         typeId: selectedTypeId,
+        categoryName: _selectedCategoryTab,
         page: _page,
         size: 20,
       );
@@ -250,10 +278,13 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     });
   }
 
-  /// v2.5.5: 当前选中 tab 的 typeId. 返回 null 表示「全部」(走聚合).
+  /// 当前选中主分类的 typeId. 返回 null 表示「全部」(走聚合).
   int? _currentSelectedTypeId() {
-    if (_selectedTypeTab == _kAllTabKey) return null;
-    final id = _typeToCategoryId[_selectedTypeTab];
+    if (_selectedCategoryTab == _kAllTabKey) return null;
+    if (_selectedCategoryTab == '真人剧') return 1;
+    if (_selectedCategoryTab == '漫剧') return 2;
+    if (_selectedCategoryTab == 'AI剧' || _selectedCategoryTab == 'AI 剧') return 3;
+    final id = _typeToCategoryId[_selectedCategoryTab];
     if (id == null || id <= 0) return null;
     return id;
   }
@@ -263,30 +294,88 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     await _fetchDramaList(isRefresh: true);
   }
 
-  /// 切换类型
-  void _onTypeTabChanged(String tab) {
-    if (_selectedTypeTab == tab) return;
+  /// 切换主分类（首行）并联动次行排行
+  void _onCategoryChanged(String category) {
+    if (_selectedCategoryTab == category && _selectedRankTab != '全部') return;
     setState(() {
-      _selectedTypeTab = tab;
-      // v2.5.6: 切 tab 时清空去重 set (「全部」和子分类的去重不能混)
+      _selectedCategoryTab = category;
       _shownNames.clear();
       _page = 1;
+
+      // 联动次行排行
+      if (category == '全部') {
+        if (_selectedRankTab != '总热播榜' && _selectedRankTab != '全部') {
+          _selectedRankTab = '全部';
+        }
+      } else if (category == '真人剧') {
+        _selectedRankTab = '真人剧榜';
+      } else if (category == '漫剧') {
+        _selectedRankTab = '漫剧榜';
+      } else if (category == 'AI剧') {
+        _selectedRankTab = 'AI剧榜';
+      }
     });
     _fetchDramaList(isRefresh: true);
   }
 
-  /// 点击短剧卡片 - 和电视剧/电影一样，跳转 PlayerScreen 走多源搜索播放
+  /// 切换排行（次行）并联动首行主分类
+  void _onRankChanged(String rank) {
+    if (_selectedRankTab == rank) return;
+    setState(() {
+      _selectedRankTab = rank;
+      _shownNames.clear();
+      _page = 1;
+
+      // 联动首行主分类
+      if (rank == '总热播榜') {
+        _selectedCategoryTab = '全部';
+      } else if (rank == '真人剧榜') {
+        _selectedCategoryTab = '真人剧';
+      } else if (rank == '漫剧榜') {
+        _selectedCategoryTab = '漫剧';
+      } else if (rank == 'AI剧榜') {
+        _selectedCategoryTab = 'AI剧';
+      } else if (rank == '全部') {
+        // 次行选中「全部」表示退出榜单，查看首行当前选中的分类全库
+      }
+    });
+    _fetchDramaList(isRefresh: true);
+  }
+
+  /// 点击短剧卡片 - 采用红果短剧 (官方原画) 观看源直出播放
   void _onDramaTap(ShortDrama drama) {
+    final realId = drama.dramaId.isNotEmpty ? drama.dramaId : drama.id.toString();
     final cover = drama.backdrop.isNotEmpty ? drama.backdrop : drama.cover;
-    final videoInfo = VideoInfo(
-      id: drama.id.toString(),
-      source: '',
+    final totalEps = drama.episodeCount > 0 ? drama.episodeCount : 80;
+    final eps = List.generate(totalEps, (i) => (i + 1).toString());
+    final epTitles = List.generate(totalEps, (i) => '第${i + 1}集');
+
+    // 提前后台静默预拉取整剧 vid_list 与第 1 集播放计划，实现点击即秒开起播
+    unawaited(DuanjuCoreBridge.instance.fetchEpisodeVidList(realId));
+    unawaited(DuanjuCoreBridge.instance.prefetchEpisode(realId, 1));
+
+    final initialDetail = SearchResult(
+      id: realId,
       title: drama.name,
-      sourceName: '',
-      year: '',
+      poster: cover,
+      episodes: eps,
+      episodesTitles: epTitles,
+      source: 'hongguo',
+      sourceName: '红果短剧 (官方原画)',
+      year: '2026',
+      desc: drama.description,
+      typeName: drama.author,
+    );
+
+    final videoInfo = VideoInfo(
+      id: realId,
+      source: 'hongguo',
+      title: drama.name,
+      sourceName: '红果短剧 (官方原画)',
+      year: '2026',
       cover: cover,
       index: 0,
-      totalEpisodes: drama.episodeCount,
+      totalEpisodes: totalEps,
       playTime: 0,
       totalTime: 0,
       saveTime: 0,
@@ -295,7 +384,11 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => PlayerScreen(videoInfo: videoInfo),
+        builder: (context) => PlayerScreen(
+          videoInfo: videoInfo,
+          preferredSource: 'hongguo',
+          initialDetail: initialDetail,
+        ),
       ),
     );
   }
@@ -477,32 +570,77 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     );
   }
 
-  /// 构建顶部标题
+  /// 构建顶部标题（带专属短剧搜索入口）
   Widget _buildHeader(ThemeService themeService) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 20, 16, 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Text(
-            '短剧',
-            style: FontUtils.poppins(context,
-              fontSize: 28,
-              fontWeight: FontWeight.w600,
-              color: Theme.of(context).textTheme.titleLarge?.color,
-            ),
-          ),
-          const SizedBox(height: 4),
-          SizedBox(
-            height: 20, // 固定高度确保一致性
-            child: Text(
-              '精彩短剧，一刷到底',
-              style: FontUtils.poppins(context,
-                fontSize: 14,
-                color: Theme.of(context).textTheme.bodySmall?.color,
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '短剧',
+                style: FontUtils.poppins(context,
+                  fontSize: 28,
+                  fontWeight: FontWeight.w600,
+                  color: Theme.of(context).textTheme.titleLarge?.color,
+                ),
               ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+              const SizedBox(height: 4),
+              SizedBox(
+                height: 20, // 固定高度确保一致性
+                child: Text(
+                  '精彩短剧，一刷到底',
+                  style: FontUtils.poppins(context,
+                    fontSize: 14,
+                    color: Theme.of(context).textTheme.bodySmall?.color,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          InkWell(
+            onTap: _openShortDramaSearch,
+            borderRadius: BorderRadius.circular(20),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: themeService.isDarkMode
+                    ? Colors.white.withOpacity(0.08)
+                    : const Color(0xFFF3F4F6),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: themeService.isDarkMode
+                      ? Colors.white.withOpacity(0.12)
+                      : const Color(0xFFE5E7EB),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.search_rounded,
+                    size: 18,
+                    color: Color(0xFF22C55E),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    '搜索短剧',
+                    style: FontUtils.poppins(context,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: themeService.isDarkMode
+                          ? Colors.white70
+                          : const Color(0xFF4B5563),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ],
@@ -510,14 +648,21 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     );
   }
 
-  /// 构建筛选区（白底圆角容器，仅保留类型胶囊标签）
+  /// 弹出专属短剧全网搜索弹窗
+  void _openShortDramaSearch() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _ShortDramaSearchModal(onDramaTap: _onDramaTap),
+    );
+  }
+
+  /// 构建筛选区（与电视剧页风格一致：白底/半透明圆角卡片，首行主分类 + 次行排行，双向互动）
   Widget _buildFilterSection(ThemeService themeService) {
-    if (_typeTabs.isEmpty) {
-      return const SizedBox.shrink();
-    }
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.all(16),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
       decoration: BoxDecoration(
         color: themeService.isDarkMode
@@ -525,11 +670,25 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
             : Colors.white.withOpacity(0.8),
         borderRadius: BorderRadius.circular(12),
       ),
-      child: _buildFilterRow(
-        label: '类型',
-        tabs: _typeTabs,
-        selectedTab: _selectedTypeTab,
-        onTabChanged: _onTypeTabChanged,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 首行：主分类（全部、真人剧、漫剧、AI剧）
+          _buildFilterRow(
+            label: '分类',
+            tabs: _categoryTabs,
+            selectedTab: _selectedCategoryTab,
+            onTabChanged: _onCategoryChanged,
+          ),
+          const SizedBox(height: 12),
+          // 次行：排行（对标红果鉴官方四大榜单，与主分类双向联动）
+          _buildFilterRow(
+            label: '排行',
+            tabs: _rankTabs,
+            selectedTab: _selectedRankTab,
+            onTabChanged: _onRankChanged,
+          ),
+        ],
       ),
     );
   }
@@ -757,5 +916,294 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     }
 
     return const SizedBox(height: 50);
+  }
+}
+
+/// 专属短剧独立搜索面板
+class _ShortDramaSearchModal extends StatefulWidget {
+  final void Function(ShortDrama drama) onDramaTap;
+
+  const _ShortDramaSearchModal({required this.onDramaTap});
+
+  @override
+  State<_ShortDramaSearchModal> createState() => _ShortDramaSearchModalState();
+}
+
+class _ShortDramaSearchModalState extends State<_ShortDramaSearchModal> {
+  final TextEditingController _controller = TextEditingController();
+  final FocusNode _focusNode = FocusNode();
+  final List<ShortDrama> _searchResults = [];
+  bool _isSearching = false;
+  String? _searchError;
+  bool _hasSearched = false;
+
+  static const List<String> _hotKeywords = [
+    '文盲修仙',
+    '东北话事人',
+    '我的婆婆',
+    '天神殿',
+    '凡人百世书',
+    '重生富翁',
+    '萌宝',
+    '逆袭',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(const Duration(milliseconds: 150), () {
+      if (mounted) _focusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  Future<void> _performSearch(String query) async {
+    final cleanQ = query.trim();
+    if (cleanQ.isEmpty) return;
+
+    setState(() {
+      _isSearching = true;
+      _searchError = null;
+      _hasSearched = true;
+      _searchResults.clear();
+    });
+
+    try {
+      final results = await ShortDramaDirectService.searchDramas(cleanQ);
+      if (mounted) {
+        setState(() {
+          _searchResults.addAll(results);
+          _isSearching = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _searchError = '搜索异常: $e';
+          _isSearching = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final themeService = Provider.of<ThemeService>(context);
+    final isDark = themeService.isDarkMode;
+    final bgColor = isDark ? const Color(0xFF1E1E24) : Colors.white;
+
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.88,
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Column(
+        children: [
+          // 顶部小横条
+          const SizedBox(height: 10),
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: isDark ? Colors.white24 : Colors.grey[300],
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // 搜索栏
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Container(
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: isDark ? Colors.white.withOpacity(0.08) : const Color(0xFFF3F4F6),
+                      borderRadius: BorderRadius.circular(21),
+                      border: Border.all(
+                        color: isDark ? Colors.white12 : const Color(0xFFE5E7EB),
+                      ),
+                    ),
+                    child: TextField(
+                      controller: _controller,
+                      focusNode: _focusNode,
+                      style: FontUtils.poppins(context,
+                        fontSize: 14,
+                        color: isDark ? Colors.white : Colors.black87,
+                      ),
+                      textInputAction: TextInputAction.search,
+                      onSubmitted: _performSearch,
+                      decoration: InputDecoration(
+                        hintText: '搜索全网热门短剧...',
+                        hintStyle: FontUtils.poppins(context,
+                          fontSize: 14,
+                          color: isDark ? Colors.white38 : Colors.grey[500],
+                        ),
+                        prefixIcon: const Icon(
+                          Icons.search_rounded,
+                          size: 20,
+                          color: Color(0xFF22C55E),
+                        ),
+                        suffixIcon: _controller.text.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.clear, size: 18),
+                                onPressed: () {
+                                  _controller.clear();
+                                  setState(() {});
+                                },
+                              )
+                            : null,
+                        border: InputBorder.none,
+                        contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                      onChanged: (v) => setState(() {}),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: () => _performSearch(_controller.text),
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF22C55E),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                  ),
+                  child: const Text('搜索', style: TextStyle(fontWeight: FontWeight.w600)),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          // 热词标签
+          if (!_hasSearched) ...[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '热门短剧推荐',
+                  style: FontUtils.poppins(context,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: isDark ? Colors.white70 : Colors.black54,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _hotKeywords.map((kw) {
+                  return ActionChip(
+                    label: Text(kw, style: const TextStyle(fontSize: 12)),
+                    backgroundColor: isDark ? Colors.white.withOpacity(0.06) : const Color(0xFFF3F4F6),
+                    onPressed: () {
+                      _controller.text = kw;
+                      _performSearch(kw);
+                    },
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+
+          // 搜索中或结果列表
+          Expanded(
+            child: _isSearching
+                ? const Center(child: PulsingDotsIndicator())
+                : _searchError != null
+                    ? Center(child: Text(_searchError!, style: const TextStyle(color: Colors.redAccent)))
+                    : _hasSearched && _searchResults.isEmpty
+                        ? Center(
+                            child: Text(
+                              '未找到相关短剧，换个关键词试试',
+                              style: TextStyle(color: isDark ? Colors.white38 : Colors.grey),
+                            ),
+                          )
+                        : ListView.separated(
+                            padding: const EdgeInsets.all(16),
+                            itemCount: _searchResults.length,
+                            separatorBuilder: (_, __) => const Divider(height: 16),
+                            itemBuilder: (context, index) {
+                              final d = _searchResults[index];
+                              return ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                leading: ClipRRect(
+                                  borderRadius: BorderRadius.circular(6),
+                                  child: CachedNetworkImage(
+                                    imageUrl: UserDataService.buildShortDramaImageUrl(d.cover),
+                                    cacheManager: LunaCacheManager.instance,
+                                    width: 48,
+                                    height: 64,
+                                    fit: BoxFit.cover,
+                                    placeholder: (context, url) => Container(
+                                      width: 48,
+                                      height: 64,
+                                      color: isDark ? Colors.white12 : Colors.grey[200],
+                                    ),
+                                    errorWidget: (context, url, error) => Container(
+                                      width: 48,
+                                      height: 64,
+                                      color: isDark ? Colors.white12 : Colors.grey[200],
+                                      child: const Icon(Icons.movie, size: 24),
+                                    ),
+                                  ),
+                                ),
+                                title: Text(
+                                  d.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontWeight: FontWeight.w600),
+                                ),
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '共 ${d.episodeCount} 集 · 官方原画',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: const Color(0xFF22C55E),
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                    if (d.description.isNotEmpty) ...[
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        d.description,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: isDark ? Colors.white54 : Colors.black45,
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                trailing: const Icon(Icons.play_circle_fill_rounded, color: Color(0xFF22C55E), size: 30),
+                                onTap: () {
+                                  Navigator.pop(context);
+                                  widget.onDramaTap(d);
+                                },
+                              );
+                            },
+                          ),
+          ),
+        ],
+      ),
+    );
   }
 }

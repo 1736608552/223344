@@ -20,10 +20,13 @@ import 'package:luna_tv/services/page_cache_service.dart';
 import 'package:luna_tv/services/user_data_service.dart';
 import 'package:luna_tv/services/m3u8_service.dart';
 import 'package:luna_tv/services/player_backend.dart';
+import 'package:luna_tv/services/duanju_core_bridge.dart';
 // v2.3.0: 视频加速 (VideoProxyServer + CfOptimizer) 整个删了, 不用这两个 import
 //   - video_proxy_server.dart 已删
 //   - cf_optimizer.dart 已删
 import 'package:luna_tv/services/exo_player_backend.dart';
+import 'package:luna_tv/services/duanju_media_kit_backend.dart';
+import 'package:luna_tv/widgets/duanju_media_kit_view.dart';
 import 'package:luna_tv/models/douban_movie.dart';
 import 'package:luna_tv/models/play_record.dart';
 import 'package:luna_tv/models/search_result.dart';
@@ -132,7 +135,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   //     走 video_player 2.10.1 内部 ExoPlayer (1.4.x) + 默认
   //     DefaultLoadControl. [ExoPlayerView] 渲染 [VideoPlayer] widget.
   //     跟 v2.3.0 行为一致.
-  ExoPlayerBackend? _player;
+  PlayerBackend? _player;
   // v2.3.0: 视频加速链路整个删了, 以下字段跟着删:
   //   - VideoProxyServer _videoProxy  (本地代理服务, 整个文件删了)
   //   - bool _videoProxyActive        (顶部「加速状态」指示器状态, 没人 trigger 了)
@@ -171,6 +174,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   //   - _isCasting: 投屏成功后 true, 顶部栏 cast 按钮变 cast_connected 绿色
   //   - _currentCastDevice: 当前投屏设备引用, 停止投屏时调 device.stop()
   //   - 投屏成功后停本地 player, 切回 detail 视图, 提示 "已投屏到 XXX, 回到本地播放"
+  // 播放器异步初始化 Future，用于防止用户快点播放时发生重复创建和销毁竞争
+  Future<void>? _initPlayerFuture;
+
   bool _isCasting = false;
   DLNADevice? _currentCastDevice;
 
@@ -217,6 +223,13 @@ class _PlayerScreenState extends State<PlayerScreen>
   // pinch 指针追踪 — 记录当前按下的指针 id → 屏幕坐标
   final Map<int, Offset> _pinchPointers = {};
   double _pinchInitialDistance = 0.0; // pinch 开始时两指距离 (像素)
+
+  // 分辨率 / 清晰度状态 (短剧对齐红果鉴默认「自动」，支持多分辨率平滑自由切换)
+  String _currentResolution = '自动';
+  String _userPreferredResolution = '自动';
+  List<String> _availableResolutions = ['1080P', '720P', '480P'];
+  final Map<String, String> _resolutionUrlMap = {};
+  String _currentPlayUrl = '';
   // v2.2.0: 删 _videoParamsSub (libmpv streams.videoParams 替代)
   //   video size 从 backend.width/height 读 (在 positionStream listener 里同步)
 
@@ -375,12 +388,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   @override
   void initState() {
     super.initState();
-    // v2.2.0: 卸 libmpv 改 ExoPlayer (AndroidX Media3).
-    //   ExoPlayerBackend.create 异步装配 video_player VideoPlayerController
-    //   (底层就是 Media3 ExoPlayer 1.4.x). 必须在 initState 里 await 才能
-    //   拿到底层 controller. 之前的 MpvFFI.applyPlaybackTuning 不需要
-    //   (Media3 默认就是硬解 + 自适应 buffer, 不需要手动配).
-    unawaited(_initPlayerAsync());
+    // v2.2.0 / v2.6.80+: 异步初始化播放器并记录 Future，守门避免快速点起播重复重建
+    _initPlayerFuture = _initPlayerAsync();
     // v2.0.51: 选集 PageView 初始化
     _episodesPageController = PageController();
     _pageControllerNotifier.value = _episodesPageController;
@@ -446,29 +455,100 @@ class _PlayerScreenState extends State<PlayerScreen>
         _error = null;
       });
       _selectSource(widget.initialDetail!);
+
+      // 对齐红果鉴：短剧专区点击卡片进入后直接起播，消除停留详情页与繁琐点击等待
+      final isShortDrama = widget.videoInfo.source == 'hongguo' ||
+          widget.videoInfo.source == 'shortdrama' ||
+          widget.preferredSource == 'hongguo' ||
+          widget.preferredSource == 'shortdrama';
+      if (isShortDrama) {
+        // 关键自愈：异步根据真实章节列表精确对齐总集数，动态刷新选集网格 (消除假80集上限)
+        unawaited(() async {
+          try {
+            final dramaId = widget.videoInfo.id.isNotEmpty
+                ? widget.videoInfo.id
+                : widget.initialDetail!.id;
+            final realVidList =
+                await DuanjuCoreBridge.instance.fetchEpisodeVidList(dramaId);
+            if (mounted &&
+                realVidList.isNotEmpty &&
+                realVidList.length != _selectedSource?.episodes.length) {
+              final realCount = realVidList.length;
+              final updatedEps =
+                  List.generate(realCount, (i) => (i + 1).toString());
+              final updatedTitles =
+                  List.generate(realCount, (i) => '第${i + 1}集');
+              setState(() {
+                if (_selectedSource != null) {
+                  _selectedSource!.episodes.clear();
+                  _selectedSource!.episodes.addAll(updatedEps);
+                  _selectedSource!.episodesTitles.clear();
+                  _selectedSource!.episodesTitles.addAll(updatedTitles);
+                }
+                if (_sourceResults.isNotEmpty) {
+                  _sourceResults[0].episodes.clear();
+                  _sourceResults[0].episodes.addAll(updatedEps);
+                  _sourceResults[0].episodesTitles.clear();
+                  _sourceResults[0].episodesTitles.addAll(updatedTitles);
+                }
+              });
+            }
+          } catch (_) {}
+        }());
+
+        // 短剧进入后保持就绪待播状态，由用户主动点击「立即播放」或选择具体集数时起播
+      }
     } else {
       _loadSources();
     }
   }
 
-  /// v2.2.0: 异步初始化 ExoPlayer + 订阅所有 stream.
-  ///   initState 同步段不能 await, 包到 unawaited 里跑.
-  ///   必须等 backend 创建完才能订阅流 (否则 NPE).
+  /// 异步初始化播放器 (短剧采用 DuanjuMediaKitBackend，非短剧维持原有 ExoPlayerBackend)
   Future<void> _initPlayerAsync() async {
+    final isShortDrama = widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama' ||
+        widget.preferredSource == 'hongguo' ||
+        widget.preferredSource == 'shortdrama';
+
     try {
-      _player = await ExoPlayerBackend.create();
+      if (isShortDrama) {
+        _player = await DuanjuMediaKitBackend.create();
+      } else {
+        _player = await ExoPlayerBackend.create();
+      }
     } catch (e, st) {
-      DiaryService.add('[ExoPlayer] init FAIL: $e\n$st');
+      DiaryService.add('[Player] init FAIL: isShortDrama=$isShortDrama, error=$e\n$st');
       return;
     }
-    if (!mounted) return;
+    _bindPlayerListeners();
 
-    // v2.2.0: 订阅 backend 的所有 stream. libmpv 时代是 _player!.XStream,
-    //   现在统一走 _player!.XStream. 注意所有 stream listener 都要判
-    //   !mounted 或 _isDisposing 提前 return, 防止 setState 在 widget 销毁后触发.
-    // v2.5.20: 之前 3 个 listener (playingStream / completedStream / bufferingStream)
-    //   没存字段, dispose 时无法 cancel. 现在存到 _playingSub / _completedSub /
-    //   _bufferingSub, dispose 统一 cancel.
+    // 短剧进入时立刻在后台异步预拉取当前集与下一集的播放计划，消除首播等待
+    if (isShortDrama) {
+      final dramaId = widget.videoInfo.id.isNotEmpty
+          ? widget.videoInfo.id
+          : (_selectedSource?.id ?? '');
+      if (dramaId.isNotEmpty) {
+        unawaited(DuanjuCoreBridge.instance.prefetchEpisode(dramaId, _currentEpisodeIndex + 1));
+        unawaited(DuanjuCoreBridge.instance.prefetchEpisode(dramaId, _currentEpisodeIndex + 2));
+      }
+    }
+
+    // ★ v2.5.65: 高精度进度条轮询 (100ms 一次, 让白点跟实际位置同步)
+    _positionPollTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if (_isDisposing || !mounted || _scrubbingValue != null) return;
+      if (_isSwiping) return;
+      if (!_isPlaying) return;
+      final newPos = _player?.position ?? Duration.zero;
+      if (newPos != _currentPosition && newPos > Duration.zero) {
+        setState(() => _currentPosition = newPos);
+      }
+    });
+  }
+
+  /// 绑定播放器状态流监听
+  void _bindPlayerListeners() {
+    if (_player == null) return;
+
     _positionSub = _player!.positionStream.listen((pos) {
       if (_isDisposing) return;
       if (!mounted) return;
@@ -484,48 +564,40 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (_isControlsVisible) {
           setState(() {});
         }
-        // 视频宽高同步 (替代 libmpv 的 videoParams)
+        // 视频宽高同步
         final w = _player!.width;
         final h = _player!.height;
         if (w > 0 && h > 0 && (w != _videoWidth || h != _videoHeight)) {
           setState(() {
             _videoWidth = w;
             _videoHeight = h;
+            if (_availableResolutions.isEmpty) {
+              if (h >= 1080) {
+                _currentResolution = '1080P';
+              } else if (h >= 720) {
+                _currentResolution = '720P';
+              } else if (h >= 480) {
+                _currentResolution = '480P';
+              }
+            }
           });
         }
         _updateSkipButtonVisibility();
         _maybeAutoPlayNext();
       }
     });
-    // ★ v2.5.65: 高精度进度条轮询 (100ms 一次, 让白点跟实际位置同步)
-    _positionPollTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
-      if (_isDisposing || !mounted || _scrubbingValue != null) return;
-      // v2.6.2: 滑动中不更新, 同 position stream 处理
-      if (_isSwiping) return;
-      // v2.5.90: 用 _isPlaying 代替 c.value.isPlaying,
-      //   后者在某些情况下跟实际播放状态不一致
-      if (!_isPlaying) return;
-      final c = _player?.controller;
-      if (c == null) return;
-      final newPos = c.value.position;
-      // v2.5.90: seek guard 已移除, 100ms 轮询直接更新
-      if (newPos != _currentPosition) {
-        setState(() => _currentPosition = newPos);
-      }
-    });
+
     _durationSub = _player!.durationStream.listen((dur) {
       if (_isDisposing) return;
       if (!mounted) return;
       _currentDuration = dur;
     });
-    // v2.2.0: completedStream 替代 streams.completed
-    // v2.5.20: 存到 _completedSub, dispose 时 cancel; 业务逻辑 _autoPlayNextEpisode
-    //   加 _isDisposing 守门, 防止 widget 销毁后还在切下一集
+
     _completedSub = _player!.completedStream.listen((_) {
       if (_isDisposing) return;
       _autoPlayNextEpisode();
     });
-    // v2.5.20: 存到 _playingSub + 业务逻辑加 _isDisposing 守门
+
     _playingSub = _player!.playingStream.listen((playing) {
       if (_isDisposing) return;
       if (!mounted) return;
@@ -538,8 +610,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         _showControls();
       }
     });
-    // v2.2.0: bufferingStream — Media3 缓冲状态变化, 给 UI 决定是否显示 spinner
-    // v2.5.20: 存到 _bufferingSub + _isDisposing 守门
+
     _bufferingSub = _player!.bufferingStream.listen((b) {
       if (_isDisposing) return;
       if (!mounted) return;
@@ -547,6 +618,41 @@ class _PlayerScreenState extends State<PlayerScreen>
         _isBuffering = b;
       });
     });
+  }
+
+  /// 动态平滑切换后端 (当发生跨类型源切换时自愈)
+  Future<void> _switchPlayerBackend(bool toShortDrama) async {
+    if (_isDisposing) return;
+    await _positionSub?.cancel();
+    _positionSub = null;
+    await _durationSub?.cancel();
+    _durationSub = null;
+    await _completedSub?.cancel();
+    _completedSub = null;
+    await _playingSub?.cancel();
+    _playingSub = null;
+    await _bufferingSub?.cancel();
+    _bufferingSub = null;
+
+    try {
+      await _player?.dispose();
+    } catch (_) {}
+
+    try {
+      if (toShortDrama) {
+        _player = await DuanjuMediaKitBackend.create();
+      } else {
+        _player = await ExoPlayerBackend.create();
+      }
+    } catch (e, st) {
+      DiaryService.add('[Player] switch FAIL: toShortDrama=$toShortDrama, error=$e\n$st');
+      return;
+    }
+
+    if (!mounted) return;
+    _bindPlayerListeners();
+    _initPlayerFuture = null;
+    setState(() {});
   }
 
   @override
@@ -2357,6 +2463,55 @@ class _PlayerScreenState extends State<PlayerScreen>
       _error = null;
     });
 
+    // 短剧专属源直连：若为短剧直接使用红果官方原画观看源，跳过普通影视站搜索
+    if (widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama' ||
+        widget.videoInfo.source == '__shortdrama__') {
+      final totalEps = widget.videoInfo.totalEpisodes > 0
+          ? widget.videoInfo.totalEpisodes
+          : 80;
+      final eps = List.generate(totalEps, (i) => (i + 1).toString());
+      final epTitles = List.generate(totalEps, (i) => '第${i + 1}集');
+      final dramaSource = SearchResult(
+        id: widget.videoInfo.id,
+        title: widget.videoInfo.title,
+        poster: widget.videoInfo.cover,
+        episodes: eps,
+        episodesTitles: epTitles,
+        source: 'hongguo',
+        sourceName: '红果短剧 (官方原画)',
+        year: widget.videoInfo.year.isNotEmpty ? widget.videoInfo.year : '2026',
+      );
+      if (!mounted) return;
+      setState(() {
+        _sourceResults = [dramaSource];
+        _sourcesLoading = false;
+        _error = null;
+      });
+      _selectSource(dramaSource);
+
+      // 异步根据真实章节列表精确对齐总集数 (消除硬编码80集限制)
+      unawaited(() async {
+        try {
+          final realVidList = await DuanjuCoreBridge.instance.fetchEpisodeVidList(widget.videoInfo.id);
+          if (mounted && realVidList.isNotEmpty && realVidList.length != dramaSource.episodes.length) {
+            final realCount = realVidList.length;
+            final updatedEps = List.generate(realCount, (i) => (i + 1).toString());
+            final updatedTitles = List.generate(realCount, (i) => '第${i + 1}集');
+            setState(() {
+              dramaSource.episodes
+                ..clear()
+                ..addAll(updatedEps);
+              dramaSource.episodesTitles
+                ..clear()
+                ..addAll(updatedTitles);
+            });
+          }
+        } catch (_) {}
+      }());
+      return;
+    }
+
     // 先尝试从云端拉一次播放记录, 防止 videoInfo 没带 source/index
     // (比如从搜索结果直接点进来, 但云端其实有别的源在播)
     final resume = widget.videoInfo.source.isEmpty || widget.videoInfo.index <= 0
@@ -3140,12 +3295,19 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (source == null) return;
     final nextIndex = _currentEpisodeIndex + 1;
     if (nextIndex >= source.episodes.length) return; // 最后一集
-    if (source.episodes[nextIndex].isEmpty) return; // 下一集没 url
+
+    final isShortDrama = source.source == 'hongguo' ||
+        source.source == 'shortdrama' ||
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama';
+
+    // 短剧通过 getPlaybackPlan 动态取流与获取解密密钥，非短剧才需校验预填充直链
+    if (!isShortDrama && source.episodes[nextIndex].isEmpty) return; // 下一集没 url
 
     // v1.0.55: 兜底守门 (堵 streams.completed 误触发)
     final dur = _currentDuration;
     if (dur <= Duration.zero) return; // 时长还没拿到
-    if (dur < const Duration(seconds: 30)) return; // 时长太短, 直播流/异常
+    if (!isShortDrama && dur < const Duration(seconds: 30)) return; // 传统影视时长太短防异常，短剧不拦截
     if (_currentPosition < dur - const Duration(milliseconds: 1500)) {
       // pos 还没到结尾附近, completed 误触发, 不切
       return;
@@ -3166,7 +3328,13 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (source == null) return;
     final nextIndex = _currentEpisodeIndex + 1;
     if (nextIndex >= source.episodes.length) return; // 最后一集
-    if (source.episodes[nextIndex].isEmpty) return; // 下一集没 url
+
+    final isShortDrama = source.source == 'hongguo' ||
+        source.source == 'shortdrama' ||
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama';
+
+    if (!isShortDrama && source.episodes[nextIndex].isEmpty) return; // 下一集没 url
     _autoPlayedThisEpisode = true;
     _playEpisode(nextIndex);
     // 给个轻提示 (主路是控制栏图标变了, 提示只是兜底)
@@ -3371,7 +3539,132 @@ class _PlayerScreenState extends State<PlayerScreen>
     //   "Failed to recognize file format". 修法: 检测是 HTML 就提取 m3u8.
     //   只对明显不是视频流 (非 .m3u8/.mp4/.ts/.flv 后缀) 的 URL 做 fetch,
     //   避免对正常视频流多一次 HTTP 请求.
-    final url = await _resolveSharePageUrl(originalUrl);
+    // 红果短剧专属直解：精准调用单集专属直链解析通道 (切集必须独立换流，绝不冒充)
+    final isShortDrama = source.source == 'hongguo' ||
+        source.source == 'shortdrama' ||
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama';
+
+    // 等待异步初始化完成，杜绝快速点击播放时并发重建播放器
+    if (_initPlayerFuture != null) {
+      await _initPlayerFuture;
+    }
+
+    // 播放器后端类型自适应：短剧使用 DuanjuMediaKitBackend，非短剧维持原有 ExoPlayerBackend
+    if (isShortDrama && _player is! DuanjuMediaKitBackend) {
+      await _switchPlayerBackend(true);
+    } else if (!isShortDrama && _player is! ExoPlayerBackend) {
+      await _switchPlayerBackend(false);
+    }
+
+    String actualSourceUrl = originalUrl;
+    DuanjuPlaybackPlan? duanjuPlan;
+    if (isShortDrama || !originalUrl.startsWith('http')) {
+      final dramaId = source.id.isNotEmpty ? source.id : widget.videoInfo.id;
+      // 优先获取短剧专属播放计划 (包含真实 CENC 解密密钥与直链)
+      duanjuPlan = await DuanjuCoreBridge.instance.getPlaybackPlan(
+        dramaId: dramaId,
+        episode: index + 1,
+      );
+
+      if (duanjuPlan != null && duanjuPlan.url.isNotEmpty) {
+        actualSourceUrl = duanjuPlan.url;
+        if (index < source.episodes.length) {
+          source.episodes[index] = duanjuPlan.url;
+        }
+        final multiMap = duanjuPlan.multiMap.isNotEmpty
+            ? duanjuPlan.multiMap
+            : (DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, index + 1) ??
+                DuanjuCoreBridge.buildMultiResolutionUrls(duanjuPlan.url));
+        _resolutionUrlMap
+          ..clear()
+          ..addAll(multiMap);
+        // 对齐红果鉴：真实支持的分辨率列表
+        if (duanjuPlan.qualities.isNotEmpty) {
+          _availableResolutions = duanjuPlan.qualities.map((q) => '${q}P').toList();
+        }
+        if (_userPreferredResolution == '自动' || _userPreferredResolution.isEmpty) {
+          _currentResolution = '自动';
+          actualSourceUrl = duanjuPlan.url;
+        } else if (multiMap.containsKey(_userPreferredResolution)) {
+          final prefUrl = multiMap[_userPreferredResolution];
+          if (prefUrl != null && prefUrl.isNotEmpty) {
+            actualSourceUrl = prefUrl;
+            _currentResolution = _userPreferredResolution;
+          }
+        } else {
+          _currentResolution = '${duanjuPlan.actualQuality}P';
+        }
+      } else {
+        // 兼容兜底: 走 resolvePlaybackUrl
+        final candidateRawUrl = (index == 0 && originalUrl.startsWith('http')) ? originalUrl : null;
+        String? resolved = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
+          dramaId: dramaId,
+          episode: index + 1,
+          rawUrl: candidateRawUrl,
+        );
+        // 增强兜底：若首次解析未拿到有效直链，强制重试解析一次
+        if (resolved == null || resolved.isEmpty) {
+          resolved = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
+            dramaId: dramaId,
+            episode: index + 1,
+          );
+        }
+        // 校验防冒充：若非第1集，且返回的地址与第1集完全一样，说明拿到试看集，强制重试解析
+        if (resolved != null && index > 0 && source.episodes.isNotEmpty && resolved == source.episodes[0]) {
+          resolved = await DuanjuCoreBridge.instance.resolvePlaybackUrl(
+            dramaId: dramaId,
+            episode: index + 1,
+          );
+        }
+
+        if (resolved != null && resolved.isNotEmpty) {
+          actualSourceUrl = resolved;
+          if (index < source.episodes.length) {
+            source.episodes[index] = resolved;
+          }
+          final multiMap = DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, index + 1) ??
+              DuanjuCoreBridge.buildMultiResolutionUrls(resolved);
+          _resolutionUrlMap
+            ..clear()
+            ..addAll(multiMap);
+          if (multiMap.containsKey(_userPreferredResolution)) {
+            final prefUrl = multiMap[_userPreferredResolution];
+            if (prefUrl != null && prefUrl.isNotEmpty) {
+              actualSourceUrl = prefUrl;
+              _currentResolution = _userPreferredResolution;
+            }
+          }
+        }
+      }
+    }
+
+    // 绝对安全防线：若尚未成功解析为 http 直链，绝不将纯数字占位符传给播放内核
+    if (!actualSourceUrl.startsWith('http')) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('第${index + 1}集视频地址解析中，请稍候重试...'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        setState(() {
+          _isBuffering = false;
+        });
+      }
+      return;
+    }
+
+    final String url;
+    if (isShortDrama) {
+      // 短剧直链由官方接口生成并具备完整解密契约，严禁走 _resolveSharePageUrl 下载视频导致卡顿与数秒超时
+      url = actualSourceUrl;
+    } else {
+      url = await _resolveSharePageUrl(actualSourceUrl);
+      // 传统流异步分析当前播放流的分辨率，无多分辨率时常驻显示「原画」
+      unawaited(_checkStreamResolutions(url));
+    }
+    _currentPlayUrl = url;
 
     // 切集时先把自动切下一集标志重置, 让新一集播完时能再次触发
     _autoPlayedThisEpisode = false;
@@ -3478,7 +3771,16 @@ class _PlayerScreenState extends State<PlayerScreen>
       //   prepare + seekTo(startAt) + play 全部按这个顺序排好了
       //   (见 exo_player_backend.dart open()), Dart 端传 startAt 即可.
       //   保留 verify + 重试 seek 兜底, 万一 open() 内 seek 失败.
-      await _player!.open(playUrl, startAt: resumeAt);
+      final dramaId = source.id.isNotEmpty ? source.id : widget.videoInfo.id;
+      final decKey = duanjuPlan?.decryptionKey.isNotEmpty == true
+          ? duanjuPlan!.decryptionKey
+          : (isShortDrama ? DuanjuCoreBridge.instance.getDecryptionKey(dramaId, index + 1) : null);
+      await _player!.open(
+        playUrl,
+        headers: duanjuPlan?.headers,
+        startAt: resumeAt,
+        decryptionKey: decKey,
+      );
       if (resumeAt != null) {
         // v1.0.61 fix: 验证 seek 是否生效. open() 内 seek + play 都按
         //   正确顺序排了, 但保险起见仍 verify. 不命中再重试一次.
@@ -3494,6 +3796,12 @@ class _PlayerScreenState extends State<PlayerScreen>
       }
       if (!mounted) return;
       setState(() => _isBuffering = false);
+
+      // 短剧后台静默预取下一集播放计划，实现连播与连续切集零等待 (对齐红果鉴)
+      if (isShortDrama && index + 2 <= source.episodes.length) {
+        unawaited(DuanjuCoreBridge.instance.prefetchEpisode(dramaId, index + 2));
+      }
+
       // 启动定时器, 并立即保存一条 (标记已开始)
       _startProgressTimer();
       if (resumeAt == null) {
@@ -5202,12 +5510,14 @@ class _PlayerScreenState extends State<PlayerScreen>
     return _SeekLabel(label: forward ? '+30' : '-30');
   }
 
-  /// 圆形小按钮 (40x40, LunaTV Web 控制按钮)
+  /// 圆形小按钮 (LunaTV Web 控制按钮, 支持紧凑宽度与自定义尺寸)
   /// v2.0.33: 加 [iconColor] 可选参数, 「下一集」按钮用绿色突出
   Widget _iconBtn({
     required IconData icon,
     required VoidCallback? onTap,
     Color? iconColor,
+    double width = 40,
+    double size = 22,
   }) {
     return Material(
       color: Colors.transparent,
@@ -5216,13 +5526,13 @@ class _PlayerScreenState extends State<PlayerScreen>
         customBorder: const CircleBorder(),
         onTap: onTap,
         child: SizedBox(
-          width: 40,
+          width: width,
           height: 40,
           child: Icon(
             icon,
             color: iconColor ??
                 (onTap == null ? Colors.white.withOpacity(0.3) : Colors.white),
-            size: 22,
+            size: size,
           ),
         ),
       ),
@@ -5541,11 +5851,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     final pos = _scrubbingValue != null
         ? (_scrubbingValue! * dur).toInt()
         : _currentPosition.inMilliseconds;
-    // 底部栏宽度: 横屏全屏时缩短到 60%, 竖屏时 85% 宽度
+    // 底部栏宽度: 横屏全屏时缩短到 65%, 竖屏时自适应占满可用安全宽度 (两端留 12dp 边距)
     final screenWidth = MediaQuery.of(context).size.width;
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
-    final maxW = isLandscape ? screenWidth * 0.6 : screenWidth * 0.85;
+    final maxW = isLandscape ? screenWidth * 0.65 : double.infinity;
     return Positioned(
       left: 12,
       right: 12,
@@ -5591,6 +5901,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                     SizedBox(
                       height: 44,
                       child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
                           // 左: 播放/暂停
                           _iconBtn(
@@ -5598,16 +5909,18 @@ class _PlayerScreenState extends State<PlayerScreen>
                                 ? Icons.pause
                                 : Icons.play_arrow,
                             onTap: _togglePlayPause,
+                            width: 36,
+                            size: 24,
                           ),
                           // 时间
                           Padding(
                             padding:
-                                const EdgeInsets.symmetric(horizontal: 6),
+                                const EdgeInsets.symmetric(horizontal: 4),
                             child: Text(
                               '${_formatDuration(Duration(milliseconds: pos))} / ${_formatDuration(_currentDuration)}',
                               style: const TextStyle(
                                 color: Colors.white,
-                                fontSize: 12,
+                                fontSize: 11.5,
                                 fontFeatures: [
                                   FontFeature.tabularFigures()
                                 ],
@@ -5615,40 +5928,52 @@ class _PlayerScreenState extends State<PlayerScreen>
                             ),
                           ),
                           const Spacer(),
-                          // v2.5.49: 弹幕按钮 — 点击弹出控制面板 (开关+源列表+设置)
+                          // 弹幕按钮 (紧凑居中)
                           GestureDetector(
+                            behavior: HitTestBehavior.opaque,
                             onTap: _showDanmakuPanel,
-                            child: Container(
-                              width: 40,
+                            child: SizedBox(
+                              width: 32,
                               height: 40,
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                color: _danmakuEnabled
-                                    ? kLunaTheme.withOpacity(0.2)
-                                    : Colors.transparent,
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Icon(
-                                Icons.subtitles,
-                                size: 20,
-                                color: _danmakuEnabled
-                                    ? kLunaTheme
-                                    : Colors.white70,
+                              child: Center(
+                                child: Container(
+                                  width: 26,
+                                  height: 22,
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
+                                    color: _danmakuEnabled
+                                        ? kLunaTheme.withOpacity(0.2)
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Icon(
+                                    Icons.subtitles,
+                                    size: 17,
+                                    color: _danmakuEnabled
+                                        ? kLunaTheme
+                                        : Colors.white70,
+                                  ),
+                                ),
                               ),
                             ),
                           ),
+                          // 分辨率 / 原画切换控件 (高度 24 胶囊、居中对齐、文本精炼)
+                          _buildResolutionButton(),
                           // 右: 倍速
                           _iconBtn(
                             icon: Icons.speed,
                             onTap: _showPlaybackRateSheet,
+                            width: 32,
+                            size: 19,
                           ),
                           // 选集
                           _iconBtn(
                             icon: Icons.format_list_bulleted,
                             onTap: _showEpisodeSelectorSheet,
+                            width: 32,
+                            size: 19,
                           ),
-                          // v2.0.33: 手动「下一集」按钮 — 跟自动播下一集用同一播放逻辑
-                          // 只在「还有下一集」时显示, 最后一集隐藏
+                          // 手动「下一集」按钮
                           if (_selectedSource != null &&
                               _currentEpisodeIndex <
                                   _selectedSource!.episodes.length - 1)
@@ -5656,8 +5981,10 @@ class _PlayerScreenState extends State<PlayerScreen>
                               icon: Icons.skip_next,
                               iconColor: const Color(0xFF10b981),
                               onTap: _playNextEpisode,
+                              width: 32,
+                              size: 21,
                             ),
-                          // 全屏
+                          // 全屏 (最核心按钮，确保稳定显示在最右端)
                           _iconBtn(
                             icon: _isFullscreen
                                 ? Icons.fullscreen_exit
@@ -5665,6 +5992,8 @@ class _PlayerScreenState extends State<PlayerScreen>
                             onTap: _isFullscreen
                                 ? _onExitFullscreen
                                 : _onEnterFullscreen,
+                            width: 38,
+                            size: 24,
                           ),
                         ],
                       ),
@@ -5678,6 +6007,464 @@ class _PlayerScreenState extends State<PlayerScreen>
         ),
       ),
     );
+  }
+
+  /// 构建分辨率 / 清晰度切换控件 (高度居中、胶囊圆角、精炼显示且视觉水平完全对齐，短剧对齐红果鉴)
+  Widget _buildResolutionButton() {
+    final isShortDrama = widget.preferredSource == 'hongguo' ||
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama' ||
+        (_selectedSource?.source == 'hongguo');
+
+    String label = _currentResolution;
+    if (isShortDrama) {
+      label = (_userPreferredResolution == '自动' || _userPreferredResolution.isEmpty)
+          ? '自动'
+          : _userPreferredResolution;
+    } else if (label.contains('1080')) {
+      label = '1080P';
+    } else if (label.contains('720')) {
+      label = '720P';
+    } else if (label.contains('480')) {
+      label = '480P';
+    } else if (label.contains('原画')) {
+      label = '原画';
+    } else if (label.length > 5) {
+      label = label.substring(0, 4);
+    }
+
+    return Center(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _showResolutionSelectorSheet,
+        child: Container(
+          height: 24,
+          padding: const EdgeInsets.symmetric(horizontal: 7),
+          margin: const EdgeInsets.symmetric(horizontal: 2),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.12),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: Colors.white.withOpacity(0.25),
+              width: 0.8,
+            ),
+          ),
+          child: Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.2,
+              height: 1.1,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 弹出分辨率 / 清晰度切换面板 (100% 对齐红果鉴：支持自动优先高清与真实档位平滑热切)
+  void _showResolutionSelectorSheet() {
+    final isShortDrama = widget.preferredSource == 'hongguo' ||
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama' ||
+        (_selectedSource?.source == 'hongguo');
+
+    final dramaId = _selectedSource?.id.isNotEmpty == true
+        ? _selectedSource!.id
+        : widget.videoInfo.id;
+
+    final playUrl = _currentPlayUrl.isNotEmpty
+        ? _currentPlayUrl
+        : (_player is ExoPlayerBackend
+            ? (_player as ExoPlayerBackend).controller?.dataSource ?? ''
+            : '');
+
+    if (isShortDrama || playUrl.isNotEmpty) {
+      final multiMap = DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, _currentEpisodeIndex + 1) ??
+          DuanjuCoreBridge.buildMultiResolutionUrls(playUrl);
+      if (multiMap.isNotEmpty) {
+        _resolutionUrlMap.addAll(multiMap);
+      }
+    }
+
+    if (isShortDrama) {
+      final dynamicQualities = DuanjuCoreBridge.instance.getEpisodeQualities(dramaId, _currentEpisodeIndex + 1);
+      final actualQ = DuanjuCoreBridge.instance.getEpisodeActualQuality(dramaId, _currentEpisodeIndex + 1) ?? 1080;
+      final qualities = <int>[0];
+      if (dynamicQualities != null && dynamicQualities.isNotEmpty) {
+        for (final q in dynamicQualities) {
+          if (q > 0 && !qualities.contains(q)) qualities.add(q);
+        }
+      } else {
+        qualities.addAll([1080, 720, 480]);
+      }
+
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: Colors.transparent,
+        builder: (ctx) => Container(
+          decoration: const BoxDecoration(
+            color: Color(0xFF1F2937),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    '清晰度',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => Navigator.pop(ctx),
+                    child: const Icon(Icons.close, color: Colors.white54, size: 20),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                actualQ > 0 ? '当前播放 ${actualQ}P' : '使用源站可用画质',
+                style: const TextStyle(
+                  color: Colors.white54,
+                  fontSize: 13,
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  for (final q in qualities) () {
+                    final bool isSel = (q == 0 && (_userPreferredResolution == '自动' || _userPreferredResolution.isEmpty)) ||
+                        (q > 0 && _userPreferredResolution == '${q}P');
+                    final String label = q == 0 ? '自动（优先高清）' : '${q}P';
+                    return Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        onTap: () async {
+                          Navigator.pop(ctx);
+                          final newRes = q == 0 ? '自动' : '${q}P';
+                          if (_userPreferredResolution == newRes) return;
+
+                          setState(() {
+                            _userPreferredResolution = newRes;
+                            _currentResolution = newRes;
+                          });
+
+                          final curUrl = _currentPlayUrl.isNotEmpty
+                              ? _currentPlayUrl
+                              : (_player is ExoPlayerBackend
+                                  ? (_player as ExoPlayerBackend).controller?.dataSource ?? ''
+                                  : '');
+
+                          String? targetUrl = _resolutionUrlMap[newRes];
+                          if (targetUrl == null || targetUrl.isEmpty) {
+                            if (q == 0) {
+                              targetUrl = _resolutionUrlMap['1080P'] ?? _resolutionUrlMap['720P'] ?? curUrl;
+                            } else {
+                              final plan = await DuanjuCoreBridge.instance.getPlaybackPlan(
+                                dramaId: dramaId,
+                                episode: _currentEpisodeIndex + 1,
+                                quality: q,
+                              );
+                              targetUrl = plan?.url;
+                            }
+                          }
+
+                          if (targetUrl != null && targetUrl.isNotEmpty) {
+                            final currentPos = _currentPosition;
+                            setState(() {
+                              _currentPlayUrl = targetUrl!;
+                            });
+                            final decKey = DuanjuCoreBridge.instance.getDecryptionKey(dramaId, _currentEpisodeIndex + 1);
+                            await _player!.open(targetUrl, startAt: currentPos, decryptionKey: decKey);
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(q == 0 ? '已切换至: 自动（优先高清）' : '已无缝切换至: ${q}P'),
+                                  duration: const Duration(seconds: 1),
+                                ),
+                              );
+                            }
+                          }
+                        },
+                        borderRadius: BorderRadius.circular(8),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 150),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: isSel ? const Color(0xFF10B981).withOpacity(0.2) : const Color(0xFF2D3748),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: isSel ? const Color(0xFF10B981) : Colors.white24,
+                              width: 1.2,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (isSel) ...[
+                                const Icon(Icons.check_rounded, size: 16, color: Color(0xFF10B981)),
+                                const SizedBox(width: 4),
+                              ],
+                              Text(
+                                label,
+                                style: TextStyle(
+                                  color: isSel ? const Color(0xFF10B981) : Colors.white,
+                                  fontSize: 14,
+                                  fontWeight: isSel ? FontWeight.w600 : FontWeight.normal,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  }(),
+                ],
+              ),
+              if (_userPreferredResolution != '自动' &&
+                  _userPreferredResolution.isNotEmpty &&
+                  !qualities.any((q) => '${q}P' == _userPreferredResolution))
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(
+                    '已保存 $_userPreferredResolution 偏好，本集暂无此画质。',
+                    style: const TextStyle(
+                      color: Colors.white38,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+      return;
+    }
+
+    // 非短剧模式保持原有逻辑
+    final List<String> resolutionOptions = [];
+    if (_availableResolutions.isEmpty) {
+      _availableResolutions = ['1080P', '720P', '480P'];
+    }
+    resolutionOptions.addAll(_availableResolutions);
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        decoration: const BoxDecoration(
+          color: Color(0xFF1E1E2E),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    '选择画质清晰度',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => Navigator.pop(ctx),
+                    child: const Icon(Icons.close, color: Colors.white54, size: 20),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(color: Colors.white12),
+            ...resolutionOptions.map((res) {
+              final bool isSelected = (res == _currentResolution);
+
+              String title = res;
+              String subtitle = '原画标准规格';
+              if (res == '自动') {
+                title = '自动（优先高清）';
+                subtitle = '使用源站可用最高画质 · 智能优选';
+              } else if (res == '1080P') {
+                subtitle = '超清原画 · 极致画质 · 纤毫毕现';
+              } else if (res == '720P') {
+                subtitle = '高清画质 · 流畅首选 · 画质平衡';
+              } else if (res == '480P') {
+                subtitle = '标清省流 · 极速加载 · 弱网秒开';
+              }
+
+              return ListTile(
+                title: Text(
+                  title,
+                  style: TextStyle(
+                    color: isSelected
+                        ? const Color(0xFF10b981)
+                        : Colors.white,
+                    fontWeight:
+                        isSelected ? FontWeight.bold : FontWeight.normal,
+                    fontSize: 15,
+                  ),
+                ),
+                subtitle: Text(
+                  subtitle,
+                  style: TextStyle(
+                    color: isSelected
+                        ? const Color(0xFF10b981).withOpacity(0.8)
+                        : Colors.white54,
+                    fontSize: 12,
+                  ),
+                ),
+                trailing: isSelected
+                    ? const Icon(Icons.check_circle, color: Color(0xFF10b981))
+                    : null,
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  if (isSelected) return;
+
+                  final curUrl = _currentPlayUrl.isNotEmpty
+                      ? _currentPlayUrl
+                      : (_player is ExoPlayerBackend
+                          ? (_player as ExoPlayerBackend).controller?.dataSource ?? ''
+                          : '');
+
+                  String? targetUrl;
+                  if (res == '自动') {
+                    _userPreferredResolution = '自动';
+                    targetUrl = _resolutionUrlMap['自动'] ??
+                        _resolutionUrlMap['1080P'] ??
+                        _resolutionUrlMap['720P'] ??
+                        (curUrl.isNotEmpty ? curUrl : null);
+                  } else {
+                    _userPreferredResolution = res;
+                    targetUrl = _resolutionUrlMap[res] ??
+                        DuanjuCoreBridge.buildMultiResolutionUrls(curUrl)[res];
+                  }
+
+                  if (targetUrl != null && targetUrl.isNotEmpty) {
+                    final currentPos = _currentPosition;
+                    setState(() {
+                      _currentResolution = res;
+                      _currentPlayUrl = targetUrl!;
+                    });
+                    final decKey = isShortDrama
+                        ? DuanjuCoreBridge.instance.getDecryptionKey(dramaId, _currentEpisodeIndex + 1)
+                        : null;
+                    await _player!.open(targetUrl, startAt: currentPos, decryptionKey: decKey);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(res == '自动' ? '已切换至: 自动（优先高清）' : '已无缝切换至: $res (平滑热切)'),
+                          duration: const Duration(seconds: 1),
+                        ),
+                      );
+                    }
+                  }
+                },
+              );
+            }),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 异步检测当前流的多分辨率选项，无子流时真实显示「720P / 1080P / 原画」
+  Future<void> _checkStreamResolutions(String url) async {
+    if (!mounted) return;
+    try {
+      if (url.contains('.m3u8')) {
+        final resp = await http
+            .get(Uri.parse(url), headers: _browserHeaders)
+            .timeout(const Duration(seconds: 4));
+        if (resp.statusCode == 200 &&
+            resp.body.contains('#EXT-X-STREAM-INF')) {
+          final lines = resp.body.split('\n');
+          final resolutions = <String>[];
+          final urlMap = <String, String>{};
+          for (int i = 0; i < lines.length; i++) {
+            final line = lines[i].trim();
+            if (line.startsWith('#EXT-X-STREAM-INF') &&
+                line.contains('RESOLUTION=')) {
+              final match = RegExp(r'RESOLUTION=(\d+x\d+)').firstMatch(line);
+              if (match != null && i + 1 < lines.length) {
+                final subUrl = lines[i + 1].trim();
+                final dims = match.group(1)!.split('x');
+                final h = int.tryParse(dims.last) ?? 0;
+                String resName = '${h}P';
+                if (h >= 1080) {
+                  resName = '1080P';
+                } else if (h >= 720) {
+                  resName = '720P';
+                } else if (h >= 480) {
+                  resName = '480P';
+                }
+                final fullUrl = Uri.parse(url).resolve(subUrl).toString();
+                resolutions.add(resName);
+                urlMap[resName] = fullUrl;
+              }
+            }
+          }
+          if (resolutions.isNotEmpty && mounted) {
+            setState(() {
+              _availableResolutions = resolutions;
+              _resolutionUrlMap
+                ..clear()
+                ..addAll(urlMap);
+              _currentResolution = resolutions.first;
+            });
+            return;
+          }
+        }
+      }
+    } catch (_) {}
+
+    if (mounted) {
+      final isShortDrama = widget.preferredSource == 'hongguo' ||
+          widget.videoInfo.source == 'hongguo' ||
+          widget.videoInfo.source == 'shortdrama' ||
+          (_selectedSource?.source == 'hongguo');
+
+      final dramaId = _selectedSource?.id.isNotEmpty == true
+          ? _selectedSource!.id
+          : widget.videoInfo.id;
+
+      // 针对短剧或常规流，自动对齐真实三档画质 URL
+      final multiMap = DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, _currentEpisodeIndex + 1) ??
+          DuanjuCoreBridge.buildMultiResolutionUrls(url);
+
+      final availableList = ['1080P', '720P', '480P'];
+      String currentSel = _userPreferredResolution;
+      if (!availableList.contains(currentSel)) {
+        currentSel = '1080P';
+      }
+
+      setState(() {
+        _availableResolutions = availableList;
+        _resolutionUrlMap
+          ..clear()
+          ..addAll(multiMap);
+        _currentResolution = currentSel;
+      });
+    }
   }
 
   /// 进度条 (5px 矩形, 绿进度, LunaTV Web 风格)
@@ -5906,7 +6693,13 @@ class _PlayerScreenState extends State<PlayerScreen>
                   child: Stack(
                     alignment: Alignment.center,
                     children: [
-                      ExoPlayerView(backend: _player!),
+                      if (_player is DuanjuMediaKitBackend)
+                        DuanjuMediaKitView(
+                            backend: _player as DuanjuMediaKitBackend)
+                      else if (_player is ExoPlayerBackend)
+                        ExoPlayerView(backend: _player as ExoPlayerBackend)
+                      else
+                        const ColoredBox(color: Colors.black),
                       if (_danmakuEnabled)
                         DanmakuOverlay(
                           key: _danmakuKey,
