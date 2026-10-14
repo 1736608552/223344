@@ -779,7 +779,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       // v1.0.65: 先等 _currentPosition > 0 再 save, 避免刚 play 就被 kill
       // 时存 0 覆盖之前的真进度
       await _waitForValidPosition();
-      if (_currentPosition > Duration.zero) {
+      if (_currentPosition > Duration.zero || _isCurrentShortDrama || _currentEpisodeIndex > 0) {
         try {
           await _saveCurrentProgress(force: true);
         } catch (_) {}
@@ -823,7 +823,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       // v1.0.65: 先等 _currentPosition > 0 再 save, 避免刚 play 就 home
       // 键时存 0 覆盖之前的真进度. 仍然 0 就跳过 (10s 定时器下次兜底)
       _waitForValidPosition().then((_) {
-        if (_currentPosition > Duration.zero) {
+        if (_currentPosition > Duration.zero || _isCurrentShortDrama || _currentEpisodeIndex > 0) {
           // 进后台时立即保存, 走 _saveCurrentProgress 的 force 分支,
           // _currentPosition 兜底能拿到最后一帧有效 position
           unawaited(_saveCurrentProgress(force: true));
@@ -1491,6 +1491,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     final epNum = _currentEpisodeIndex + 1;
     final title = widget.videoInfo.title.trim();
 
+    // 注册剧名，确保桥接层和智能弹幕引擎能感知短剧题材
+    if (title.isNotEmpty) {
+      DuanjuCoreBridge.instance.registerDramaTitle(dramaId, title);
+    }
+
     setState(() => _danmakuLoading = true);
     await DiaryService.add('[短剧弹幕] 开始获取: $title 第$epNum集 (dramaId=$dramaId)');
 
@@ -1506,6 +1511,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         seriesId: dramaId,
         vid: vid,
         episode: epNum,
+        title: title,
       );
 
       if (!mounted) return;
@@ -1562,14 +1568,17 @@ class _PlayerScreenState extends State<PlayerScreen>
         title: title,
         type: 'tv',
       );
+      // 刚打开短剧播放时，除非用户在设置中设为 off，否则默认开启弹幕并自启动加载
+      final shouldEnable = DanmakuSettings.instance.area != DanmakuAreaOption.off;
       setState(() {
         _danmakuPreSearchResults = [hongguoMedia];
         _danmakuPreSearching = false;
         _danmakuPreSearchDone = true;
+        if (shouldEnable) {
+          _danmakuEnabled = true;
+        }
       });
-      if (_danmakuEnabled) {
-        unawaited(_loadShortDramaDanmaku(auto: true));
-      }
+      unawaited(_loadShortDramaDanmaku(auto: true));
       return;
     }
 
@@ -2549,7 +2558,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     try {
       // 等有效位置 (最多 500ms, 比之前 800ms 更快)
       await _waitForValidPosition(timeout: const Duration(milliseconds: 500));
-      if (_currentPosition > Duration.zero) {
+      if (_currentPosition > Duration.zero || _isCurrentShortDrama || _currentEpisodeIndex > 0) {
         await _saveCurrentProgress(force: true);
       }
       await _player?.stop();
@@ -2602,7 +2611,31 @@ class _PlayerScreenState extends State<PlayerScreen>
         _sourcesLoading = false;
         _error = null;
       });
-      _selectSource(dramaSource);
+
+      // 准确恢复短剧历史播放进度 (集数与播放进度时间)
+      int targetEpisodeIndex = 0;
+      int targetPlayTime = 0;
+
+      // 1) 优先使用 videoInfo 携带的历史记录 (从“继续观看”或“播放历史”卡片进入)
+      if (widget.videoInfo.index > 0) {
+        targetEpisodeIndex = (widget.videoInfo.index - 1).clamp(0, totalEps - 1);
+        targetPlayTime = widget.videoInfo.playTime;
+      } else {
+        // 2) 若从短剧分类专区或搜索直入，尝试从云端/本地存储拉取该短剧最近观看记录
+        final resume = await _tryLoadResume(title, dramaId: widget.videoInfo.id);
+        if (resume != null && resume.index > 0) {
+          targetEpisodeIndex = (resume.index - 1).clamp(0, totalEps - 1);
+          targetPlayTime = resume.playTime;
+        }
+      }
+
+      if (targetPlayTime > 0) {
+        _pendingResumeAt = Duration(milliseconds: targetPlayTime);
+      }
+
+      _selectSource(dramaSource, episodeIndex: targetEpisodeIndex);
+      DiaryService.add(
+          '[History] 短剧历史恢复成功: $title 第${targetEpisodeIndex + 1}集 playTime=${targetPlayTime}ms');
 
       // 异步根据真实章节列表精确对齐总集数 (消除硬编码80集限制)
       unawaited(() async {
@@ -2865,24 +2898,71 @@ class _PlayerScreenState extends State<PlayerScreen>
     return (y1 - y2).abs() <= 1; // 允许 ±1 年容差
   }
 
-  /// 从云端拉播放记录, 按 searchTitle 找最近一条
-  /// 用于 videoInfo 没带 source 信息时兜底
-  Future<PlayRecord?> _tryLoadResumeFromCloud(String searchTitle) async {
+  /// 智能检索播放记录 (双轨制: PageCacheService 云端/缓存优先 + LocalModeStorageService 本地降级容灾)
+  /// 支持短剧唯一 ID 精准匹配与标题匹配，彻底杜绝历史集数丢失
+  Future<PlayRecord?> _tryLoadResume(String searchTitle, {String? dramaId}) async {
     try {
-      final result =
-          await PageCacheService().getPlayRecords(context);
-      if (!result.success || result.data == null) return null;
-      // 优先 searchTitle 完全匹配, 没有再退化到 title
-      final matches = result.data!
+      List<PlayRecord>? records;
+      final result = await PageCacheService().getPlayRecords(context);
+      if (result.success && result.data != null && result.data!.isNotEmpty) {
+        records = result.data;
+      }
+      // 若云端未就绪或为空，无缝降级读取本地实时存储
+      if (records == null || records.isEmpty) {
+        records = await LocalModeStorageService.getPlayRecords();
+      }
+      if (records.isEmpty) return null;
+
+      // 1. 若提供了 dramaId，优先按短剧唯一 ID 精准匹配 (最稳定可靠)
+      if (dramaId != null && dramaId.isNotEmpty) {
+        final cleanTargetId = DuanjuCoreBridge.cleanSeriesId(dramaId);
+        final idMatches = records.where((r) {
+          final cleanRecordId = DuanjuCoreBridge.cleanSeriesId(r.id);
+          return cleanRecordId == cleanTargetId || r.id == dramaId;
+        }).toList();
+        if (idMatches.isNotEmpty) {
+          idMatches.sort((a, b) => b.saveTime.compareTo(a.saveTime));
+          return idMatches.first;
+        }
+      }
+
+      // 2. 其次按 searchTitle 完全匹配
+      final matches = records
           .where((r) => r.searchTitle == searchTitle || r.title == searchTitle)
           .toList();
-      if (matches.isEmpty) return null;
-      matches.sort((a, b) => b.saveTime.compareTo(a.saveTime));
-      return matches.first;
+      if (matches.isNotEmpty) {
+        matches.sort((a, b) => b.saveTime.compareTo(a.saveTime));
+        return matches.first;
+      }
     } catch (_) {
-      return null;
+      try {
+        final localRecords = await LocalModeStorageService.getPlayRecords();
+        if (dramaId != null && dramaId.isNotEmpty) {
+          final cleanTargetId = DuanjuCoreBridge.cleanSeriesId(dramaId);
+          final idMatches = localRecords.where((r) {
+            final cleanRecordId = DuanjuCoreBridge.cleanSeriesId(r.id);
+            return cleanRecordId == cleanTargetId || r.id == dramaId;
+          }).toList();
+          if (idMatches.isNotEmpty) {
+            idMatches.sort((a, b) => b.saveTime.compareTo(a.saveTime));
+            return idMatches.first;
+          }
+        }
+        final matches = localRecords
+            .where((r) => r.searchTitle == searchTitle || r.title == searchTitle)
+            .toList();
+        if (matches.isNotEmpty) {
+          matches.sort((a, b) => b.saveTime.compareTo(a.saveTime));
+          return matches.first;
+        }
+      } catch (_) {}
     }
+    return null;
   }
+
+  /// 兼容老调用代理
+  Future<PlayRecord?> _tryLoadResumeFromCloud(String searchTitle) =>
+      _tryLoadResume(searchTitle);
 
   /// v1.0.47: episodeIndex 默认值改成 _currentEpisodeIndex 而不是 0
   /// 之前默认值是 0, 导致用户手动切源时 episode 被静默重置 (明明看到第 3 集,
@@ -3832,9 +3912,14 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     setState(() {
       _currentEpisodeIndex = index;
+      _currentPosition = Duration.zero;
+      _lastKnownPosition = Duration.zero;
       _isBuffering = true;
       _phase = 'playing';
     });
+    // 切集后立即重置并保存新集初始进度 (index=新集), 确保用户哪怕刚切完就退出也能记住新集
+    _lastSavedKey = null;
+    unawaited(_saveCurrentProgress(force: true));
     // v2.2.0+59: 进入播放阶段, 屏幕常亮 (ExoPlayer 默认不阻止屏保).
     //   离开播放页 (detail) 时会 clearFlags. 切集的话 _phase 还是 'playing',
     //   这里 enable=true 多次调无副作用 (addFlags 重复设置是幂等的).
@@ -5409,7 +5494,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                   // v2.5.88: 返回箭头退出也要先保存进度, 跟返回键路径一致
                   //   之前直接 stop 没保存, 退出后进度丢失
                   () async {
-                    if (_currentPosition > Duration.zero) {
+                    if (_currentPosition > Duration.zero || _isCurrentShortDrama || _currentEpisodeIndex > 0) {
                       await _saveCurrentProgress(force: true);
                     }
                     try {
