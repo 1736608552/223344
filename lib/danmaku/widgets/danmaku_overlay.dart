@@ -1,15 +1,19 @@
 // lib/danmaku/widgets/danmaku_overlay.dart
-// 弹幕浮层 — 视频上层透明 Stack, 用 CustomPainter 滚动画
+// 弹幕浮层 — 视频上层透明 Stack, 满帧丝滑硬件渲染 (CustomPainter + repaint)
 //
-// v2.5.53: 修复两大 bug:
-//   1. 1/3屏重叠: _spawn 和 painter 行数计算不一致
-//      - spawn 用 availH/lineH 算滚动行数 (13行)
-//      - painter 先扣 top/bottom 各一半, scrollH 只剩 24px (1行)
-//      - spawn 分配 13 行, painter 按 1 行画 → 行间距错 → 重叠
-//      修法: 统一用 _DanmakuLayout 算, spawn 和 painter 共享同一套行数
-//   2. 仅顶部不显示: 模式感知空间分配
-//      - 旧: 不管什么模式, top/bottom 各占 availH/2 → 顶部只有 6 行
-//      - 新: 仅顶部时全部空间给 top → 顶部有 13 行, 更容易显示
+// v2.6.91: 彻底重构弹幕动力学引擎与渲染管线:
+//   1. 彻底根治"一走一停一走一停"顿挫:
+//      - 解耦底层播放器低频(100~250ms)阶梯式进度通知;
+//      - 物理位移改由真实高精度物理时钟(Wall-Clock Delta)驱动, 保证每一帧严格匀速连续向前推进;
+//      - 移除 50ms (20fps) 人为锁帧门槛, CustomPainter 直接绑定 repaint: _ctrl 享受 60Hz/120Hz 满帧高刷;
+//   2. 预排版与零内存抖动:
+//      - 弹幕在装填(spawn)时一次性完成 TextPainter 排版并缓存, 彻底消除每帧 paint 内部重复 new 和 layout;
+//   3. 完美出屏与防重叠:
+//      - 修正滚动弹幕完全滑出屏幕左边缘(x <= -textWidth)后再移除, 杜绝屏幕左侧突兀截断闪退;
+//      - 基于实时物理几何边缘判定轨道防重叠, 既无碰撞又无空档;
+//   4. 智能 Seek 对齐与暂停保持:
+//      - 检测到拖拽进度条(>1.5s 突变)时秒级清场重填, 正常微小抖动时柔性阻尼对齐;
+//      - 暂停时原地定格, 恢复播放时无缝平滑连贯启动.
 
 import 'package:flutter/material.dart';
 
@@ -44,7 +48,6 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
   final List<_LiveBullet> _live = [];
-  int _lastTickMs = 0;
 
   List<DanmakuComment> _sorted = const [];
   final Set<int> _spawnedHashes = {};
@@ -57,9 +60,13 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
   final List<_TrackState> _topTracks = List.generate(_maxFixedRows, (_) => _TrackState());
   final List<_TrackState> _bottomTracks = List.generate(_maxFixedRows, (_) => _TrackState());
 
-  Duration _mediaPos = Duration.zero;
-  DateTime _lastWall = DateTime.now();
+  // 平滑物理时钟与视频时间
+  double _smoothMediaMs = 0;
+  DateTime _lastWallTime = DateTime.now();
   bool _paused = false;
+
+  double _lastWidth = 0;
+  double _lastHeight = 0;
 
   DanmakuRenderSettings _settings = const DanmakuRenderSettings();
   DanmakuAreaOption _area = DanmakuAreaOption.full;
@@ -71,10 +78,10 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
   static const int _scrollDurationMs = 8000;
   static const int _fixedDurationMs = 4000;
   static const double _trackGap = 4.0;
-  static const double _antiOverlapGap = 12.0;
+  static const double _antiOverlapGap = 16.0;
 
   void syncPosition(Duration pos) {
-    _mediaPos = pos;
+    _smoothMediaMs = pos.inMilliseconds.toDouble();
   }
 
   void pause() {
@@ -83,11 +90,15 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
 
   void resume() {
     _paused = false;
+    _lastWallTime = DateTime.now();
   }
 
   int get liveCount => _live.length;
 
   void reset() {
+    for (final b in _live) {
+      b.dispose();
+    }
     _live.clear();
     for (final t in _scrollTracks) {
       t.freeAtMs = 0;
@@ -101,12 +112,11 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
       t.freeAtMs = 0;
       t.lastBullet = null;
     }
-    _lastTickMs = 0;
     _densityCounter = 0;
     _spawnedHashes.clear();
     _commentsChanged = true;
     _needsBackfill = true;
-    if (mounted) setState(() {});
+    _lastWallTime = DateTime.now();
   }
 
   @override
@@ -114,6 +124,10 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.comments, widget.comments)) {
       _commentsChanged = true;
+      reset();
+    } else if (oldWidget.opacity != widget.opacity ||
+        oldWidget.fontSize != widget.fontSize ||
+        oldWidget.speed != widget.speed) {
       reset();
     }
   }
@@ -125,7 +139,6 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
       _area = s.area;
       _mode = s.mode;
     });
-    // v2.5.53: 切模式/区域时重置轨道, 让新布局立即生效
     reset();
   }
 
@@ -136,49 +149,91 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
     _settings = s.render;
     _area = s.area;
     _mode = s.mode;
+    _lastWallTime = DateTime.now();
+
     _ctrl = AnimationController(
       vsync: this,
       duration: const Duration(days: 1),
     )..addListener(_onTick);
-    _ctrl.forward();
+    _ctrl.repeat();
   }
 
   @override
   void dispose() {
     _ctrl.removeListener(_onTick);
     _ctrl.dispose();
+    for (final b in _live) {
+      b.dispose();
+    }
+    _live.clear();
     super.dispose();
   }
 
   void _onTick() {
     final now = DateTime.now();
-    final dtMs = now.difference(_lastWall).inMilliseconds;
-    _lastWall = now;
+    final dtMicro = now.difference(_lastWallTime).inMicroseconds;
+    _lastWallTime = now;
+    final dtMs = (dtMicro / 1000.0).clamp(0.0, 100.0);
 
     final pausedExt = widget.pausedProvider?.call() ?? _paused;
     if (pausedExt || !widget.enabled) return;
 
+    // 1. 同步视频进度与处理用户 Seek
     if (widget.positionProvider != null) {
-      _mediaPos = widget.positionProvider!.call();
+      final realMediaMs = widget.positionProvider!.call().inMilliseconds.toDouble();
+      final diff = (realMediaMs - _smoothMediaMs).abs();
+      if (diff > 1500) {
+        // 用户快进/快退/切集 Seek
+        _smoothMediaMs = realMediaMs;
+        _handleSeek();
+      } else {
+        // 正常播放: 真实物理增量自然推进, 并用 10% 柔性阻尼消除播放器阶梯抖动
+        _smoothMediaMs += dtMs + (realMediaMs - _smoothMediaMs) * 0.1;
+      }
     } else {
-      _mediaPos = Duration(milliseconds: _mediaPos.inMilliseconds + dtMs);
+      _smoothMediaMs += dtMs;
     }
 
-    _lastTickMs += dtMs;
+    // 2. 满帧高刷推进所有活跃弹幕的物理位移
+    for (int i = 0; i < _live.length; i++) {
+      _live[i].step(dtMs);
+    }
+
+    // 3. 及时回收滚出屏幕的弹幕并释放排版对象
+    _live.removeWhere((b) {
+      if (b.done) {
+        _spawnedHashes.remove(identityHashCode(b.comment));
+        b.dispose();
+        return true;
+      }
+      return false;
+    });
+
+    // 4. 定期生成新弹幕
+    if (_lastWidth > 0 && _lastHeight > 0) {
+      _spawn(_lastWidth, _lastHeight);
+    }
+  }
+
+  void _handleSeek() {
     for (final b in _live) {
-      b.advance(_mediaPos.inMilliseconds);
+      b.dispose();
     }
-    final beforeLen = _live.length;
-    _live.removeWhere((b) => b.done);
-    if (_live.length < beforeLen) {
-      final liveHashes = _live.map((b) => identityHashCode(b.comment)).toSet();
-      _spawnedHashes.removeWhere((h) => !liveHashes.contains(h));
+    _live.clear();
+    for (final t in _scrollTracks) {
+      t.freeAtMs = 0;
+      t.lastBullet = null;
     }
-
-    if (_lastTickMs >= 50) {
-      _lastTickMs = 0;
-      if (mounted) setState(() {});
+    for (final t in _topTracks) {
+      t.freeAtMs = 0;
+      t.lastBullet = null;
     }
+    for (final t in _bottomTracks) {
+      t.freeAtMs = 0;
+      t.lastBullet = null;
+    }
+    _spawnedHashes.clear();
+    _needsBackfill = true;
   }
 
   double _effectiveSpeed() {
@@ -193,32 +248,25 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
     return _baseFontSize * _settings.fontScale;
   }
 
-  // ★ v2.5.53: 模式过滤 — top/bottom 模式不过滤弹幕类型, 而是强制转固定
-  //   旧逻辑: top 模式只留 mode==5, bottom 只留 mode==4
-  //   问题: 99% 弹幕是 mode==1 (滚动), top/bottom 模式下几乎全被过滤 → 不显示
-  //   新逻辑: top/bottom 模式下所有弹幕都通过, 由 _effectiveRenderMode 决定渲染方式
   bool _shouldShowByMode(int mode) {
     switch (_mode) {
       case DanmakuMode.all:
       case DanmakuMode.top:
       case DanmakuMode.bottom:
-        return true; // top/bottom 不过滤, 强制转固定
+        return true;
       case DanmakuMode.scroll:
         return mode == 1;
     }
   }
 
-  // ★ v2.5.53: 实际渲染模式 — top/bottom 模式下把所有弹幕转成固定
-  //   mode==1 (滚动) 在 top 模式下 → mode==5 (顶部固定)
-  //   mode==1 (滚动) 在 bottom 模式下 → mode==4 (底部固定)
   int _effectiveRenderMode(int originalMode) {
     switch (_mode) {
       case DanmakuMode.top:
-        return 5; // 全部转顶部固定
+        return 5;
       case DanmakuMode.bottom:
-        return 4; // 全部转底部固定
+        return 4;
       default:
-        return originalMode; // all/scroll 保持原样
+        return originalMode;
     }
   }
 
@@ -228,12 +276,6 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
     return _densityCounter < _settings.densityPct;
   }
 
-  // ★ v2.5.53: 统一布局计算 — spawn 和 painter 共用, 杜绝行数不一致
-  //   模式感知:
-  //     - 仅顶部: 全部空间给 top, scroll/bottom = 0
-  //     - 仅底部: 全部空间给 bottom, scroll/top = 0
-  //     - 仅滚动: 全部空间给 scroll, top/bottom = 0
-  //     - 全部: top 和 bottom 各占 1/4, scroll 占 1/2
   static _DanmakuLayout _calcLayout(
     double availH,
     double lineH,
@@ -258,7 +300,6 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
         maxBottomRows = 0;
         break;
       case DanmakuMode.all:
-        // top/bottom 各占 1/4, scroll 占 1/2
         final fixedH = availH * 0.25;
         maxTopRows = (fixedH / lineH).floor().clamp(1, _maxFixedRows);
         maxBottomRows = (fixedH / lineH).floor().clamp(1, _maxFixedRows);
@@ -293,14 +334,18 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
         final w = c.maxWidth;
         final h = c.maxHeight;
         if (w <= 0 || h <= 0) return const SizedBox.shrink();
+
+        _lastWidth = w;
+        _lastHeight = h;
         _spawn(w, h);
+
         return IgnorePointer(
           child: CustomPaint(
             painter: _DanmakuPainter(
+              repaint: _ctrl, // 绑定 AnimationController, vsync 满帧驱动重绘
               bullets: _live,
               width: w,
               height: h,
-              opacity: _effectiveOpacity(),
               fontSize: _effectiveFontSize(),
               areaRatio: _area.ratio,
               mode: _mode,
@@ -313,11 +358,10 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
   }
 
   void _spawn(double w, double h) {
-    final current = _mediaPos.inMilliseconds;
+    final current = _smoothMediaMs.round();
     final lineH = _effectiveFontSize() + _trackGap;
     final availH = h * _area.ratio;
 
-    // ★ v2.5.53: 用统一的布局计算 (跟 painter 一致)
     final layout = _calcLayout(availH, lineH, _mode);
 
     if (_commentsChanged) {
@@ -327,13 +371,13 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
     }
     if (_sorted.isEmpty) return;
 
-    final windowEnd = current + 200;
+    final windowEnd = current + 300;
     final int windowStart;
     if (_needsBackfill) {
-      windowStart = 0;
+      windowStart = (current - 500).clamp(0, current);
       _needsBackfill = false;
     } else {
-      windowStart = current - 30000;
+      windowStart = current - 5000;
     }
 
     int lo = 0, hi = _sorted.length;
@@ -357,7 +401,6 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
       if (!_shouldShowByMode(c.mode)) continue;
       if (!_shouldShowByDensity()) continue;
 
-      // ★ v2.5.53: top/bottom 模式下把弹幕转成固定模式
       final renderMode = _effectiveRenderMode(c.mode);
       final track = _pickTrack(renderMode, current, w, layout);
       if (track < 0) continue;
@@ -368,17 +411,17 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
       final bullet = _LiveBullet(
         comment: c,
         row: track,
-        spawnedAtMs: current,
+        spawnedAtMediaMs: current,
         screenWidth: w,
         scrollDurationMs: scrollMs,
         fixedDurationMs: _fixedDurationMs,
         fontSize: _effectiveFontSize(),
-        renderMode: renderMode, // ★ 传入实际渲染模式
+        renderMode: renderMode,
+        opacity: _effectiveOpacity(),
       );
       _live.add(bullet);
       _spawnedHashes.add(hash);
 
-      // ★ v2.5.53: 用 renderMode 决定记录到哪个轨道
       if (renderMode == 1) {
         _scrollTracks[track].lastBullet = bullet;
       } else if (renderMode == 5) {
@@ -389,7 +432,6 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
     }
   }
 
-  // ★ v2.5.53: 用 layout 统一算行数, 不再各算各的
   int _pickTrack(
     int mode,
     int nowMs,
@@ -416,7 +458,8 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
       }
       return -1;
     }
-    // 滚动
+
+    // 滚动模式: 精确物理几何防重叠
     final speed = _effectiveSpeed();
     final scrollMs = (_scrollDurationMs / speed).round();
     for (var i = 0; i < layout.maxScrollRows; i++) {
@@ -424,14 +467,15 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
       if (track.freeAtMs <= nowMs) {
         if (_settings.antiOverlap && track.lastBullet != null) {
           final last = track.lastBullet!;
-          final elapsed = nowMs - last.spawnedAtMs;
-          if (elapsed >= 0 && elapsed < scrollMs) {
-            final t = (elapsed / scrollMs).clamp(0.0, 1.0);
-            final lastRightEdge = w * (1.0 - t) + last.textWidth;
-            if (lastRightEdge > _antiOverlapGap) continue;
+          if (!last.done) {
+            // 前一条弹幕尾部位置: x + textWidth
+            final lastRightEdge = last.x + last.textWidth;
+            if (lastRightEdge > w - _antiOverlapGap) {
+              continue; // 尾部未留出安全间隙, 寻找其他轨道
+            }
           }
         }
-        track.freeAtMs = nowMs + (scrollMs * 0.5).round();
+        track.freeAtMs = nowMs + (scrollMs * 0.35).round();
         return i;
       }
     }
@@ -439,7 +483,6 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
   }
 }
 
-/// ★ v2.5.53: 统一布局计算结果 — spawn 和 painter 共用
 class _DanmakuLayout {
   final int maxScrollRows;
   final int maxTopRows;
@@ -470,48 +513,84 @@ class _TrackState {
 class _LiveBullet {
   final DanmakuComment comment;
   final int row;
-  final int spawnedAtMs;
+  final int spawnedAtMediaMs;
   final double screenWidth;
   final int scrollDurationMs;
   final int fixedDurationMs;
   final double fontSize;
-  final int renderMode; // ★ v2.5.53: 实际渲染模式 (top/bottom 模式下可能 != comment.mode)
+  final int renderMode; // 1: 滚动, 5: 顶部固定, 4: 底部固定
+
+  double elapsedWallMs = 0; // 真实物理流逝时间 (ms)
   double x = 0;
   double textWidth = 0;
+  double textHeight = 0;
   bool done = false;
-  bool _textWidthComputed = false;
+  TextPainter? painter;
 
   _LiveBullet({
     required this.comment,
     required this.row,
-    required this.spawnedAtMs,
+    required this.spawnedAtMediaMs,
     required this.screenWidth,
     required this.scrollDurationMs,
     required this.fixedDurationMs,
     required this.fontSize,
     required this.renderMode,
-  });
-
-  void advance(int nowMs) {
-    final elapsed = nowMs - spawnedAtMs;
-    if (elapsed < 0) {
-      done = true;
-      return;
-    }
-    // ★ v2.5.53: 用 renderMode 决定滚动/固定, 而非 comment.mode
-    if (renderMode == 1) {
-      final t = (elapsed / scrollDurationMs).clamp(0.0, 1.0);
-      x = screenWidth * (1.0 - t);
-      if (t >= 1.0) done = true;
-    } else {
-      if (elapsed > fixedDurationMs) done = true;
-    }
+    required double opacity,
+  }) {
+    _initPainter(opacity);
   }
 
-  void ensureTextWidth(TextPainter tp) {
-    if (!_textWidthComputed) {
-      textWidth = tp.width;
-      _textWidthComputed = true;
+  void _initPainter(double opacity) {
+    final text = comment.content;
+    final alpha = (255 * opacity).round().clamp(0, 255);
+    final c = comment.color;
+    final r = (c >> 16) & 0xFF;
+    final g = (c >> 8) & 0xFF;
+    final bv = c & 0xFF;
+    final color = Color.fromARGB(alpha, r, g, bv);
+
+    painter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          fontSize: fontSize,
+          color: color,
+          fontWeight: FontWeight.w500,
+          shadows: const [
+            Shadow(blurRadius: 3, color: Colors.black87, offset: Offset(0, 0)),
+            Shadow(blurRadius: 2, color: Colors.black54, offset: Offset(1, 1)),
+          ],
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    );
+    painter!.layout();
+    textWidth = painter!.width;
+    textHeight = painter!.height;
+    x = screenWidth;
+  }
+
+  void dispose() {
+    painter?.dispose();
+    painter = null;
+  }
+
+  /// 真实高精物理时钟步进
+  void step(double dtMs) {
+    elapsedWallMs += dtMs;
+    if (renderMode == 1) {
+      // 匀速物理滚动: 从 screenWidth 到 -(textWidth + 8)
+      final totalDist = screenWidth + textWidth + 8.0;
+      final progress = elapsedWallMs / scrollDurationMs;
+      x = screenWidth - totalDist * progress;
+      if (x <= -(textWidth + 8.0) || progress >= 1.0) {
+        done = true;
+      }
+    } else {
+      if (elapsedWallMs >= fixedDurationMs) {
+        done = true;
+      }
     }
   }
 }
@@ -520,16 +599,15 @@ class _DanmakuPainter extends CustomPainter {
   final List<_LiveBullet> bullets;
   final double width;
   final double height;
-  final double opacity;
   final double fontSize;
   final double areaRatio;
-  final DanmakuMode mode; // ★ v2.5.53: 传入模式, 统一布局
+  final DanmakuMode mode;
 
   _DanmakuPainter({
+    required super.repaint, // 继承自 Listenable, 满帧直接重绘
     required this.bullets,
     required this.width,
     required this.height,
-    required this.opacity,
     required this.fontSize,
     required this.areaRatio,
     required this.mode,
@@ -541,63 +619,28 @@ class _DanmakuPainter extends CustomPainter {
     final lineH = fontSize + 4;
     final availH = height * areaRatio;
 
-    // ★ v2.5.53: 用跟 spawn 完全一致的布局计算
     final layout = DanmakuOverlayState._calcLayout(availH, lineH, mode);
 
-    final alpha = (255 * opacity).round().clamp(0, 255);
-
     for (final b in bullets) {
-      final text = b.comment.content;
-      if (text.isEmpty) continue;
+      if (b.done || b.painter == null) continue;
 
-      final c = b.comment.color;
-      final r = (c >> 16) & 0xFF;
-      final g = (c >> 8) & 0xFF;
-      final bv = c & 0xFF;
-      final color = Color.fromARGB(alpha, r, g, bv);
-
-      final tp = TextPainter(
-        text: TextSpan(
-          text: text,
-          style: TextStyle(
-            fontSize: fontSize,
-            color: color,
-            fontWeight: FontWeight.w500,
-            shadows: const [
-              Shadow(blurRadius: 3, color: Colors.black54, offset: Offset(0, 0)),
-            ],
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      );
-      tp.layout(maxWidth: width);
-
-      b.ensureTextWidth(tp);
-
-      // ★ v2.5.53: 用 bullet.renderMode 决定渲染方式 (top/bottom 模式下滚动弹幕转固定)
       final m = b.renderMode;
       double y;
       if (m == 5) {
-        // 顶部固定: 从顶部往下排
         y = 8 + b.row * lineH;
       } else if (m == 4) {
-        // 底部固定: 从底部往上排
         y = availH - layout.bottomH + 8 + b.row * lineH;
       } else {
-        // 滚动: 在 topH 和 bottomH 之间排
         y = layout.topH + b.row * layout.rowH;
       }
 
-      // ★ v2.5.53: 滚动弹幕用 b.x 移动, 固定弹幕居中
-      final dx = m == 1 ? b.x : (width - tp.width) / 2;
-      tp.paint(canvas, Offset(dx, y));
+      final dx = m == 1 ? b.x : (width - b.textWidth) / 2;
+      b.painter!.paint(canvas, Offset(dx, y));
     }
   }
 
   @override
   bool shouldRepaint(_DanmakuPainter old) =>
-      old.bullets != bullets ||
-      old.opacity != opacity ||
       old.fontSize != fontSize ||
       old.areaRatio != areaRatio ||
       old.mode != mode;
