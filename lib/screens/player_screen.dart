@@ -237,35 +237,25 @@ class _PlayerScreenState extends State<PlayerScreen>
   // v2.2.0: 删 _videoParamsSub (libmpv streams.videoParams 替代)
   //   video size 从 backend.width/height 读 (在 positionStream listener 里同步)
 
-  // 跳过片头片尾
-  int _skipIntroEnd = 0; // 片头结束时间（秒），0 表示不跳
-  int _skipOutroStart = 0; // 片尾开始时间（秒，从结尾倒数），0 表示不跳
-  // v1.0.58: 默认手动, 有的源没片头/片尾, 自动跳会跳错
-  // 用户在设置弹窗里能切到自动模式
-  bool _autoSkipIntro = false;
-  bool _autoSkipOutro = false;
   Duration _currentPosition = Duration.zero;
   Duration _currentDuration = Duration.zero;
   StreamSubscription<Duration>? _positionSub;
   StreamSubscription<Duration>? _durationSub;
-  // 控制跳过按钮显示（避免反复触发）
-  bool _showSkipIntro = false;
-  bool _showSkipOutro = false;
-  // v2.1.18: 广告重置检测 — 锁定整段播放期不再触发跳过片头.
-  //   触发条件: currentTime 从正片位置 (>60s) 突然倒退到接近 0 (<10s),
-  //   而 _currentDuration 不变 (广告跟正片在同一条流里, 总时长不变).
-  //   触发后整个 _State 生命周期不再重置, 后续 3-4 次广告都不会再被误判.
-  //   用户拖进度条 (前跳) 不会触发, 因为不满足"倒退到 0".
-  bool _adResetDetected = false;
-  // 上一帧 position (秒), 用来算 delta 检测倒退. -1 表示未初始化.
-  int _lastPosForAdDetect = -1;
 
-  // v2.6.92: 智能片头/片尾/前情回顾跳过系统 (对齐 SeleneTV, 融合 TMDB 代理 + TheIntroDB)
+  // v2.6.93: 全新智能片头/片尾跳过系统 (彻底替代旧版繁琐手动秒数设置)
+  // 支持 TheIntroDB 全球影视数据库打点 + 通用 90 秒智能兜底
+  bool _smartSkipEnabled = true; // 智能片头跳过总开关
+  String _smartSkipMode = 'countdown'; // 'countdown'(5秒倒计时自动跳过), 'instant'(立即跳过), 'manual'(仅手动点击)
+  int _smartSkipFallbackSec = 90; // 云端无打点时的通用片头时长(秒)
+  int _smartSkipOutroFallbackSec = 60; // 通用片尾时长(秒)
+
   List<SkipSegment> _smartSkipSegments = [];
   SkipSegment? _activeSmartSegment;
   Timer? _smartSkipCountdownTimer;
   int _smartSkipCountdownSec = 5;
   bool _dismissedSmartSegmentThisEp = false;
+  bool _hasAutoSkippedThisEp = false; // 本集是否已自动跳过
+
 
   // _lastKnownPosition: position stream 每帧更新, 记"上一次非 0 位置".
   // 用于进度同步兜底 (libmpv m3u8 reload 期间 state.position=0,
@@ -442,9 +432,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     _loadDoubanSummary();
     // v2.1.17: 拉 TMDB 演员 (跟 _loadTmdbBackdrop 同样静默 fallback)
     _loadTmdbCast();
-    // 加载跳过片头片尾配置
-    _loadSkipConfig();
-    // v2.6.92: 加载智能片头跳过片段 (TheIntroDB + TMDB 代理)
+    // v2.6.93: 加载智能片头配置与片段 (TheIntroDB + TMDB 代理)
+    _loadSmartSkipConfig();
     _loadSmartSkipSegmentsForCurrentEpisode();
     // 加载倍速持久化
     _loadPlaybackRate();
@@ -864,40 +853,30 @@ class _PlayerScreenState extends State<PlayerScreen>
     return false; // 默认横屏
   }
 
-  // ================= 跳过片头片尾 =================
+  // ================= 全新智能片头/片尾跳过系统 (v2.6.93) =================
 
-  /// SharedPreferences 存储键（按视频标题区分）
-  String get _skipPrefKey => 'skip_config_${widget.videoInfo.title}';
-
-  /// 加载跳过片头片尾配置
-  Future<void> _loadSkipConfig() async {
+  /// 加载全局智能跳过片头片尾配置
+  Future<void> _loadSmartSkipConfig() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final intro = prefs.getInt('${_skipPrefKey}_intro') ?? 0;
-      final outro = prefs.getInt('${_skipPrefKey}_outro') ?? 0;
-      // v1.0.58: 加载自动/手动开关, 默认 false (手动)
-      final autoIntro = prefs.getBool('${_skipPrefKey}_auto_intro') ?? false;
-      final autoOutro = prefs.getBool('${_skipPrefKey}_auto_outro') ?? false;
-      if (mounted) {
-        setState(() {
-          _skipIntroEnd = intro;
-          _skipOutroStart = outro;
-          _autoSkipIntro = autoIntro;
-          _autoSkipOutro = autoOutro;
-        });
-      }
+      if (!mounted) return;
+      setState(() {
+        _smartSkipEnabled = prefs.getBool('smart_skip_enabled') ?? true;
+        _smartSkipMode = prefs.getString('smart_skip_mode') ?? 'countdown';
+        _smartSkipFallbackSec = prefs.getInt('smart_skip_fallback_sec') ?? 90;
+        _smartSkipOutroFallbackSec = prefs.getInt('smart_skip_outro_fallback_sec') ?? 60;
+      });
     } catch (_) {}
   }
 
-  /// 保存跳过片头片尾配置
-  Future<void> _saveSkipConfig() async {
+  /// 保存全局智能跳过片头片尾配置
+  Future<void> _saveSmartSkipConfig() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('${_skipPrefKey}_intro', _skipIntroEnd);
-      await prefs.setInt('${_skipPrefKey}_outro', _skipOutroStart);
-      // v1.0.58: 持久化自动/手动开关
-      await prefs.setBool('${_skipPrefKey}_auto_intro', _autoSkipIntro);
-      await prefs.setBool('${_skipPrefKey}_auto_outro', _autoSkipOutro);
+      await prefs.setBool('smart_skip_enabled', _smartSkipEnabled);
+      await prefs.setString('smart_skip_mode', _smartSkipMode);
+      await prefs.setInt('smart_skip_fallback_sec', _smartSkipFallbackSec);
+      await prefs.setInt('smart_skip_outro_fallback_sec', _smartSkipOutroFallbackSec);
     } catch (_) {}
   }
 
@@ -907,6 +886,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     _smartSkipCountdownTimer = null;
     _activeSmartSegment = null;
     _dismissedSmartSegmentThisEp = false;
+    _hasAutoSkippedThisEp = false;
     _smartSkipSegments = [];
 
     if (_isCurrentShortDrama) return;
@@ -930,7 +910,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   /// 触发智能跳过动作
-  void _triggerSmartSkip(SkipSegment seg) {
+  void _triggerSmartSkip(SkipSegment seg, {bool isSilent = false}) {
     _smartSkipCountdownTimer?.cancel();
     _smartSkipCountdownTimer = null;
     setState(() {
@@ -943,10 +923,18 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (hasNextEpisode) {
         _autoPlayedThisEpisode = true;
         _playEpisode(_currentEpisodeIndex + 1);
+        if (!isSilent) {
+          _toast('已跳过片尾，播放下一集');
+        }
       }
     } else {
       final targetSec = (seg.endMs / 1000).ceil();
-      _player?.seek(Duration(seconds: targetSec));
+      if (targetSec > 0) {
+        _player?.seek(Duration(seconds: targetSec));
+        if (!isSilent) {
+          _toast('已跳过片头');
+        }
+      }
     }
   }
 
@@ -960,29 +948,101 @@ class _PlayerScreenState extends State<PlayerScreen>
     });
   }
 
-  /// 根据当前位置更新跳过按钮的显示状态 / v1.0.57 自动 seek / v1.0.58 自动手动二选一
+  /// 根据播放器当前进度检测并更新跳过胶囊浮层 (精准打点 + 90秒通用片头智能兜底)
   void _updateSkipButtonVisibility() {
+    if (!_smartSkipEnabled || _scrubbingValue != null) {
+      if (_activeSmartSegment != null) {
+        _smartSkipCountdownTimer?.cancel();
+        _smartSkipCountdownTimer = null;
+        setState(() => _activeSmartSegment = null);
+      }
+      return;
+    }
+
     final posSec = _currentPosition.inSeconds;
     final durSec = _currentDuration.inSeconds;
+    final posMs = _currentPosition.inMilliseconds;
+    final durMs = _currentDuration.inMilliseconds;
 
-    // v2.6.92: 智能片头/前情回顾/片尾检测 (TheIntroDB 数据源驱动, 对齐 SeleneTV)
-    if (_smartSkipSegments.isNotEmpty && _scrubbingValue == null) {
-      final posMs = _currentPosition.inMilliseconds;
-      final durMs = _currentDuration.inMilliseconds;
-      SkipSegment? matched;
+    // 短剧或总时长小于 60 秒的视频不进行片头跳过兜底
+    if (durSec <= 60 || _isCurrentShortDrama) {
+      if (_activeSmartSegment != null) {
+        _smartSkipCountdownTimer?.cancel();
+        _smartSkipCountdownTimer = null;
+        setState(() => _activeSmartSegment = null);
+      }
+      return;
+    }
+
+    final hasNextEpisode = _selectedSource != null &&
+        _currentEpisodeIndex < _selectedSource!.episodes.length - 1;
+
+    SkipSegment? matched;
+
+    // 1. 优先从 TheIntroDB 云端精准打点匹配
+    if (_smartSkipSegments.isNotEmpty) {
       for (final seg in _smartSkipSegments) {
         final effectiveEnd = seg.endMs > 0 ? seg.endMs : durMs;
         if (posMs >= seg.startMs && posMs < effectiveEnd) {
-          matched = seg;
-          break;
+          if (seg.type == SkipSegmentType.outro || seg.type == SkipSegmentType.credits) {
+            if (hasNextEpisode || durSec - posSec <= 180) {
+              matched = seg;
+              break;
+            }
+          } else {
+            matched = seg;
+            break;
+          }
         }
       }
+    }
 
-      if (matched != null) {
-        if (!_dismissedSmartSegmentThisEp && _activeSmartSegment != matched) {
-          _activeSmartSegment = matched;
-          _smartSkipCountdownSec = 5;
-          _smartSkipCountdownTimer?.cancel();
+    // 2. 若云端未收录，采用智能通用兜底 (多集电视剧/动漫/长片)
+    if (matched == null) {
+      final isSeriesOrLong = hasNextEpisode || _currentEpisodeIndex > 0 || durSec > 300;
+      if (isSeriesOrLong) {
+        // 片头兜底：开播前 _smartSkipFallbackSec 秒内 (2s ~ 90s)
+        if (posSec >= 2 && posSec < _smartSkipFallbackSec && durSec > (_smartSkipFallbackSec + 30)) {
+          matched = SkipSegment(
+            type: SkipSegmentType.intro,
+            startMs: 0,
+            endMs: _smartSkipFallbackSec * 1000,
+          );
+        }
+        // 片尾兜底：距结尾最后 _smartSkipOutroFallbackSec 秒内 (且有下一集)
+        else if (hasNextEpisode &&
+            durSec > 180 &&
+            (durSec - posSec) <= _smartSkipOutroFallbackSec &&
+            (durSec - posSec) >= 2) {
+          matched = SkipSegment(
+            type: SkipSegmentType.outro,
+            startMs: (durSec - _smartSkipOutroFallbackSec) * 1000,
+            endMs: durMs,
+          );
+        }
+      }
+    }
+
+    // 3. 状态判定与倒计时调度
+    if (matched != null) {
+      if (_dismissedSmartSegmentThisEp) return;
+
+      // 立即跳过模式
+      if (_smartSkipMode == 'instant') {
+        if (!_hasAutoSkippedThisEp) {
+          _hasAutoSkippedThisEp = true;
+          _triggerSmartSkip(matched, isSilent: true);
+        }
+        return;
+      }
+
+      // 处于匹配区间中，激活悬浮胶囊
+      if (_activeSmartSegment != matched) {
+        _activeSmartSegment = matched;
+        _smartSkipCountdownSec = 5;
+        _smartSkipCountdownTimer?.cancel();
+
+        if (_smartSkipMode == 'countdown') {
           _smartSkipCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
             if (!mounted || _activeSmartSegment == null) {
               timer.cancel();
@@ -997,329 +1057,134 @@ class _PlayerScreenState extends State<PlayerScreen>
               _triggerSmartSkip(_activeSmartSegment!);
             }
           });
-          setState(() {});
         }
-        if (_showSkipIntro || _showSkipOutro) {
-          setState(() {
-            _showSkipIntro = false;
-            _showSkipOutro = false;
-          });
-        }
-        return;
-      } else {
-        if (_activeSmartSegment != null) {
-          _activeSmartSegment = null;
-          _smartSkipCountdownTimer?.cancel();
-          _smartSkipCountdownTimer = null;
-          setState(() {});
-        }
+        setState(() {});
+      }
+    } else {
+      // 走出片头/片尾区间，清理胶囊
+      if (_activeSmartSegment != null) {
+        _activeSmartSegment = null;
+        _smartSkipCountdownTimer?.cancel();
+        _smartSkipCountdownTimer = null;
+        setState(() {});
       }
     }
-    // v2.1.18: 广告重置检测 (一次触发, 整段播放期锁死).
-    //   特征: currentTime 从正片位置 (>60s) 突然倒退到接近 0 (<10s).
-    //   用户场景: 一集里有 4-5 次广告, 每次广告都从 0 开始播完跳回原位置.
-    //   总时长不变 (广告跟正片在同一条流里, durSec 不变), 跟 v2.1.13/v1.0.77
-    //   处理的"切流时 durSec 跳变"不同 — 这次 durSec 不动, 单纯 position 倒退.
-    //   触发后 _adResetDetected = true, shouldShowIntro 短路, 整个 _State
-    //   生命周期不再重置, 后续 3-4 次广告都不会再被误判跳过.
-    //   排除: 用户拖进度条是前跳 (不满足"倒退到 0"), 不会误判.
-    if (!_adResetDetected &&
-        _lastPosForAdDetect > 60 &&
-        posSec < 10 &&
-        durSec > 60) {
-      // v2.1.18: 倒退到接近 0 → 判定为广告重置, 锁定.
-      //   没用 (posSec - _lastPos) < -X, 因为源切流时可能一次 stream
-      //   跳变给一个 0, 下一帧又到 50, 中间没"delta 帧"被捕获. 直接用
-      //   "上次 > 60 + 这次 < 10" 两个绝对值判断, 跨帧跳变也能覆盖.
-      _adResetDetected = true;
-      // v2.1.18 debug: 记录一次, adb logcat | grep AD_RESET 能看到
-      debugPrint('[AD_RESET] detected: ${_lastPosForAdDetect}s -> ${posSec}s '
-          '(dur=${durSec}s) — 整段播放期禁用跳过片头');
-    }
-    _lastPosForAdDetect = posSec;
-    // v1.0.77: 加 durSec > _skipIntroEnd 守门
-    // 防止广告流 (durSec=30s) 切流时, position 跳 0 还没等 duration stream
-    // 检测到跳变先触发, 这里误判成"还在片头"自动 seek 到 90s, 90s 超出
-    // 广告流 duration 30s, 跟 v1.0.76 报告的死循环根因同模式.
-    // 守门后: 广告流 durSec=30 < 90 不会触发, 不会 seek 错乱.
-    // 主片 durSec=2700 > 90 正常判断.
-    // v2.1.13: 加 durSec > 60 守门 — 影片总时长低于 60s 不跳过片头.
-    //   防止广告 (典型 30s) / m3u8 短段被误认为"影片重新播放"而触发
-    //   跳过片头. 主片通常 > 60s, 正常判断不受影响.
-    // v2.1.18: 加 !_adResetDetected 守门 — 整段播放期检测到广告重置后
-    //   跳过片头直接短路, 不再 seek, 后续 3-4 次广告都不会再被误判.
-    final shouldShowIntro = _skipIntroEnd > 0 &&
-        posSec < _skipIntroEnd &&
-        posSec > 1 &&
-        durSec > _skipIntroEnd &&
-        durSec > 60 &&
-        !_adResetDetected;
-    final hasNextEpisode = _selectedSource != null &&
-        _currentEpisodeIndex < _selectedSource!.episodes.length - 1;
-    // v1.0.77: shouldShowOutro 同样加 durSec 守门 (广告流 durSec=30
-    // 不可能满足"接近片尾"的条件, 但保险起见加 durSec > 60 兜底, 防止
-    // duration stream 还没更新 _currentDuration 时 _currentPosition 已
-    // 经在广告流上, 算出 (30 - 25) = 5 < _skipOutroStart 误触发)
-    final shouldShowOutro = _skipOutroStart > 0 &&
-        durSec > 60 &&
-        posSec > 0 &&
-        (durSec - posSec) < _skipOutroStart &&
-        (durSec - posSec) > 1;
-
-    // v1.0.58: 自动模式才自动 seek, 手动模式显示按钮让用户点
-    if (_scrubbingValue == null) {
-      if (_autoSkipIntro && shouldShowIntro) {
-        _player!.seek(Duration(seconds: _skipIntroEnd));
-        // v1.0.58: 立即隐藏按钮, 避免按钮在 seek 完前闪烁
-        if (_showSkipIntro) {
-          setState(() { _showSkipIntro = false; });
-        }
-        return;
-      }
-      if (_autoSkipOutro && shouldShowOutro) {
-        // v1.0.63: 跳过片尾 = 播下一集 (有下集) / 不做事 (最后一集让
-        // _maybeAutoPlayNext 自然触发 end→next 流程)
-        if (hasNextEpisode) {
-          _autoPlayedThisEpisode = true; // 防止 _maybeAutoPlayNext 再触发
-          _playEpisode(_currentEpisodeIndex + 1);
-        }
-        if (_showSkipOutro) {
-          setState(() { _showSkipOutro = false; });
-        }
-        return;
-      }
-    }
-
-    // 手动模式显示按钮 (自动模式 seek 后 shouldShow=false, 按钮自然不显示)
-    // _showSkipIntro/Outro 字段保留, UI 里根据它显隐按钮
-    if (shouldShowIntro != _showSkipIntro ||
-        shouldShowOutro != _showSkipOutro) {
-      setState(() {
-        _showSkipIntro = shouldShowIntro;
-        _showSkipOutro = shouldShowOutro;
-      });
-    }
-  }
-  // v1.0.58: 恢复 _skipIntro / _skipOutro, 手动模式按钮调用
-  // v1.0.57 删了, v1.0.58 加了自动/手动开关, 手动模式需要这两个函数
-
-  /// v1.0.63: 把秒数格式化成 "X 分钟" / "X 分 Y 秒" / "X 秒" 给人看
-  /// slider 内部仍存秒 (0~300), 只换显示文案
-  ///   30 → "30 秒"
-  ///   60 → "1 分钟"
-  ///   90 → "1 分 30 秒"
-  ///   180 → "3 分钟"
-  String _formatSkipTime(int seconds) {
-    if (seconds <= 0) return '关闭';
-    if (seconds < 60) return '$seconds 秒';
-    final m = seconds ~/ 60;
-    final s = seconds % 60;
-    if (s == 0) return '$m 分钟';
-    return '$m 分 $s 秒';
   }
 
-  /// 手动跳过片头
-  void _skipIntro() {
-    if (_skipIntroEnd > 0) {
-      _player!.seek(Duration(seconds: _skipIntroEnd));
-    }
-  }
+  /// 打开智能跳过片头片尾设置弹窗 (彻底废弃旧版繁琐手动 Slider 设置)
+  Future<void> _showSmartSkipSettingsDialog() async {
+    bool enabled = _smartSkipEnabled;
+    String mode = _smartSkipMode;
+    int fallbackIntro = _smartSkipFallbackSec;
+    int fallbackOutro = _smartSkipOutroFallbackSec;
 
-  /// 手动跳过片尾 — v1.0.63 修: 之前是 seek 到 durSec-_skipOutroStart
-  /// (片尾开始位置, 等于倒回), 正确行为是播下一集
-  void _skipOutro() {
-    final hasNextEpisode = _selectedSource != null &&
-        _currentEpisodeIndex < _selectedSource!.episodes.length - 1;
-    if (!hasNextEpisode) return; // 最后一集, 让 _maybeAutoPlayNext 自然触发
-    _autoPlayedThisEpisode = true; // 防止 _maybeAutoPlayNext 再触发
-    _playEpisode(_currentEpisodeIndex + 1);
-  }
-
-  /// 打开跳过片头片尾设置弹窗
-  Future<void> _showSkipSettingsDialog() async {
-    int intro = _skipIntroEnd;
-    int outro = _skipOutroStart;
-    // v1.0.58: 加自动/手动开关
-    bool autoIntro = _autoSkipIntro;
-    bool autoOutro = _autoSkipOutro;
     await showDialog<void>(
       context: context,
       builder: (ctx) {
         return StatefulBuilder(
           builder: (ctx, setDialogState) {
             return AlertDialog(
-              backgroundColor: const Color(0xFF1F2937),
-              title: const Text(
-                '跳过片头片尾',
-                style: TextStyle(color: Colors.white, fontSize: 18),
+              backgroundColor: const Color(0xFF1E293B),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              title: Row(
+                children: [
+                  Icon(Icons.fast_forward_rounded, color: kLunaTheme, size: 22),
+                  const SizedBox(width: 8),
+                  const Text(
+                    '智能跳过片头片尾',
+                    style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
+                  ),
+                ],
               ),
               content: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // v1.0.58: 自动/手动开关
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
-                      title: const Text(
-                        '自动跳过片头',
-                        style: TextStyle(color: Colors.white, fontSize: 14),
+                      title: const Text('启用智能跳过', style: TextStyle(color: Colors.white, fontSize: 14)),
+                      subtitle: const Text(
+                        '支持 TheIntroDB 精准打点与通用智能兜底',
+                        style: TextStyle(color: Colors.white54, fontSize: 11),
                       ),
-                      subtitle: Text(
-                        autoIntro
-                            ? '自动: 播到片头结束时间自动 seek 跳过'
-                            : '手动: 显示"跳过片头"按钮, 用户点才跳',
-                        style: const TextStyle(color: Colors.white54, fontSize: 11),
+                      value: enabled,
+                      activeColor: kLunaTheme,
+                      onChanged: (v) => setDialogState(() => enabled = v),
+                    ),
+                    if (enabled) ...[
+                      const Divider(color: Colors.white24, height: 20),
+                      const Text('跳过方式', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 6),
+                      RadioListTile<String>(
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        title: const Text('5秒倒计时自动跳过 (推荐)', style: TextStyle(color: Colors.white, fontSize: 13)),
+                        subtitle: const Text('播放器右下角弹出胶囊，可随时点击或取消', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                        value: 'countdown',
+                        groupValue: mode,
+                        activeColor: kLunaTheme,
+                        onChanged: (v) => setDialogState(() => mode = v!),
                       ),
-                      value: autoIntro,
-                      activeColor: const Color(0xFF22C55E),
-                      onChanged: (v) => setDialogState(() => autoIntro = v),
-                    ),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text(
-                        '自动跳过片尾',
-                        style: TextStyle(color: Colors.white, fontSize: 14),
+                      RadioListTile<String>(
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        title: const Text('立即自动跳过 (无感)', style: TextStyle(color: Colors.white, fontSize: 13)),
+                        subtitle: const Text('到片头片尾直接快进或切集，不弹倒计时', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                        value: 'instant',
+                        groupValue: mode,
+                        activeColor: kLunaTheme,
+                        onChanged: (v) => setDialogState(() => mode = v!),
                       ),
-                      subtitle: Text(
-                        autoOutro
-                            ? '自动: 距结尾 < 提前时间自动 seek 跳过'
-                            : '手动: 显示"跳过片尾"按钮, 用户点才跳',
-                        style: const TextStyle(color: Colors.white54, fontSize: 11),
+                      RadioListTile<String>(
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        title: const Text('仅手动点击跳过', style: TextStyle(color: Colors.white, fontSize: 13)),
+                        subtitle: const Text('在右下角悬浮胶囊按钮，用户点击才跳过', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                        value: 'manual',
+                        groupValue: mode,
+                        activeColor: kLunaTheme,
+                        onChanged: (v) => setDialogState(() => mode = v!),
                       ),
-                      value: autoOutro,
-                      activeColor: const Color(0xFF22C55E),
-                      onChanged: (v) => setDialogState(() => autoOutro = v),
-                    ),
-                    const Divider(color: Colors.white24, height: 24),
-                    // v1.0.64: slider 旁加 "使用当前时间" 按钮, 一键取当前播放
-                    // 位置作为片头结束/片尾提前秒数. 流程: 暂停在边界 → 开弹窗 →
-                    // 点按钮. 弹窗显示当前秒数方便核对.
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            '片头结束时间: ${intro > 0 ? _formatSkipTime(intro) : "未设置"}',
-                            style: const TextStyle(
-                                color: Colors.white70, fontSize: 14),
-                          ),
-                        ),
-                        Text(
-                          '当前 ${_formatSkipTime(_currentPosition.inSeconds)}',
-                          style: const TextStyle(
-                              color: Colors.white38, fontSize: 11),
-                        ),
-                        const SizedBox(width: 4),
-                        TextButton(
-                          style: TextButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 0),
-                            minimumSize: const Size(0, 28),
-                            tapTargetSize:
-                                MaterialTapTargetSize.shrinkWrap,
-                            foregroundColor: const Color(0xFF22C55E),
-                          ),
-                          onPressed: () {
-                            setDialogState(() {
-                              intro =
-                                  _currentPosition.inSeconds.clamp(0, 300);
-                            });
-                          },
-                          child: const Text('使用当前时间',
-                              style: TextStyle(fontSize: 12)),
-                        ),
-                      ],
-                    ),
-                    Slider(
-                      value: intro.toDouble(),
-                      min: 0,
-                      max: 300,
-                      divisions: 300,
-                      activeColor: const Color(0xFF22C55E),
-                      label: intro > 0 ? _formatSkipTime(intro) : '关闭',
-                      onChanged: (v) =>
-                          setDialogState(() => intro = v.round()),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            '片尾提前时间: ${outro > 0 ? _formatSkipTime(outro) : "未设置"}',
-                            style: const TextStyle(
-                                color: Colors.white70, fontSize: 14),
-                          ),
-                        ),
-                        Text(
-                          '当前剩 ${_formatSkipTime(_currentDuration.inSeconds - _currentPosition.inSeconds)}',
-                          style: const TextStyle(
-                              color: Colors.white38, fontSize: 11),
-                        ),
-                        const SizedBox(width: 4),
-                        TextButton(
-                          style: TextButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 0),
-                            minimumSize: const Size(0, 28),
-                            tapTargetSize:
-                                MaterialTapTargetSize.shrinkWrap,
-                            foregroundColor: const Color(0xFF3B82F6),
-                          ),
-                          onPressed: () {
-                            setDialogState(() {
-                              // 片尾提前 = 距结尾还剩多少秒
-                              final remain = _currentDuration.inSeconds -
-                                  _currentPosition.inSeconds;
-                              outro = remain.clamp(0, 300);
-                            });
-                          },
-                          child: const Text('使用当前时间',
-                              style: TextStyle(fontSize: 12)),
-                        ),
-                      ],
-                    ),
-                    Slider(
-                      value: outro.toDouble(),
-                      min: 0,
-                      max: 300,
-                      divisions: 300,
-                      activeColor: const Color(0xFF3B82F6),
-                      label: outro > 0 ? _formatSkipTime(outro) : '关闭',
-                      onChanged: (v) =>
-                          setDialogState(() => outro = v.round()),
-                    ),
-                    // v1.0.63: 60s=1分钟, 提示文案同步用分钟单位
-                    // v1.0.64: 补一行"如何用使用当前时间按钮"的提示
-                    const SizedBox(height: 8),
-                    const Text(
-                      '提示: 有的源没有片头/片尾, 建议先关掉自动, 看到按钮再点, 确认有片头再开自动\n'
-                      '单位: 60 秒 = 1 分钟 (0~5 分钟可调)\n'
-                      '用法: 暂停在片头结束 / 片尾开始位置 → 开此弹窗 → 点"使用当前时间"',
-                      style: TextStyle(color: Colors.white54, fontSize: 12),
-                    ),
+                      const Divider(color: Colors.white24, height: 20),
+                      const Text('通用片头兜底时长 (云端未收录时)', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [60, 90, 120].map((sec) {
+                          final isSel = fallbackIntro == sec;
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: ChoiceChip(
+                              label: Text('$sec 秒', style: TextStyle(color: isSel ? Colors.black : Colors.white70, fontSize: 12)),
+                              selected: isSel,
+                              selectedColor: kLunaTheme,
+                              backgroundColor: const Color(0xFF334155),
+                              onSelected: (_) => setDialogState(() => fallbackIntro = sec),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ],
                   ],
                 ),
               ),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(ctx),
-                  child: const Text('取消',
-                      style: TextStyle(color: Colors.white54)),
+                  child: const Text('取消', style: TextStyle(color: Colors.white54)),
                 ),
                 TextButton(
                   onPressed: () {
                     setState(() {
-                      _skipIntroEnd = intro;
-                      _skipOutroStart = outro;
-                      // v1.0.58: 持久化自动/手动开关
-                      _autoSkipIntro = autoIntro;
-                      _autoSkipOutro = autoOutro;
+                      _smartSkipEnabled = enabled;
+                      _smartSkipMode = mode;
+                      _smartSkipFallbackSec = fallbackIntro;
+                      _smartSkipOutroFallbackSec = fallbackOutro;
                     });
-                    _saveSkipConfig();
+                    _saveSmartSkipConfig();
                     Navigator.pop(ctx);
                   },
-                  child: const Text('保存',
-                      style: TextStyle(color: Color(0xFF22C55E))),
+                  child: Text('保存', style: TextStyle(color: kLunaTheme)),
                 ),
               ],
             );
@@ -6125,24 +5990,26 @@ class _PlayerScreenState extends State<PlayerScreen>
                   _showPlaybackRateSheet();
                 },
               ),
-              // 跳过片头片尾
+              // 智能跳过片头片尾 (v2.6.93 极简现代设置)
               ListTile(
-                leading: const Icon(Icons.fast_forward, color: Colors.white70),
-                title: const Text('跳过片头片尾',
+                leading: const Icon(Icons.fast_forward_rounded, color: Colors.white70),
+                title: const Text('智能跳过片头片尾',
                     style: TextStyle(color: Colors.white)),
                 trailing: Text(
-                  _skipIntroEnd > 0 || _skipOutroStart > 0
-                      ? '已配置'
-                      : '未设置',
+                  _smartSkipEnabled
+                      ? (_smartSkipMode == 'instant'
+                          ? '立即跳过'
+                          : (_smartSkipMode == 'countdown' ? '5秒倒计时' : '手动提示'))
+                      : '已关闭',
                   style: TextStyle(
-                    color: _skipIntroEnd > 0 || _skipOutroStart > 0
+                    color: _smartSkipEnabled
                         ? const Color(0xFF22C55E)
                         : Colors.white54,
                   ),
                 ),
                 onTap: () {
                   Navigator.pop(ctx);
-                  _showSkipSettingsDialog();
+                  _showSmartSkipSettingsDialog();
                 },
               ),
               const SizedBox(height: 8),
@@ -7108,28 +6975,11 @@ class _PlayerScreenState extends State<PlayerScreen>
         _buildLunaTopBar(),
         // 底部毛玻璃控制栏 (横屏改短)
         _buildLunaBottomBar(),
-        // v1.0.58: 恢复跳过片头/片尾浮层按钮 (手动模式)
-        // 之前 v1.0.57 强制自动跳删了按钮, v1.0.58 加了自动/手动开关,
-        // 手动模式 (默认) 仍需要按钮让用户点
-        // 自动模式 _showSkipIntro/_showSkipOutro=false, 按钮不显示
-        if (_showSkipIntro && _isControlsVisible)
-          Positioned(
-            right: 16,
-            bottom: 100,
-            child: _skipButton('跳过片头', kLunaTheme, _skipIntro),
-          ),
-        if (_showSkipOutro && _isControlsVisible)
-          Positioned(
-            right: 16,
-            bottom: 100,
-            child: _skipButton(
-                '跳过片尾', const Color(0xFF3B82F6), _skipOutro),
-          ),
-        // v2.6.92: 智能片头/前情回顾/片尾倒计时跳过浮层 (对齐 SeleneTV, 倒计时5s自动跳过与手动取消)
+        // v2.6.93: 全新智能片头/片尾跳过胶囊浮层 (位置在右下角进度条上方，无论控制栏是否隐藏均优雅浮现)
         if (_activeSmartSegment != null)
           Positioned(
-            right: 16,
-            bottom: _isControlsVisible ? 100 : 36,
+            right: 18,
+            bottom: _isControlsVisible ? 104 : 32,
             child: _buildSmartSkipCapsule(),
           ),
         // 中央双圆快进/快退 (放在最上层, 避免被顶部栏/底部栏/跳过按钮遮挡)
@@ -7139,26 +6989,27 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
-  /// v2.6.92: 智能跳过胶囊浮层 (对齐 SeleneTV, 5秒倒计时自动跳过与取消)
+  /// v2.6.93: 全新智能跳过胶囊浮层 (对齐 SeleneTV, 支持倒计时自动跳过与手动点击)
   Widget _buildSmartSkipCapsule() {
     final seg = _activeSmartSegment;
     if (seg == null) return const SizedBox.shrink();
 
-    final label = '${seg.label} ${_smartSkipCountdownSec}s';
     final isOutro = seg.type == SkipSegmentType.outro || seg.type == SkipSegmentType.credits;
-    final accentColor = isOutro ? const Color(0xFF3B82F6) : kLunaTheme;
+    final accentColor = isOutro ? const Color(0xFF38BDF8) : kLunaTheme;
+    final showCountdown = _smartSkipMode == 'countdown';
+    final label = showCountdown ? '${seg.label} ${_smartSkipCountdownSec}s' : seg.label;
 
     return Material(
       color: Colors.transparent,
       child: Container(
         decoration: BoxDecoration(
-          color: const Color(0xE61E293B),
+          color: const Color(0xF20F172A), // 高级深邃毛玻璃底色
           borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: accentColor.withOpacity(0.65), width: 1.2),
+          border: Border.all(color: accentColor.withOpacity(0.85), width: 1.2),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.4),
-              blurRadius: 10,
+              color: Colors.black.withOpacity(0.55),
+              blurRadius: 12,
               offset: const Offset(0, 3),
             ),
           ],
@@ -7174,7 +7025,11 @@ class _PlayerScreenState extends State<PlayerScreen>
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.fast_forward_rounded, color: accentColor, size: 18),
+                    Icon(
+                      isOutro ? Icons.skip_next_rounded : Icons.fast_forward_rounded,
+                      color: accentColor,
+                      size: 19,
+                    ),
                     const SizedBox(width: 6),
                     Text(
                       label,
@@ -7182,6 +7037,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                         color: Colors.white,
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
+                        letterSpacing: 0.3,
                       ),
                     ),
                   ],
@@ -7203,45 +7059,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
-  /// 跳过片头/片尾的浮层按钮 (手动模式用)
-  Widget _skipButton(String label, Color color, VoidCallback onTap) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(24),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.92),
-            borderRadius: BorderRadius.circular(24),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.3),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.fast_forward, color: Colors.white, size: 18),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+
 
   /// 亮度浮窗 (左侧, v1.0.40 修复主播放器手势)
   Widget _buildBrightnessIndicator() {
