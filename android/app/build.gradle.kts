@@ -30,12 +30,13 @@ android {
         val versionLine = pubspecFile.readLines().first { it.startsWith("version:") }
         val versionStr = versionLine.substringAfter("version:").trim()
         val parts = versionStr.split("+")
-        versionName = parts[0]
+        val nameStr = parts[0]
+        versionName = nameStr
 
         // 自动计算三段式单调递增版本码: major * 10000 + minor * 100 + patch
         // 例如 2.6.89 -> 20689, 远大于历史旧版本 (1 或 88), 彻底根除 INSTALL_FAILED_VERSION_DOWNGRADE (-25)
         val semverCode = try {
-            val semParts = versionName.split(".")
+            val semParts = nameStr.split(".")
             val major = semParts.getOrNull(0)?.toIntOrNull() ?: 2
             val minor = semParts.getOrNull(1)?.toIntOrNull() ?: 0
             val patch = semParts.getOrNull(2)?.toIntOrNull() ?: 0
