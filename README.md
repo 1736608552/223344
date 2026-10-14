@@ -9,7 +9,7 @@
 | 平台 | 状态 | 说明 |
 |---|---|---|
 | Android | ✅ | 主目标, GitHub Actions 自动出 APK 发 Release |
-| iOS | ❌ | 不再维护 (v2.0.8 起撤回 iOS 编译) |
+| iOS | ✅ | GitHub Actions 自动出  |
 
 ## 主要功能
 
