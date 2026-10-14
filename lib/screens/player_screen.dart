@@ -246,8 +246,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   // 支持 TheIntroDB 全球影视数据库打点 + 通用 90 秒智能兜底
   bool _smartSkipEnabled = true; // 智能片头跳过总开关
   String _smartSkipMode = 'countdown'; // 'countdown'(5秒倒计时自动跳过), 'instant'(立即跳过), 'manual'(仅手动点击)
-  int _smartSkipFallbackSec = 90; // 云端无打点时的通用片头时长(秒)
-  int _smartSkipOutroFallbackSec = 60; // 通用片尾时长(秒)
+  int _smartSkipFallbackSec = 90; // 通用片头时长(秒)
+  int _smartSkipOutroFallbackSec = 90; // 通用片尾时长(秒)
 
   List<SkipSegment> _smartSkipSegments = [];
   SkipSegment? _activeSmartSegment;
@@ -255,6 +255,11 @@ class _PlayerScreenState extends State<PlayerScreen>
   int _smartSkipCountdownSec = 5;
   bool _dismissedSmartSegmentThisEp = false;
   bool _hasAutoSkippedThisEp = false; // 本集是否已自动跳过
+  bool _dismissedIntroThisEp = false; // 片头主动关闭标记
+  bool _dismissedOutroThisEp = false; // 片尾主动关闭标记
+  bool _hasAutoSkippedIntroThisEp = false; // 片头是否已跳过
+  bool _hasAutoSkippedOutroThisEp = false; // 片尾是否已跳过
+  bool _isTransitioningEpisode = false; // 正在切集状态锁，防并发高频重入
 
 
   // _lastKnownPosition: position stream 每帧更新, 记"上一次非 0 位置".
@@ -864,7 +869,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         _smartSkipEnabled = prefs.getBool('smart_skip_enabled') ?? true;
         _smartSkipMode = prefs.getString('smart_skip_mode') ?? 'countdown';
         _smartSkipFallbackSec = prefs.getInt('smart_skip_fallback_sec') ?? 90;
-        _smartSkipOutroFallbackSec = prefs.getInt('smart_skip_outro_fallback_sec') ?? 60;
+        _smartSkipOutroFallbackSec = prefs.getInt('smart_skip_outro_fallback_sec') ?? 90;
       });
     } catch (_) {}
   }
@@ -887,6 +892,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     _activeSmartSegment = null;
     _dismissedSmartSegmentThisEp = false;
     _hasAutoSkippedThisEp = false;
+    _dismissedIntroThisEp = false;
+    _dismissedOutroThisEp = false;
+    _hasAutoSkippedIntroThisEp = false;
+    _hasAutoSkippedOutroThisEp = false;
+    _isTransitioningEpisode = false;
     _smartSkipSegments = [];
 
     if (_isCurrentShortDrama) return;
@@ -909,7 +919,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     });
   }
 
-  /// 触发智能跳过动作
+  /// 触发智能跳过动作 (支持片头快速 seek 与片尾丝滑切集)
   void _triggerSmartSkip(SkipSegment seg, {bool isSilent = false}) {
     _smartSkipCountdownTimer?.cancel();
     _smartSkipCountdownTimer = null;
@@ -917,18 +927,37 @@ class _PlayerScreenState extends State<PlayerScreen>
       _activeSmartSegment = null;
     });
 
-    if (seg.type == SkipSegmentType.outro || seg.type == SkipSegmentType.credits) {
+    if (seg.type == SkipSegmentType.outro || seg.type == SkipSegmentType.credits || seg.type == SkipSegmentType.preview) {
+      _hasAutoSkippedOutroThisEp = true;
+      if (_isTransitioningEpisode) return;
+      _isTransitioningEpisode = true;
+
       final source = _selectedSource;
-      final hasNextEpisode = source != null &&
-          _currentEpisodeIndex < source.episodes.length - 1;
+      final nextIndex = _currentEpisodeIndex + 1;
+      final hasNextEpisode = source != null && nextIndex < source.episodes.length;
 
       if (hasNextEpisode) {
         _autoPlayedThisEpisode = true;
-        _playEpisode(_currentEpisodeIndex + 1);
         if (!isSilent) {
-          _toast('已跳过片尾，正在播放第 ${_currentEpisodeIndex + 2} 集');
+          _toast('已跳过片尾，正在播放第 ${nextIndex + 1} 集');
         }
+        unawaited(() async {
+          try {
+            await _playEpisode(nextIndex);
+          } catch (e) {
+            debugPrint('[SmartSkip] 切集失败: $e');
+          } finally {
+            if (mounted) {
+              setState(() {
+                _isTransitioningEpisode = false;
+              });
+            } else {
+              _isTransitioningEpisode = false;
+            }
+          }
+        }());
       } else {
+        _isTransitioningEpisode = false;
         if (!isSilent) {
           _toast('本剧已是最后一集');
         }
@@ -938,6 +967,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         }
       }
     } else {
+      _hasAutoSkippedIntroThisEp = true;
       final targetSec = (seg.endMs / 1000).ceil();
       if (targetSec > 0) {
         _player?.seek(Duration(seconds: targetSec));
@@ -952,15 +982,21 @@ class _PlayerScreenState extends State<PlayerScreen>
   void _dismissSmartSkip() {
     _smartSkipCountdownTimer?.cancel();
     _smartSkipCountdownTimer = null;
+    final seg = _activeSmartSegment;
     setState(() {
+      if (seg != null && (seg.type == SkipSegmentType.outro || seg.type == SkipSegmentType.credits || seg.type == SkipSegmentType.preview)) {
+        _dismissedOutroThisEp = true;
+      } else {
+        _dismissedIntroThisEp = true;
+      }
       _dismissedSmartSegmentThisEp = true;
       _activeSmartSegment = null;
     });
   }
 
-  /// 根据播放器当前进度检测并更新跳过胶囊浮层 (精准打点 + 90秒通用片头智能兜底)
+  /// 根据播放器当前进度检测并更新跳过胶囊浮层 (精准打点 + 90秒通用片头/片尾智能兜底)
   void _updateSkipButtonVisibility() {
-    if (!_smartSkipEnabled || _scrubbingValue != null) {
+    if (!_smartSkipEnabled || _scrubbingValue != null || _isTransitioningEpisode) {
       if (_activeSmartSegment != null) {
         _smartSkipCountdownTimer?.cancel();
         _smartSkipCountdownTimer = null;
@@ -989,25 +1025,27 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     SkipSegment? matched;
 
-    // 1. 优先从 TheIntroDB 云端精准打点匹配
+    // 1. 优先从 TheIntroDB 云端精准打点匹配 (对齐 SeleneTV: 片尾 credits/outro/preview 延展至视频末尾)
     if (_smartSkipSegments.isNotEmpty) {
       for (final seg in _smartSkipSegments) {
-        final effectiveEnd = seg.endMs > 0 ? seg.endMs : durMs;
+        final isOutroType = seg.type == SkipSegmentType.outro ||
+            seg.type == SkipSegmentType.credits ||
+            seg.type == SkipSegmentType.preview;
+        final effectiveEnd = isOutroType
+            ? (durMs > seg.startMs ? durMs : seg.endMs)
+            : (seg.endMs > 0 ? seg.endMs : durMs);
         if (posMs >= seg.startMs && posMs < effectiveEnd) {
-          if (seg.type == SkipSegmentType.outro || seg.type == SkipSegmentType.credits) {
-            matched = seg;
-            break;
-          } else {
-            matched = seg;
-            break;
-          }
+          matched = isOutroType
+              ? SkipSegment(type: SkipSegmentType.outro, startMs: seg.startMs, endMs: effectiveEnd)
+              : seg;
+          break;
         }
       }
     }
 
-    // 2. 若云端未收录，采用智能通用兜底 (多集电视剧/动漫/长片)
+    // 2. 若云端未收录片头或片尾，采用智能通用兜底 (多集电视剧/动漫/长片)
     if (matched == null) {
-      final isSeriesOrLong = hasNextEpisode || _currentEpisodeIndex > 0 || durSec > 300;
+      final isSeriesOrLong = hasNextEpisode || _currentEpisodeIndex > 0 || durSec > 240;
       if (isSeriesOrLong) {
         // 片头兜底：开播前 _smartSkipFallbackSec 秒内 (2s ~ 90s)
         if (posSec >= 2 && posSec < _smartSkipFallbackSec && durSec > (_smartSkipFallbackSec + 30)) {
@@ -1017,10 +1055,10 @@ class _PlayerScreenState extends State<PlayerScreen>
             endMs: _smartSkipFallbackSec * 1000,
           );
         }
-        // 片尾兜底：距结尾最后 _smartSkipOutroFallbackSec 秒内 (无论是否有下一集均可触发提示)
-        else if (durSec > 180 &&
+        // 片尾兜底：距结尾最后 _smartSkipOutroFallbackSec 秒内 (放宽边界至 >= -2，防止末尾微弱负数丢识别)
+        else if (durSec > 120 &&
             (durSec - posSec) <= _smartSkipOutroFallbackSec &&
-            (durSec - posSec) >= 0) {
+            (durSec - posSec) >= -2) {
           matched = SkipSegment(
             type: SkipSegmentType.outro,
             startMs: (durSec - _smartSkipOutroFallbackSec) * 1000,
@@ -1032,18 +1070,30 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     // 3. 状态判定与倒计时调度 (防抖保护：同一片段区间内严禁重启计时器)
     if (matched != null) {
-      if (_dismissedSmartSegmentThisEp) return;
+      final isOutro = matched.type == SkipSegmentType.outro ||
+          matched.type == SkipSegmentType.credits ||
+          matched.type == SkipSegmentType.preview;
 
-      // 立即跳过模式
+      // 检查当前片段类型是否被用户主动取消
+      if (isOutro && _dismissedOutroThisEp) return;
+      if (!isOutro && _dismissedIntroThisEp) return;
+
+      // 立即跳过模式：片头与片尾独立判定，绝不互斥！
       if (_smartSkipMode == 'instant') {
-        if (!_hasAutoSkippedThisEp) {
-          _hasAutoSkippedThisEp = true;
+        if (isOutro && !_hasAutoSkippedOutroThisEp) {
+          _triggerSmartSkip(matched, isSilent: true);
+        } else if (!isOutro && !_hasAutoSkippedIntroThisEp) {
           _triggerSmartSkip(matched, isSilent: true);
         }
         return;
       }
 
-      // 核心防抖判定：如果当前已有激活片段，且类型与起始时间重合，视为同一片段，绝不重新重置倒计时！
+      // 如果当前是片尾，且已经自动跳过过本集片尾，不再弹窗打扰
+      if (isOutro && _hasAutoSkippedOutroThisEp) return;
+      // 如果当前是片头，且已经自动跳过过本集片头，不再弹窗打扰
+      if (!isOutro && _hasAutoSkippedIntroThisEp) return;
+
+      // 核心防抖判定：如果当前已有激活片段，且类型与起始时间重合，视为同一片段，严禁重复启动或重置倒计时！
       final isSameSegment = _activeSmartSegment != null &&
           _activeSmartSegment!.type == matched.type &&
           (_activeSmartSegment!.startMs - matched.startMs).abs() < 3000;
@@ -1059,7 +1109,7 @@ class _PlayerScreenState extends State<PlayerScreen>
               timer.cancel();
               return;
             }
-            if (_activeSmartSegment == null) {
+            if (_activeSmartSegment == null || _isTransitioningEpisode) {
               timer.cancel();
               return;
             }
@@ -1181,6 +1231,24 @@ class _PlayerScreenState extends State<PlayerScreen>
                               selectedColor: kLunaTheme,
                               backgroundColor: const Color(0xFF334155),
                               onSelected: (_) => setDialogState(() => fallbackIntro = sec),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                      const SizedBox(height: 14),
+                      const Text('通用片尾兜底时长 (云端未收录时)', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [60, 90, 120].map((sec) {
+                          final isSel = fallbackOutro == sec;
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: ChoiceChip(
+                              label: Text('$sec 秒', style: TextStyle(color: isSel ? Colors.black : Colors.white70, fontSize: 12)),
+                              selected: isSel,
+                              selectedColor: const Color(0xFF38BDF8),
+                              backgroundColor: const Color(0xFF334155),
+                              onSelected: (_) => setDialogState(() => fallbackOutro = sec),
                             ),
                           );
                         }).toList(),
@@ -2982,6 +3050,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     // v2.6.93: 切源时重置智能跳过状态
     _hasAutoSkippedThisEp = false;
     _dismissedSmartSegmentThisEp = false;
+    _dismissedIntroThisEp = false;
+    _dismissedOutroThisEp = false;
+    _hasAutoSkippedIntroThisEp = false;
+    _hasAutoSkippedOutroThisEp = false;
+    _isTransitioningEpisode = false;
     // v2.6.41: 切集时重置缩放 — 上一集放大了, 新一集不该沿用.
     _videoScale = 1.0;
     _pinchPointers.clear();
@@ -3861,6 +3934,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     // v2.6.93: 切集时重置智能跳过状态
     _hasAutoSkippedThisEp = false;
     _dismissedSmartSegmentThisEp = false;
+    _dismissedIntroThisEp = false;
+    _dismissedOutroThisEp = false;
+    _hasAutoSkippedIntroThisEp = false;
+    _hasAutoSkippedOutroThisEp = false;
+    _isTransitioningEpisode = false;
     // v2.6.41: 切集时重置缩放 — 上一集放大了, 新一集不该沿用.
     _videoScale = 1.0;
     _pinchPointers.clear();

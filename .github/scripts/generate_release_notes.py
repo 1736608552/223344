@@ -42,7 +42,7 @@ def main():
     if not notes:
         notes = f'## LunaTV Mobile {tag} 正式版发布\n\n- 智能跳过片头片尾、弹幕满帧渲染与短剧历史全链路优化。'
 
-    footer = f'''\n\n### 安装包下载\n- LunaTV-Mobile-{tag}.apk：正式版完整安装包（推荐安装）\n- app-release.apk：直链通用版\n- SHA256SUMS.txt：安装包完整性校验值\n'''
+    footer = f'''\n\n### 安装包下载\n- **Android 端**：\n  - LunaTV-Mobile-{tag}.apk：正式版完整安装包（推荐 Android 用户安装）\n  - app-release.apk：直链通用版\n- **iOS 苹果端**：\n  - LunaTV-Mobile-{tag}-unsigned.ipa：苹果免签名安装包（支持 TrollStore 巨魔直装、AltStore / SideStore 个人自签、爱思助手/牛蛙助手电脑签名安装）\n  - app-release-unsigned.ipa：直链免签名版\n- **校验文件**：\n  - SHA256SUMS.txt：各平台安装包 SHA-256 完整性校验值\n'''
 
     output_path = 'release_notes.md'
     with open(output_path, 'w', encoding='utf-8') as f:

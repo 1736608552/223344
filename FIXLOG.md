@@ -1,5 +1,32 @@
 # LunaTV-Mobile 修复日记
 
+## v2.6.96 (2026-10-14)
+
+### 开启全平台跨越：正式支持苹果 iOS 原生 App 编译与免签名 IPA 交付 + 彻底根除片尾不跳过/切集无反应
+
+#### 核心新增与深度修复
+1. **彻底解决电视剧片尾不跳过与切集无反应**：
+   - **片头片尾状态全面解耦**：定位到原逻辑中使用单一全局 `_hasAutoSkippedThisEp` 标志，开播自动跳过片头后该标志即置为 `true`，导致 40 分钟后播到片尾时在立即跳过模式下被死锁拦截永不触发；现重构为独立的 `_hasAutoSkippedIntroThisEp` 与 `_hasAutoSkippedOutroThisEp`，片头跳过绝不影响片尾触发；
+   - **主动关闭操作解耦**：将 `_dismissedSmartSegmentThisEp` 解耦为 `_dismissedIntroThisEp` 与 `_dismissedOutroThisEp`，片头用户手动点击关闭不影响片尾智能弹窗；
+   - **切集过渡状态锁保护 (`_isTransitioningEpisode`)**：防止跳过片尾异步换流切集期间，播放器高频 `positionStream` 重入再次触发片尾匹配与倒计时重置；
+   - **云端片尾区间自动拉通 (`TheIntroDB`)**：对齐 SeleneTV 逆向逻辑，将 TheIntroDB 的 `credits` / `outro` / `preview` 片段有效时间自动延展覆盖至视频真实末尾（`durMs`），杜绝因打点提前截断导致胶囊提早消失；
+   - **放宽片尾兜底与默认时长提升**：通用片尾兜底门槛提升至默认 90 秒（更贴合国产剧与动漫片尾曲时长），时间区间放宽至 `>= -2` 秒，防止视频末尾因浮点时间取整误差丢失识别；并在设置面板中补全「通用片尾兜底时长（60s / 90s / 120s）」切换选择。
+2. **正式支持苹果 iOS App 编译与构建交付**：
+   - **GitHub Actions macOS 云端构建**：新增基于 `macos-14` (Apple Silicon M1) 的全自动 iOS 构建工作流，支持一键编译生成完整 iOS 应用程序包 `Runner.app`；
+   - **免签名通用 IPA 打包（Unsigned IPA）**：自动打包生成通用免签名 IPA 安装包（`LunaTV-Mobile-v2.6.96-unsigned.ipa` 与 `app-release-unsigned.ipa`）；
+   - **多途径 iOS 安装兼容**：无缝支持 TrollStore（巨魔商店）永久免越狱免证书直装、AltStore / SideStore 个人 Apple ID 免费自签、以及爱思助手/牛蛙助手等电脑证书重签名直装。
+3. **iOS 原生流媒体与网络链路适配**：
+   - **解耦平台插件架构**：为 `video_player` 插件规范接入 `video_player_avfoundation` iOS 原生 AVFoundation 流播放引擎，Android 与 iOS 原生播放器各司其职、互不干扰；
+   - **开启 iOS 全局网络传输安全 (ATS) 例外**：在 `Info.plist` 中配置 `NSAllowsArbitraryLoads`，彻底根治 iOS 系统因安全策略拦截 HTTP/非 HTTPS 的 m3u8 与短剧直链视频流的问题；
+   - **完善本地局域网投屏权限**：注入 `NSLocalNetworkUsageDescription` 与 Bonjour 服务声明，保障 iOS 14+ 局域网 DLNA 设备发现与投屏稳定运行；
+   - **统一 iOS 13.0 构建目标**：优化 `Podfile` 部署目标与 CocoaPods 构建选项，杜绝编译期证书强依赖与符号冲突。
+4. **多平台并行构建与统一发布**：
+   - 升级工作流为 `build-android` 与 `build-ios` 双轨并行构建，自动汇聚产物并生成统一 SHA-256 校验清单，一次性发布 APK 与 IPA。
+5. **版本号与版本码单调递增**：
+   - 版本更新至 `v2.6.96`（versionCode: 20696），确保无缝覆盖升级。
+
+---
+
 ## v2.6.95 (2026-10-14)
 
 ### 彻底根除5秒倒计时不走/不自动跳过 + 修复片尾跳过切集无反应 + UI数字满帧联动跳动

@@ -16,12 +16,15 @@ flutter:
         dartPluginClass: AndroidVideoPlayer
         package: io.flutter.plugins.videoplayer
         pluginClass: VideoPlayerPlugin
+      ios:
+        default_package: video_player_avfoundation
 
 dependencies:
   flutter:
     sdk: flutter
   meta: ^1.10.0
   video_player_platform_interface: ^6.9.0
+  video_player_avfoundation: ^2.6.1
 
 dev_dependencies:
   build_runner: ^2.3.3

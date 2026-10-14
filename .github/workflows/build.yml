@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Android APK & iOS IPA
 
 on:
   push:
@@ -9,17 +9,8 @@ on:
 permissions:
   contents: write
 
-# v2.0.8: 撤回 iOS 编译, 只编 Android
-# 之前 v2.0.1 ~ v2.0.7 试过 windows / macos / ios, 全失败或太折腾:
-#   - v2.0.0 windows + macos: 编译报错
-#   - v2.0.1 iOS: BSD sed 失败 (已修)
-#   - v2.0.2 / v2.0.3 iOS: artifact 上传失败
-#   - v2.0.4 iOS xcodebuild archive: 失败
-#   - v2.0.7 iOS zip 打包: 成功但用户装法跟 ad-hoc IPA 一样
-# 用户决定: iOS 撤回, 只编 Android
 jobs:
-  # 单一 job 模式, build-android 直接做 release
-  build:
+  build-android:
     name: android
     runs-on: ubuntu-latest
     steps:
@@ -46,19 +37,10 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          # v2.5.75: 升 3.44.8 (2026-07-23 patch) — 修 3.44.0 Mali GPU 外纹理资源泄漏
-          #   + 3.44.6 Linux native assets CMake 路径崩溃 + 3.44.8 instrument test crash.
-          #   pubspec SDK constraint 已同步到 >=3.5.0 兼容 3.44 自带 Dart 3.9.
-          #   历史: v2.5.71 #1395 跑过 3.44 通道, v2.5.74 #1402 降回 3.41.9 是因为 APK 体积.
-          #   这次升 3.44.8, 若 APK 体积回归再降.
           flutter-version: '3.44.8'
 
       - run: flutter pub get
 
-      # tag 触发时, 把 git tag 同步到 pubspec.yaml (build.gradle.kts 解析 pubspec 拿 version)
-      # 注意: 不能用 `sed -i "..."` (macOS BSD sed 要求 -i 后带 backup 扩展名, e.g. `sed -i ''`,
-      # 否则报 "undefined label" 错; GNU sed 不要求 -i 参数, 所以 Android runner OK,
-      # macOS / Windows runner 必挂). 改用 perl -i -pe (perl 跨平台, Linux/macOS 都预装).
       - name: Sync version from git tag
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
@@ -69,7 +51,6 @@ jobs:
             BUILD=${TAG#*+}
             perl -i -pe "s/^version: .*/version: $VERSION+$BUILD/" pubspec.yaml
           else
-            # 保留 pubspec.yaml 中已有的 build code (例如 +20689)，若无则使用三段式计算的 code，杜绝被粗暴改写为 +1
             CURRENT_CODE=$(grep -E '^version:' pubspec.yaml | sed -n 's/.*+//p' | tr -d '\r\n')
             if [ -n "$CURRENT_CODE" ]; then
               perl -i -pe "s/^version: .*/version: $TAG+$CURRENT_CODE/" pubspec.yaml
@@ -79,12 +60,6 @@ jobs:
           fi
           head -5 pubspec.yaml
 
-      # release 签名: keystore 已提交在 android/app/release.keystore
-      # build.gradle.kts 直接读取, 每次 CI 构建签名一致
-      # 镜像 502 时 Flutter 会自动重试 1 次, 但 Aliyun/Huawei/Tencent 同步挂的时候
-      # 重试不够, 这里用 nick-fields/retry 兜底网络瞬时故障
-      # v2.2.0+53 aliyun 持续 502, retry 3 次/30s 不够 → 提到 5 次/60s, 给镜像
-      # 恢复时间. Gradle 失败重跑会复用已下载的 artifact, 重试成本不高.
       - name: Build Android APK (release)
         uses: nick-fields/retry@v3
         with:
@@ -94,9 +69,125 @@ jobs:
           timeout_minutes: 60
           command: flutter build apk --release --target-platform android-arm,android-arm64 --obfuscate --split-debug-info=build/app/outputs/symbols
 
-      # 对齐 guoapp: 自动创建或更新 GitHub Release 并上传正式 APK 及校验文件
-      - name: Create or Update GitHub Release (APK)
+      - name: Prepare Android artifacts
+        run: |
+          VERSION=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1 | tr -d '\r\n')
+          BASE_VERSION="${VERSION%+*}"
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v${BASE_VERSION}"
+          fi
+          mkdir -p android_dist
+          cp build/app/outputs/flutter-apk/app-release.apk "android_dist/LunaTV-Mobile-${TAG}.apk"
+          cp build/app/outputs/flutter-apk/app-release.apk "android_dist/app-release.apk"
+
+      - name: Upload APK artifact
         continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: android_dist/*.apk
+          retention-days: 7
+
+  build-ios:
+    name: ios
+    runs-on: macos-14
+    env:
+      LANG: en_US.UTF-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          channel: 'stable'
+          cache: true
+
+      - run: flutter pub get
+
+      - name: Sync version from git tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG=${GITHUB_REF#refs/tags/v}
+          if [[ "$TAG" == *"+"* ]]; then
+            VERSION=${TAG%+*}
+            BUILD=${TAG#*+}
+            perl -i -pe "s/^version: .*/version: $VERSION+$BUILD/" pubspec.yaml
+          else
+            CURRENT_CODE=$(grep -E '^version:' pubspec.yaml | sed -n 's/.*+//p' | tr -d '\r\n')
+            if [ -n "$CURRENT_CODE" ]; then
+              perl -i -pe "s/^version: .*/version: $TAG+$CURRENT_CODE/" pubspec.yaml
+            else
+              perl -i -pe "s/^version: .*/version: $TAG+1/" pubspec.yaml
+            fi
+          fi
+          head -5 pubspec.yaml
+
+      - name: Install CocoaPods dependencies
+        run: |
+          cd ios
+          pod install --repo-update
+          cd ..
+
+      - name: Build iOS App (release no-codesign)
+        uses: nick-fields/retry@v3
+        with:
+          max_attempts: 3
+          retry_on: error
+          retry_wait_seconds: 30
+          timeout_minutes: 45
+          command: flutter build ios --release --no-codesign
+
+      - name: Package Unsigned IPA
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1 | tr -d '\r\n')
+          BASE_VERSION="${VERSION%+*}"
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v${BASE_VERSION}"
+          fi
+
+          APP_PATH=$(find build/ios/iphoneos -name "*.app" -type d | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::未找到编译生成的 iOS .app 应用程序目录"
+            exit 1
+          fi
+          echo "找到 iOS 应用目录: $APP_PATH"
+
+          mkdir -p ipa_dist/Payload
+          cp -r "$APP_PATH" ipa_dist/Payload/
+          cd ipa_dist
+          zip -r -y "LunaTV-Mobile-${TAG}-unsigned.ipa" Payload
+          cp "LunaTV-Mobile-${TAG}-unsigned.ipa" "app-release-unsigned.ipa"
+          rm -rf Payload
+          cd ..
+
+      - name: Upload IPA artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: ipa_dist/*.ipa
+          retention-days: 7
+
+  release:
+    name: release
+    needs: [build-android, build-ios]
+    if: always() && (needs.build-android.result == 'success' || needs.build-ios.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded_artifacts
+
+      - name: Create or Update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -116,12 +207,13 @@ jobs:
 
           # 准备发布产物目录
           mkdir -p release_dist
-          APK="build/app/outputs/flutter-apk/app-release.apk"
-          if [ -f "$APK" ]; then
-            cp "$APK" "release_dist/LunaTV-Mobile-${TAG}.apk"
-            cp "$APK" "release_dist/app-release.apk"
-          else
-            echo "::error::未找到构建生成的 APK 文件: $APK"
+          find downloaded_artifacts -type f \( -name "*.apk" -o -name "*.ipa" \) -exec cp {} release_dist/ \;
+
+          echo "收集到的发布产物列表:"
+          ls -lh release_dist/
+
+          if [ -z "$(ls -A release_dist 2>/dev/null)" ]; then
+            echo "::error::未收集到任何 APK 或 IPA 产物，发布终止"
             exit 1
           fi
 
@@ -133,7 +225,6 @@ jobs:
 
           # 实时提取当前版本的真实修复日记生成发布说明 (优先读取 .github/changelogs.json 与 FIXLOG.md)
           python3 .github/scripts/generate_release_notes.py "${TAG}"
-
 
           TITLE="LunaTV Mobile ${TAG}"
 
@@ -164,13 +255,3 @@ jobs:
             fi
             sleep 15
           done
-
-      # 备用上传 APK 作为 action artifact (加 continue-on-error 防止私有库免费存储配额满导致中断)
-      - name: Upload APK artifact
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release
-          path: build/app/outputs/flutter-apk/app-release.apk
-          retention-days: 7
-
