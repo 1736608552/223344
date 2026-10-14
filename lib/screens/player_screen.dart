@@ -47,6 +47,7 @@ import 'package:luna_tv/danmaku/danmaku_manager.dart';
 import 'package:luna_tv/danmaku/danmaku_settings.dart';
 import 'package:luna_tv/danmaku/models/danmaku_comment.dart';
 import 'package:luna_tv/danmaku/models/danmaku_media.dart';
+import 'package:luna_tv/danmaku/models/hongguo_danmaku_emojis.dart';
 import 'package:luna_tv/danmaku/widgets/danmaku_overlay.dart';
 import 'package:luna_tv/danmaku/widgets/danmaku_panel.dart';
 import 'package:luna_tv/danmaku/widgets/danmaku_control_sheet.dart';
@@ -1473,6 +1474,67 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
+  /// 短剧专属弹幕加载方法 (对齐红果鉴)
+  Future<void> _loadShortDramaDanmaku({bool auto = false}) async {
+    final dramaId = _selectedSource?.id.isNotEmpty == true
+        ? _selectedSource!.id
+        : widget.videoInfo.id;
+    final epNum = _currentEpisodeIndex + 1;
+    final title = widget.videoInfo.title.trim();
+
+    setState(() => _danmakuLoading = true);
+    await DiaryService.add('[短剧弹幕] 开始获取: $title 第$epNum集 (dramaId=$dramaId)');
+
+    try {
+      final vidList = await DuanjuCoreBridge.instance.fetchEpisodeVidList(dramaId);
+      String vid = '';
+      if (vidList.isNotEmpty) {
+        final idx = (epNum - 1).clamp(0, vidList.length - 1);
+        vid = vidList[idx];
+      }
+
+      final comments = await DuanjuCoreBridge.instance.fetchHongguoDanmaku(
+        seriesId: dramaId,
+        vid: vid,
+        episode: epNum,
+      );
+
+      if (!mounted) return;
+
+      if (comments.isNotEmpty) {
+        setState(() {
+          _danmakuComments = comments;
+          _danmakuCount = comments.length;
+          _danmakuEnabled = true;
+          _danmakuSource = 'hongguo';
+          _danmakuSourceTitle = '红果短剧 · $title · 第$epNum集';
+          _danmakuSelSource = DanmakuSource.hongguo;
+          _danmakuSelMediaId = dramaId;
+          _danmakuSelMediaTitle = title;
+        });
+        _danmakuKey.currentState?.reset();
+        if (!auto) {
+          _toast('弹幕 · 红果短剧 · ${comments.length}条');
+        }
+        await DiaryService.add('[短剧弹幕] 成功载入: ${comments.length}条');
+      } else {
+        if (!auto) {
+          _toast('该集暂无短剧弹幕');
+        }
+        await DiaryService.add('[短剧弹幕] 该集暂无弹幕');
+      }
+    } catch (e) {
+      if (!mounted) return;
+      if (!auto) _toast('短剧弹幕加载失败');
+      debugPrint('[短剧弹幕] 加载异常: $e');
+      await DiaryService.add('[短剧弹幕] 加载异常: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _danmakuLoading = false);
+      }
+    }
+  }
+
   // v2.5.51: 弹幕预搜索 — 进播放页时后台并发搜索 6 源
   //   移植 SeleneTV t14.java:741 "进播放页并发搜索, 命中源进「弹幕源」切换"
   //   不阻塞播放, 不弹 UI, 纯后台搜索 + 评分
@@ -1480,6 +1542,33 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (_danmakuPreSearchDone || _danmakuPreSearching) return;
     final title = widget.videoInfo.title.trim();
     if (title.isEmpty) return;
+
+    final isShortDrama = widget.preferredSource == 'hongguo' ||
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.id.startsWith('hongguo:') ||
+        (_selectedSource?.source == 'hongguo') ||
+        (widget.initialDetail?.sources.any((s) => s.source == 'hongguo') ?? false);
+
+    if (isShortDrama) {
+      final dramaId = _selectedSource?.id.isNotEmpty == true
+          ? _selectedSource!.id
+          : widget.videoInfo.id;
+      final hongguoMedia = DanmakuMedia(
+        source: DanmakuSource.hongguo,
+        mediaId: dramaId,
+        title: title,
+        type: 'tv',
+      );
+      setState(() {
+        _danmakuPreSearchResults = [hongguoMedia];
+        _danmakuPreSearching = false;
+        _danmakuPreSearchDone = true;
+      });
+      if (_danmakuEnabled) {
+        unawaited(_loadShortDramaDanmaku(auto: true));
+      }
+      return;
+    }
 
     setState(() => _danmakuPreSearching = true);
     await DiaryService.add('[弹幕] 预搜索开始: "$title"');
@@ -1528,6 +1617,28 @@ class _PlayerScreenState extends State<PlayerScreen>
   //   预搜索无结果时才 fallback 到实时搜索
   Future<void> _toggleDanmaku() async {
     if (_danmakuLoading) return;
+
+    final isShortDrama = widget.preferredSource == 'hongguo' ||
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.id.startsWith('hongguo:') ||
+        (_selectedSource?.source == 'hongguo') ||
+        (widget.initialDetail?.sources.any((s) => s.source == 'hongguo') ?? false);
+
+    if (isShortDrama) {
+      if (_danmakuEnabled) {
+        setState(() {
+          _danmakuEnabled = false;
+          _danmakuComments = const [];
+          _danmakuCount = 0;
+        });
+        _danmakuKey.currentState?.reset();
+        _toast('弹幕已关闭');
+      } else {
+        await _loadShortDramaDanmaku();
+      }
+      return;
+    }
+
     final source = _selectedSource;
     if (source == null) {
       _toast('请先选源');
@@ -1692,6 +1803,18 @@ class _PlayerScreenState extends State<PlayerScreen>
   // v2.5.38: 切集时刷弹幕 (已开启状态下, 用同一源+mediaId 重拉新一集)
   Future<void> _reloadDanmakuForNewEpisode() async {
     if (!_danmakuEnabled) return;
+
+    final isShortDrama = widget.preferredSource == 'hongguo' ||
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.id.startsWith('hongguo:') ||
+        (_selectedSource?.source == 'hongguo') ||
+        (widget.initialDetail?.sources.any((s) => s.source == 'hongguo') ?? false);
+
+    if (isShortDrama) {
+      await _loadShortDramaDanmaku(auto: true);
+      return;
+    }
+
     if (_danmakuSelSource == null || _danmakuSelMediaId == null) return;
     final source = _selectedSource;
     if (source == null) return;

@@ -18,6 +18,7 @@ import 'models/danmaku_comment.dart';
 import 'models/danmaku_media.dart';
 import 'sources/bilibili_danmaku.dart';
 import 'sources/danmaku_source.dart';
+import 'sources/hongguo_danmaku.dart';
 import 'sources/iqiyi_danmaku.dart';
 import 'sources/le_danmaku.dart';
 import 'sources/mgtv_danmaku.dart';
@@ -29,6 +30,7 @@ class DanmakuManager {
   static final DanmakuManager instance = DanmakuManager._();
 
   late final Map<DanmakuSource, BaseDanmakuSource> _sources = {
+    DanmakuSource.hongguo: HongguoDanmaku(),
     DanmakuSource.iqiyi: IqiyiDanmaku(),
     DanmakuSource.youku: YoukuDanmaku(),
     DanmakuSource.bilibili: BilibiliDanmaku(),

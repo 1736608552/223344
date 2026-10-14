@@ -8,6 +8,8 @@ import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:luna_tv/danmaku/models/danmaku_comment.dart';
+import 'package:luna_tv/danmaku/models/hongguo_danmaku_emojis.dart';
 
 /// 短剧播放计划与CENC解密包模型 (100%对齐红果鉴)
 class DuanjuPlaybackPlan {
@@ -19,6 +21,8 @@ class DuanjuPlaybackPlan {
   final int quality;
   final int actualQuality;
   final List<int> qualities;
+  final String session;
+  final String danmakuId;
 
   const DuanjuPlaybackPlan({
     required this.url,
@@ -29,6 +33,8 @@ class DuanjuPlaybackPlan {
     this.quality = 0,
     this.actualQuality = 1080,
     this.qualities = const [1080, 720, 480],
+    this.session = '',
+    this.danmakuId = '',
   });
 }
 
@@ -1023,6 +1029,8 @@ class DuanjuCoreBridge {
   }
 
   final Map<String, DuanjuPlaybackPlan> _planCache = {};
+  final Map<String, List<DanmakuComment>> _danmakuCache = {};
+  final Map<String, String> _danmakuSessionMap = {};
 
   /// 获取单集短剧的解密密钥 (供播放器注入底层解密参数)
   String? getDecryptionKey(String dramaId, int episode) {
@@ -1580,5 +1588,175 @@ class DuanjuCoreBridge {
         }
       }
     } catch (_) {}
+  }
+
+  /// 获取红果短剧真实官方弹幕 (对齐红果鉴)
+  /// 支持 Go 原生引擎优先 + 官方直连通道降级容灾，并自动应用 150+ 种官方表情 Emoji 转换
+  Future<List<DanmakuComment>> fetchHongguoDanmaku({
+    required String seriesId,
+    required String vid,
+    int episode = 1,
+    int durationMs = 180000,
+  }) async {
+    final cleanId = cleanSeriesId(seriesId);
+    if (cleanId.isEmpty && vid.isEmpty) return const [];
+
+    final actualVid = vid.isNotEmpty ? vid : '';
+    final cacheKey = '$cleanId-$episode-$actualVid';
+    if (_danmakuCache.containsKey(cacheKey) && _danmakuCache[cacheKey]!.isNotEmpty) {
+      return _danmakuCache[cacheKey]!;
+    }
+
+    // 若 vid 缺失，尝试从选集列表反查
+    String targetVid = actualVid;
+    if (targetVid.isEmpty && cleanId.isNotEmpty) {
+      final vids = await fetchEpisodeVidList(cleanId);
+      if (vids.isNotEmpty) {
+        final idx = (episode - 1).clamp(0, vids.length - 1);
+        targetVid = vids[idx];
+      }
+    }
+
+    if (targetVid.isEmpty) return const [];
+
+    // 通道 1: 原生 Go 引擎调度 (若 libduanju_core.so 就绪)
+    if (_isNativeAvailable) {
+      try {
+        await ensureInitialized();
+        String? session = _danmakuSessionMap['$cleanId-$episode'];
+        if (session == null || session.isEmpty) {
+          // 通过轻量 resolve 建立播放与弹幕会话
+          final resolveRes = await invokeNative('resolve', {
+            'drama': {
+              'id': 'hongguo:$cleanId',
+              'source': 'hongguo',
+              'title': '短剧',
+            },
+            'chapter': {
+              'id': 'hongguo:$cleanId:$targetVid',
+              'source': 'hongguo',
+              'title': '第$episode集',
+              'videoUrl': 'hongguo-cenc://$targetVid',
+              'video_url': 'hongguo-cenc://$targetVid',
+              'currentEpisode': episode,
+              'current_episode': '$episode',
+            },
+            'index': episode,
+            'quality': 0,
+            'sequence': DateTime.now().millisecondsSinceEpoch,
+          });
+          if (resolveRes != null && resolveRes['ok'] == true && resolveRes['data'] is Map) {
+            session = resolveRes['data']['session']?.toString();
+            if (session != null && session.isNotEmpty) {
+              _danmakuSessionMap['$cleanId-$episode'] = session;
+            }
+          }
+        }
+
+        if (session != null && session.isNotEmpty) {
+          final res = await invokeNative('danmaku', {
+            'playbackSession': session,
+            'startMs': 0,
+            'durationMs': durationMs,
+          });
+
+          if (res != null && res['ok'] == true && res['data'] is Map) {
+            final data = res['data'] as Map;
+            final rows = data['items'];
+            if (rows is List && rows.isNotEmpty) {
+              final comments = <DanmakuComment>[];
+              for (final row in rows) {
+                if (row is! Map) continue;
+                final text = (row['text'] ?? '').toString().trim();
+                final timeMs = int.tryParse(row['timeMs']?.toString() ?? '') ?? 0;
+                if (text.isEmpty) continue;
+                comments.add(DanmakuComment(
+                  timeMs: timeMs,
+                  mode: 1,
+                  color: 0xFFFFFF,
+                  content: formatHongguoDanmakuText(text),
+                ));
+              }
+              if (comments.isNotEmpty) {
+                _danmakuCache[cacheKey] = comments;
+                if (kDebugMode) {
+                  print('[DuanjuBridge] 原生Go引擎成功载入短剧弹幕: ep=$episode, count=${comments.length}');
+                }
+                return comments;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('[DuanjuBridge] 原生短剧弹幕调度异常，降级直连通道: $e');
+        }
+      }
+    }
+
+    // 通道 2: 官方网页端/直连接口兜底 (跨平台)
+    try {
+      final webComments = await _fetchHongguoDanmakuWebFallback(cleanId, targetVid, durationMs);
+      if (webComments.isNotEmpty) {
+        _danmakuCache[cacheKey] = webComments;
+        return webComments;
+      }
+    } catch (_) {}
+
+    return const [];
+  }
+
+  /// 官方网页端弹幕数据提取通道兜底
+  Future<List<DanmakuComment>> _fetchHongguoDanmakuWebFallback(
+    String cleanId,
+    String vid,
+    int durationMs,
+  ) async {
+    try {
+      final uri = Uri.parse('https://hongguoduanju.com/player/$cleanId/$vid');
+      final resp = await http.get(uri, headers: {
+        'User-Agent': _defaultUserAgent,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      }).timeout(const Duration(seconds: 6));
+
+      if (resp.statusCode == 200) {
+        final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true).firstMatch(resp.body);
+        if (m != null) {
+          final data = jsonDecode(m.group(1)!);
+          final loaderData = data['loaderData'];
+          if (loaderData is Map) {
+            dynamic pageData;
+            for (final k in loaderData.keys) {
+              final kStr = k.toString();
+              if (kStr.contains('player_') && kStr.endsWith('/page')) {
+                pageData = loaderData[k];
+                break;
+              }
+            }
+            pageData ??= loaderData['player_(series_id)/(vid)/page'] ?? loaderData['player_page'];
+            if (pageData is Map) {
+              final commentsRaw = pageData['danmaku_list'] ?? pageData['comment_list'];
+              if (commentsRaw is List && commentsRaw.isNotEmpty) {
+                final comments = <DanmakuComment>[];
+                for (final c in commentsRaw) {
+                  if (c is! Map) continue;
+                  final text = (c['text'] ?? c['content'] ?? '').toString().trim();
+                  final timeMs = int.tryParse(c['time']?.toString() ?? c['offset_time']?.toString() ?? '') ?? 0;
+                  if (text.isEmpty) continue;
+                  comments.add(DanmakuComment(
+                    timeMs: timeMs,
+                    mode: 1,
+                    color: 0xFFFFFF,
+                    content: formatHongguoDanmakuText(text),
+                  ));
+                }
+                if (comments.isNotEmpty) return comments;
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
+    return const [];
   }
 }

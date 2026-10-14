@@ -1,11 +1,11 @@
 // lib/danmaku/models/danmaku_media.dart
 // 剧集搜索结果 — 对应 SeleneTV DanmakuMedia(source, mediaId, title, type, year, poster, episodeCount)
 
-enum DanmakuSource { iqiyi, youku, bilibili, tencent, mgtv, le }
+enum DanmakuSource { iqiyi, youku, bilibili, tencent, mgtv, le, hongguo }
 
 extension DanmakuSourceName on DanmakuSource {
   // key 与 SeleneTV Lpi0; <clinit> 完全一致:
-  //   bilibili / tencent / iqiyi / youku / mgtv / letv
+  //   bilibili / tencent / iqiyi / youku / mgtv / letv / hongguo
   String get key {
     switch (this) {
       case DanmakuSource.iqiyi:    return 'iqiyi';
@@ -14,6 +14,7 @@ extension DanmakuSourceName on DanmakuSource {
       case DanmakuSource.tencent:  return 'tencent';
       case DanmakuSource.mgtv:     return 'mgtv';
       case DanmakuSource.le:       return 'letv';
+      case DanmakuSource.hongguo:  return 'hongguo';
     }
   }
 
@@ -26,6 +27,7 @@ extension DanmakuSourceName on DanmakuSource {
       case DanmakuSource.tencent:  return '腾讯视频';
       case DanmakuSource.mgtv:     return '芒果TV';
       case DanmakuSource.le:       return '乐视视频';
+      case DanmakuSource.hongguo:  return '红果短剧';
     }
   }
 }
