@@ -21,6 +21,7 @@ import 'package:luna_tv/services/user_data_service.dart';
 import 'package:luna_tv/services/m3u8_service.dart';
 import 'package:luna_tv/services/player_backend.dart';
 import 'package:luna_tv/services/duanju_core_bridge.dart';
+import 'package:luna_tv/services/local_mode_storage_service.dart';
 // v2.3.0: 视频加速 (VideoProxyServer + CfOptimizer) 整个删了, 不用这两个 import
 //   - video_proxy_server.dart 已删
 //   - cf_optimizer.dart 已删
@@ -2902,13 +2903,13 @@ class _PlayerScreenState extends State<PlayerScreen>
   /// 支持短剧唯一 ID 精准匹配与标题匹配，彻底杜绝历史集数丢失
   Future<PlayRecord?> _tryLoadResume(String searchTitle, {String? dramaId}) async {
     try {
-      List<PlayRecord>? records;
+      List<PlayRecord> records = const [];
       final result = await PageCacheService().getPlayRecords(context);
       if (result.success && result.data != null && result.data!.isNotEmpty) {
-        records = result.data;
+        records = result.data!;
       }
       // 若云端未就绪或为空，无缝降级读取本地实时存储
-      if (records == null || records.isEmpty) {
+      if (records.isEmpty) {
         records = await LocalModeStorageService.getPlayRecords();
       }
       if (records.isEmpty) return null;
