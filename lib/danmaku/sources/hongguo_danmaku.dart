@@ -19,7 +19,7 @@ class HongguoDanmaku extends BaseDanmakuSource {
     if (kw.isEmpty) return const [];
 
     try {
-      final dramas = await DuanjuCoreBridge.instance.fetchSearch(kw);
+      final dramas = await DuanjuCoreBridge.instance.searchDramas(kw);
       if (dramas.isEmpty) return const [];
 
       return dramas.map((d) {

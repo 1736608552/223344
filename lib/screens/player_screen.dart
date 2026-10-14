@@ -1474,6 +1474,15 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
+  bool get _isCurrentShortDrama {
+    return widget.preferredSource == 'hongguo' ||
+        widget.preferredSource == 'shortdrama' ||
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama' ||
+        widget.videoInfo.id.startsWith('hongguo:') ||
+        (_selectedSource?.source == 'hongguo');
+  }
+
   /// 短剧专属弹幕加载方法 (对齐红果鉴)
   Future<void> _loadShortDramaDanmaku({bool auto = false}) async {
     final dramaId = _selectedSource?.id.isNotEmpty == true
@@ -1543,13 +1552,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     final title = widget.videoInfo.title.trim();
     if (title.isEmpty) return;
 
-    final isShortDrama = widget.preferredSource == 'hongguo' ||
-        widget.videoInfo.source == 'hongguo' ||
-        widget.videoInfo.id.startsWith('hongguo:') ||
-        (_selectedSource?.source == 'hongguo') ||
-        (widget.initialDetail?.sources.any((s) => s.source == 'hongguo') ?? false);
-
-    if (isShortDrama) {
+    if (_isCurrentShortDrama) {
       final dramaId = _selectedSource?.id.isNotEmpty == true
           ? _selectedSource!.id
           : widget.videoInfo.id;
@@ -1618,13 +1621,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   Future<void> _toggleDanmaku() async {
     if (_danmakuLoading) return;
 
-    final isShortDrama = widget.preferredSource == 'hongguo' ||
-        widget.videoInfo.source == 'hongguo' ||
-        widget.videoInfo.id.startsWith('hongguo:') ||
-        (_selectedSource?.source == 'hongguo') ||
-        (widget.initialDetail?.sources.any((s) => s.source == 'hongguo') ?? false);
-
-    if (isShortDrama) {
+    if (_isCurrentShortDrama) {
       if (_danmakuEnabled) {
         setState(() {
           _danmakuEnabled = false;
@@ -1804,13 +1801,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   Future<void> _reloadDanmakuForNewEpisode() async {
     if (!_danmakuEnabled) return;
 
-    final isShortDrama = widget.preferredSource == 'hongguo' ||
-        widget.videoInfo.source == 'hongguo' ||
-        widget.videoInfo.id.startsWith('hongguo:') ||
-        (_selectedSource?.source == 'hongguo') ||
-        (widget.initialDetail?.sources.any((s) => s.source == 'hongguo') ?? false);
-
-    if (isShortDrama) {
+    if (_isCurrentShortDrama) {
       await _loadShortDramaDanmaku(auto: true);
       return;
     }

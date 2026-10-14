@@ -250,6 +250,7 @@ class _DanmakuPanelState extends State<DanmakuPanel> {
       case DanmakuSource.youku:    return const Color(0xFF1989FA);
       case DanmakuSource.mgtv:     return const Color(0xFFFF6000);
       case DanmakuSource.le:       return const Color(0xFFFF6600);
+      case DanmakuSource.hongguo:  return const Color(0xFFFF2442);
     }
   }
 
