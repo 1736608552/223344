@@ -869,7 +869,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         _smartSkipEnabled = prefs.getBool('smart_skip_enabled') ?? true;
         _smartSkipMode = prefs.getString('smart_skip_mode') ?? 'countdown';
         _smartSkipFallbackSec = prefs.getInt('smart_skip_fallback_sec') ?? 90;
-        _smartSkipOutroFallbackSec = prefs.getInt('smart_skip_outro_fallback_sec') ?? 90;
+        _smartSkipOutroFallbackSec = prefs.getInt('smart_skip_outro_fallback_sec') ?? 120;
       });
     } catch (_) {}
   }
@@ -938,6 +938,9 @@ class _PlayerScreenState extends State<PlayerScreen>
 
       if (hasNextEpisode) {
         _autoPlayedThisEpisode = true;
+        try {
+          _player?.pause();
+        } catch (_) {}
         if (!isSilent) {
           _toast('已跳过片尾，正在播放第 ${nextIndex + 1} 集');
         }
@@ -1055,10 +1058,10 @@ class _PlayerScreenState extends State<PlayerScreen>
             endMs: _smartSkipFallbackSec * 1000,
           );
         }
-        // 片尾兜底：距结尾最后 _smartSkipOutroFallbackSec 秒内 (放宽边界至 >= -2，防止末尾微弱负数丢识别)
+        // 片尾兜底：距结尾最后 _smartSkipOutroFallbackSec 秒内 (放宽边界至 >= -5，防止末尾微弱负数丢识别)
         else if (durSec > 120 &&
             (durSec - posSec) <= _smartSkipOutroFallbackSec &&
-            (durSec - posSec) >= -2) {
+            (durSec - posSec) >= -5) {
           matched = SkipSegment(
             type: SkipSegmentType.outro,
             startMs: (durSec - _smartSkipOutroFallbackSec) * 1000,
@@ -1096,7 +1099,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       // 核心防抖判定：如果当前已有激活片段，且类型与起始时间重合，视为同一片段，严禁重复启动或重置倒计时！
       final isSameSegment = _activeSmartSegment != null &&
           _activeSmartSegment!.type == matched.type &&
-          (_activeSmartSegment!.startMs - matched.startMs).abs() < 3000;
+          (_activeSmartSegment!.startMs - matched.startMs).abs() < 5000;
 
       if (!isSameSegment) {
         _activeSmartSegment = matched;
@@ -1109,7 +1112,7 @@ class _PlayerScreenState extends State<PlayerScreen>
               timer.cancel();
               return;
             }
-            if (_activeSmartSegment == null || _isTransitioningEpisode) {
+            if (_isTransitioningEpisode) {
               timer.cancel();
               return;
             }
@@ -1122,10 +1125,8 @@ class _PlayerScreenState extends State<PlayerScreen>
               timer.cancel();
               _smartSkipCountdownTimer = null;
               debugPrint('[SmartSkip] 倒计时归零，自动执行跳过');
-              final segToSkip = _activeSmartSegment;
-              if (segToSkip != null) {
-                _triggerSmartSkip(segToSkip);
-              }
+              final segToSkip = _activeSmartSegment ?? matched;
+              _triggerSmartSkip(segToSkip);
             }
           });
         }
@@ -1133,6 +1134,18 @@ class _PlayerScreenState extends State<PlayerScreen>
       }
     } else {
       // 走出片头/片尾区间，清理胶囊与定时器
+      // ★ 关键加固：如果当前激活的是片尾且倒计时正在运行，只要不是大幅往回拖动，绝不允许瞬时波动清空倒计时！
+      final isOutroActive = _activeSmartSegment != null &&
+          (_activeSmartSegment!.type == SkipSegmentType.outro ||
+           _activeSmartSegment!.type == SkipSegmentType.credits ||
+           _activeSmartSegment!.type == SkipSegmentType.preview);
+      final isPlayingNearEnd = durSec > 0 && (durSec - posSec) <= (_smartSkipOutroFallbackSec + 8);
+
+      if (isOutroActive && isPlayingNearEnd && !_dismissedOutroThisEp && !_hasAutoSkippedOutroThisEp) {
+        // 片尾正在倒计时中，保持常驻锁定，不被瞬时波动截断
+        return;
+      }
+
       if (_activeSmartSegment != null) {
         _activeSmartSegment = null;
         _smartSkipCountdownTimer?.cancel();
@@ -1239,7 +1252,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                       const Text('通用片尾兜底时长 (云端未收录时)', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
                       const SizedBox(height: 8),
                       Row(
-                        children: [60, 90, 120].map((sec) {
+                        children: [90, 120, 150].map((sec) {
                           final isSel = fallbackOutro == sec;
                           return Padding(
                             padding: const EdgeInsets.only(right: 8),
@@ -2298,6 +2311,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       _currentPosition = Duration(milliseconds: newMs);
       _scrubbingValue = null; // 跟 _onScrubEnd 一样, 让 Slider 回到 _currentPosition 驱动
     });
+    _updateSkipButtonVisibility();
     if (_isPlaying) _scheduleHideControls();
   }
 
@@ -2478,6 +2492,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       _scrubbingValue = null;
       _currentPosition = Duration(milliseconds: ((value.clamp(0.0, 1.0)) * dur).toInt());
     });
+    _updateSkipButtonVisibility();
     if (_isPlaying) _scheduleHideControls();
   }
 
@@ -7068,15 +7083,15 @@ class _PlayerScreenState extends State<PlayerScreen>
         _buildLunaTopBar(),
         // 底部毛玻璃控制栏 (横屏改短)
         _buildLunaBottomBar(),
-        // v2.6.93: 全新智能片头/片尾跳过胶囊浮层 (位置在右下角进度条上方，无论控制栏是否隐藏均优雅浮现)
+        // 中央双圆快进/快退 (避免被顶部栏/底部栏遮挡)
+        _buildSideSeekButtons(),
+        // v2.6.93: 全新智能片头/片尾跳过胶囊浮层 (置于最顶层，确保无论控制栏是否隐藏均优雅浮现且点击100%响应)
         if (_activeSmartSegment != null)
           Positioned(
             right: 18,
             bottom: _isControlsVisible ? 104 : 32,
             child: _buildSmartSkipCapsule(),
           ),
-        // 中央双圆快进/快退 (放在最上层, 避免被顶部栏/底部栏/跳过按钮遮挡)
-        _buildSideSeekButtons(),
         // v2.3.14: 卸弹幕 overlay (整个弹幕系统删了).
       ],
     );
