@@ -1126,7 +1126,9 @@ class _PlayerScreenState extends State<PlayerScreen>
               _smartSkipCountdownTimer = null;
               debugPrint('[SmartSkip] 倒计时归零，自动执行跳过');
               final segToSkip = _activeSmartSegment ?? matched;
-              _triggerSmartSkip(segToSkip);
+              if (segToSkip != null) {
+                _triggerSmartSkip(segToSkip);
+              }
             }
           });
         }
