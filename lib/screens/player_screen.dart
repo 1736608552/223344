@@ -57,6 +57,8 @@ import 'package:dlna_dart/dlna.dart';
 import 'package:luna_tv/services/tmdb_service.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:luna_tv/models/skip_segment.dart';
+import 'package:luna_tv/services/skip_segment_service.dart';
 
 /// LunaTV Web 风格播放详情页
 ///
@@ -258,6 +260,13 @@ class _PlayerScreenState extends State<PlayerScreen>
   // 上一帧 position (秒), 用来算 delta 检测倒退. -1 表示未初始化.
   int _lastPosForAdDetect = -1;
 
+  // v2.6.92: 智能片头/片尾/前情回顾跳过系统 (对齐 SeleneTV, 融合 TMDB 代理 + TheIntroDB)
+  List<SkipSegment> _smartSkipSegments = [];
+  SkipSegment? _activeSmartSegment;
+  Timer? _smartSkipCountdownTimer;
+  int _smartSkipCountdownSec = 5;
+  bool _dismissedSmartSegmentThisEp = false;
+
   // _lastKnownPosition: position stream 每帧更新, 记"上一次非 0 位置".
   // 用于进度同步兜底 (libmpv m3u8 reload 期间 state.position=0,
   // _currentPosition 也被重置, 用 _lastKnownPosition 拿 reload 前的位置,
@@ -435,6 +444,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     _loadTmdbCast();
     // 加载跳过片头片尾配置
     _loadSkipConfig();
+    // v2.6.92: 加载智能片头跳过片段 (TheIntroDB + TMDB 代理)
+    _loadSmartSkipSegmentsForCurrentEpisode();
     // 加载倍速持久化
     _loadPlaybackRate();
     // v2.5.36: 加载弹幕设置 (移植自 SeleneTV SharedPreferences)
@@ -674,6 +685,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     // 进程上滑杀时 OS 给 grace period, 大概率能完成网络写盘
     unawaited(_disposeAndSave());
     _progressTimer?.cancel();
+    _smartSkipCountdownTimer?.cancel();
     _positionPollTimer?.cancel(); // ★ v2.5.65
     _hideControlsTimer?.cancel();
     _seekHintTimer?.cancel();
@@ -889,24 +901,120 @@ class _PlayerScreenState extends State<PlayerScreen>
     } catch (_) {}
   }
 
+  /// 智能跳过片段加载 (结合 TMDB 代理服务与 TheIntroDB 接口)
+  void _loadSmartSkipSegmentsForCurrentEpisode() {
+    _smartSkipCountdownTimer?.cancel();
+    _smartSkipCountdownTimer = null;
+    _activeSmartSegment = null;
+    _dismissedSmartSegmentThisEp = false;
+    _smartSkipSegments = [];
+
+    if (_isCurrentShortDrama) return;
+
+    final epNum = _currentEpisodeIndex + 1;
+    final title = widget.videoInfo.title;
+    SkipSegmentService.getSegments(
+      title: title,
+      episode: epNum,
+    ).then((segments) {
+      if (!mounted) return;
+      if (segments.isNotEmpty) {
+        setState(() {
+          _smartSkipSegments = segments;
+        });
+        debugPrint('[SmartSkip] 智能片头片段就绪: ${segments.length} 个片段 (ep=$epNum)');
+      }
+    }).catchError((e) {
+      debugPrint('[SmartSkip] 加载异常: $e');
+    });
+  }
+
+  /// 触发智能跳过动作
+  void _triggerSmartSkip(SkipSegment seg) {
+    _smartSkipCountdownTimer?.cancel();
+    _smartSkipCountdownTimer = null;
+    setState(() {
+      _activeSmartSegment = null;
+    });
+
+    if (seg.type == SkipSegmentType.outro || seg.type == SkipSegmentType.credits) {
+      final hasNextEpisode = _selectedSource != null &&
+          _currentEpisodeIndex < _selectedSource!.episodes.length - 1;
+      if (hasNextEpisode) {
+        _autoPlayedThisEpisode = true;
+        _playEpisode(_currentEpisodeIndex + 1);
+      }
+    } else {
+      final targetSec = (seg.endMs / 1000).ceil();
+      _player?.seek(Duration(seconds: targetSec));
+    }
+  }
+
+  /// 用户主动取消/关闭本次智能跳过提示
+  void _dismissSmartSkip() {
+    _smartSkipCountdownTimer?.cancel();
+    _smartSkipCountdownTimer = null;
+    setState(() {
+      _dismissedSmartSegmentThisEp = true;
+      _activeSmartSegment = null;
+    });
+  }
+
   /// 根据当前位置更新跳过按钮的显示状态 / v1.0.57 自动 seek / v1.0.58 自动手动二选一
-  ///
-  /// - 自动模式 (_autoSkipIntro/_autoSkipOutro = true): shouldShowIntro/Outro 时自动 seek
-  /// - 手动模式 (默认): shouldShowIntro/Outro 时显示右下角浮层按钮让用户点
-  ///
-  /// v1.0.58 加自动/手动开关: 之前 v1.0.57 强制自动, 但有的源没片头/片尾,
-  /// 自动跳会跳到 _skipIntroEnd / durSec-_skipOutroStart 错误位置
-  /// 默认手动 (跟 v1.0.57 之前一样), 用户主动开自动
-  ///
-  /// v1.0.63 修片尾逻辑: 之前 v1.0.58 seek 到 durSec-_skipOutroStart
-  /// (片尾**开始**位置), 这跟"跳过片尾"语义相反 — 是**倒回**片头不是跳过.
-  /// 正确行为: 在片尾区间触发时, **直接播下一集** (有下集) / 不做任何事
-  /// (最后一集让 _maybeAutoPlayNext 自然触发).
-  ///
-  /// 用户拖动进度条时不自动跳 (避免抢用户操作), 靠 _scrubbingValue 守门
   void _updateSkipButtonVisibility() {
     final posSec = _currentPosition.inSeconds;
     final durSec = _currentDuration.inSeconds;
+
+    // v2.6.92: 智能片头/前情回顾/片尾检测 (TheIntroDB 数据源驱动, 对齐 SeleneTV)
+    if (_smartSkipSegments.isNotEmpty && _scrubbingValue == null) {
+      final posMs = _currentPosition.inMilliseconds;
+      final durMs = _currentDuration.inMilliseconds;
+      SkipSegment? matched;
+      for (final seg in _smartSkipSegments) {
+        final effectiveEnd = seg.endMs > 0 ? seg.endMs : durMs;
+        if (posMs >= seg.startMs && posMs < effectiveEnd) {
+          matched = seg;
+          break;
+        }
+      }
+
+      if (matched != null) {
+        if (!_dismissedSmartSegmentThisEp && _activeSmartSegment != matched) {
+          _activeSmartSegment = matched;
+          _smartSkipCountdownSec = 5;
+          _smartSkipCountdownTimer?.cancel();
+          _smartSkipCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+            if (!mounted || _activeSmartSegment == null) {
+              timer.cancel();
+              return;
+            }
+            if (_smartSkipCountdownSec > 1) {
+              setState(() {
+                _smartSkipCountdownSec--;
+              });
+            } else {
+              timer.cancel();
+              _triggerSmartSkip(_activeSmartSegment!);
+            }
+          });
+          setState(() {});
+        }
+        if (_showSkipIntro || _showSkipOutro) {
+          setState(() {
+            _showSkipIntro = false;
+            _showSkipOutro = false;
+          });
+        }
+        return;
+      } else {
+        if (_activeSmartSegment != null) {
+          _activeSmartSegment = null;
+          _smartSkipCountdownTimer?.cancel();
+          _smartSkipCountdownTimer = null;
+          setState(() {});
+        }
+      }
+    }
     // v2.1.18: 广告重置检测 (一次触发, 整段播放期锁死).
     //   特征: currentTime 从正片位置 (>60s) 突然倒退到接近 0 (<10s).
     //   用户场景: 一集里有 4-5 次广告, 每次广告都从 0 开始播完跳回原位置.
@@ -3918,6 +4026,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       _isBuffering = true;
       _phase = 'playing';
     });
+    // v2.6.92: 加载当前集的智能跳过片段 (TheIntroDB + TMDB 代理)
+    _loadSmartSkipSegmentsForCurrentEpisode();
     // 切集后立即重置并保存新集初始进度 (index=新集), 确保用户哪怕刚切完就退出也能记住新集
     _lastSavedKey = null;
     unawaited(_saveCurrentProgress(force: true));
@@ -7015,10 +7125,81 @@ class _PlayerScreenState extends State<PlayerScreen>
             child: _skipButton(
                 '跳过片尾', const Color(0xFF3B82F6), _skipOutro),
           ),
+        // v2.6.92: 智能片头/前情回顾/片尾倒计时跳过浮层 (对齐 SeleneTV, 倒计时5s自动跳过与手动取消)
+        if (_activeSmartSegment != null)
+          Positioned(
+            right: 16,
+            bottom: _isControlsVisible ? 100 : 36,
+            child: _buildSmartSkipCapsule(),
+          ),
         // 中央双圆快进/快退 (放在最上层, 避免被顶部栏/底部栏/跳过按钮遮挡)
         _buildSideSeekButtons(),
         // v2.3.14: 卸弹幕 overlay (整个弹幕系统删了).
       ],
+    );
+  }
+
+  /// v2.6.92: 智能跳过胶囊浮层 (对齐 SeleneTV, 5秒倒计时自动跳过与取消)
+  Widget _buildSmartSkipCapsule() {
+    final seg = _activeSmartSegment;
+    if (seg == null) return const SizedBox.shrink();
+
+    final label = '${seg.label} ${_smartSkipCountdownSec}s';
+    final isOutro = seg.type == SkipSegmentType.outro || seg.type == SkipSegmentType.credits;
+    final accentColor = isOutro ? const Color(0xFF3B82F6) : kLunaTheme;
+
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        decoration: BoxDecoration(
+          color: const Color(0xE61E293B),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: accentColor.withOpacity(0.65), width: 1.2),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.4),
+              blurRadius: 10,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            InkWell(
+              onTap: () => _triggerSmartSkip(seg),
+              borderRadius: const BorderRadius.horizontal(left: Radius.circular(24)),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.fast_forward_rounded, color: accentColor, size: 18),
+                    const SizedBox(width: 6),
+                    Text(
+                      label,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Container(width: 1, height: 16, color: Colors.white24),
+            InkWell(
+              onTap: _dismissSmartSkip,
+              borderRadius: const BorderRadius.horizontal(right: Radius.circular(24)),
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                child: Icon(Icons.close_rounded, color: Colors.white70, size: 16),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

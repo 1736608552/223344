@@ -79,6 +79,11 @@ export default {
         return await handleGithubApi(request, url, env, corsHeaders)
       }
 
+      // TheIntroDB 片头数据代理
+      if (url.pathname.startsWith('/theintrodb/')) {
+        return await handleTheIntroDb(request, url, corsHeaders)
+      }
+
       // TMDB 图片代理
       if (url.pathname.startsWith('/image/')) {
         return await handleTmdbImage(request, url, corsHeaders)
@@ -219,6 +224,25 @@ async function handleBgmImage(request, url, corsHeaders) {
       ...corsHeaders,
     }
   })
+}
+
+// ===== TheIntroDB 片头数据代理 (api.theintrodb.org) =====
+async function handleTheIntroDb(request, url, corsHeaders) {
+  // /theintrodb/v3/media?... -> https://api.theintrodb.org/v3/media?...
+  const apiPath = url.pathname.replace('/theintrodb', '')
+  const targetUrl = `https://api.theintrodb.org${apiPath}${url.search}`
+  try {
+    const response = await fetch(targetUrl, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'LunaTV-Mobile/2.6',
+      }
+    })
+    return withCors(response, corsHeaders)
+  } catch (err) {
+    return jsonError('TheIntroDB fetch failed: ' + err.message, 502, corsHeaders)
+  }
 }
 
 // ===== 工具函数 =====
