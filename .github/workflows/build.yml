@@ -131,31 +131,9 @@ jobs:
           cat SHA256SUMS.txt
           cd ..
 
-          # 实时生成当前版本的真实发布说明 (优先从 .github/changelogs.json 提取修复日记)
-          python3 -c "
-import json, sys
+          # 实时提取当前版本的真实修复日记生成发布说明 (优先读取 .github/changelogs.json 与 FIXLOG.md)
+          python3 .github/scripts/generate_release_notes.py "${TAG}"
 
-tag = '${TAG}'
-notes = ''
-try:
-    with open('.github/changelogs.json', 'r', encoding='utf-8') as f:
-        data = json.load(f)
-        notes = data.get(tag, '')
-        if not notes:
-            clean_tag = tag[1:] if tag.startswith('v') else tag
-            notes = data.get('v' + clean_tag, '') or data.get(clean_tag, '')
-except Exception as e:
-    print('Failed to read changelogs.json:', e)
-
-if not notes:
-    notes = f'## LunaTV Mobile {tag} 正式版发布\n\n- 智能片头跳过、弹幕与短剧历史全链路优化。'
-
-footer = f'''\n\n### 安装包下载\n- LunaTV-Mobile-{tag}.apk：正式版完整安装包（推荐安装）\n- app-release.apk：直链通用版\n- SHA256SUMS.txt：安装包完整性校验值\n'''
-
-with open('release_notes.md', 'w', encoding='utf-8') as f:
-    f.write(notes.strip() + footer)
-print('release_notes.md generated successfully!')
-"
 
           TITLE="LunaTV Mobile ${TAG}"
 
