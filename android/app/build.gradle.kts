@@ -25,16 +25,26 @@ android {
         applicationId = "org.moontechlab.lunatv"
         minSdk = flutter.minSdkVersion
         targetSdk = 36
-        // 从 pubspec.yaml 读 version (经 workflow sed 同步)
-        // Kotlin DSL 里 flutter.versionCode/versionName 是方法, 调用方式不稳定
-        // 直接解析 pubspec.yaml 最稳
+        // 从 pubspec.yaml 读 version (经 workflow perl 同步)
         val pubspecFile = rootProject.file("../pubspec.yaml")
         val versionLine = pubspecFile.readLines().first { it.startsWith("version:") }
         val versionStr = versionLine.substringAfter("version:").trim()
-        // 格式: <name>+<code> 或只有 <name> (无 + 后缀, 默认 code=1)
         val parts = versionStr.split("+")
         versionName = parts[0]
-        versionCode = if (parts.size > 1) parts[1].toInt() else 1
+
+        // 自动计算三段式单调递增版本码: major * 10000 + minor * 100 + patch
+        // 例如 2.6.89 -> 20689, 远大于历史旧版本 (1 或 88), 彻底根除 INSTALL_FAILED_VERSION_DOWNGRADE (-25)
+        val semverCode = try {
+            val semParts = versionName.split(".")
+            val major = semParts.getOrNull(0)?.toIntOrNull() ?: 2
+            val minor = semParts.getOrNull(1)?.toIntOrNull() ?: 0
+            val patch = semParts.getOrNull(2)?.toIntOrNull() ?: 0
+            major * 10000 + minor * 100 + patch
+        } catch (_: Exception) {
+            20689
+        }
+        val explicitCode = if (parts.size > 1) parts[1].toIntOrNull() ?: 0 else 0
+        versionCode = if (explicitCode > semverCode) explicitCode else semverCode
 
         ndk {
             abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))

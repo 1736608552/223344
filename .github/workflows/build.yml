@@ -69,7 +69,13 @@ jobs:
             BUILD=${TAG#*+}
             perl -i -pe "s/^version: .*/version: $VERSION+$BUILD/" pubspec.yaml
           else
-            perl -i -pe "s/^version: .*/version: $TAG+1/" pubspec.yaml
+            # 保留 pubspec.yaml 中已有的 build code (例如 +20689)，若无则使用三段式计算的 code，杜绝被粗暴改写为 +1
+            CURRENT_CODE=$(grep -E '^version:' pubspec.yaml | sed -n 's/.*+//p' | tr -d '\r\n')
+            if [ -n "$CURRENT_CODE" ]; then
+              perl -i -pe "s/^version: .*/version: $TAG+$CURRENT_CODE/" pubspec.yaml
+            else
+              perl -i -pe "s/^version: .*/version: $TAG+1/" pubspec.yaml
+            fi
           fi
           head -5 pubspec.yaml
 
