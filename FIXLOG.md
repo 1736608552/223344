@@ -1,5 +1,24 @@
 # LunaTV-Mobile 修复日记
 
+## v2.6.97 (2026-10-14)
+
+### 紧急修复 iOS/Android 构建报错 + 完善全自动免签名 IPA 编译打包链路
+
+#### 核心修复与构建加固
+1. **彻底修复 Flutter pub get 插件联邦规范编译报错**：
+   - **错误根因定位**：`plugins/video_player_android/pubspec.yaml` 中配置了 `name: video_player` 且同时包含了 `implements: video_player` 与 `ios: default_package: video_player_avfoundation`。Flutter 工具链判定实现插件（Implementation Package）不得指定默认包，导致两端 `flutter pub get` 均报错中断；
+   - **联邦插件解耦修正**：移除冗余的 `implements: video_player` 声明，正式将该包确立为合法的主接口插件包（App-facing Package），由其原生支撑 Android 端自研 ExoPlayer / CENC 解密，同时将 iOS 端平台实现完美委派给原生的 `video_player_avfoundation`（AVPlayer / AVFoundation），两端完全符合官方规范，顺利通过 `flutter pub get` 与类型检查。
+2. **iOS 免证书无签名（Unsigned IPA）构建参数全链路注入**：
+   - **Xcode Release 配置加固**：在 `ios/Flutter/Release.xcconfig` 中全局注入 `CODE_SIGNING_REQUIRED=NO`、`CODE_SIGNING_ALLOWED=NO` 与 `CODE_SIGN_IDENTITY=""`；
+   - **CocoaPods Podfile 全面免签**：在 `ios/Podfile` 的 `post_install` 钩子中为所有 Pod Targets 批量注入 `CODE_SIGNING_REQUIRED=NO` 与 `CODE_SIGNING_ALLOWED=NO`，并在 `project.pbxproj` 中规避强制 Developer 证书查找，杜绝 CI 阶段因缺失 Apple 团队证书导致的构建报错；
+   - **自动化生成通用 IPA**：macOS 构建机编译生成 `Runner.app` 并通过标准 `Payload/` 目录归档为 `LunaTV-Mobile-v2.6.97-unsigned.ipa`，完美支持 TrollStore（巨魔）直装、AltStore / SideStore 个人免费证书自签与爱思助手电脑重签。
+3. **电视剧片尾跳过与切集双锁保障常驻生效**：
+   - 维持并强化片头与片尾状态全解耦架构（`_hasAutoSkippedIntroThisEp` 与 `_hasAutoSkippedOutroThisEp`）、切集过渡锁（`_isTransitioningEpisode`）与云端 `TheIntroDB` 片尾区间自动拉通，杜绝切集死锁与高频重置。
+4. **版本号与版本码单调递增**：
+   - 版本更新至 `v2.6.97`（versionCode: 20697），确保平滑无缝升级。
+
+---
+
 ## v2.6.96 (2026-10-14)
 
 ### 开启全平台跨越：正式支持苹果 iOS 原生 App 编译与免签名 IPA 交付 + 彻底根除片尾不跳过/切集无反应

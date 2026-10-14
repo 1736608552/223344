@@ -10,7 +10,6 @@ environment:
 
 flutter:
   plugin:
-    implements: video_player
     platforms:
       android:
         dartPluginClass: AndroidVideoPlayer
