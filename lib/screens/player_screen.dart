@@ -918,13 +918,23 @@ class _PlayerScreenState extends State<PlayerScreen>
     });
 
     if (seg.type == SkipSegmentType.outro || seg.type == SkipSegmentType.credits) {
-      final hasNextEpisode = _selectedSource != null &&
-          _currentEpisodeIndex < _selectedSource!.episodes.length - 1;
+      final source = _selectedSource;
+      final hasNextEpisode = source != null &&
+          _currentEpisodeIndex < source.episodes.length - 1;
+
       if (hasNextEpisode) {
         _autoPlayedThisEpisode = true;
         _playEpisode(_currentEpisodeIndex + 1);
         if (!isSilent) {
-          _toast('已跳过片尾，播放下一集');
+          _toast('已跳过片尾，正在播放第 ${_currentEpisodeIndex + 2} 集');
+        }
+      } else {
+        if (!isSilent) {
+          _toast('本剧已是最后一集');
+        }
+        final dur = _currentDuration.inSeconds;
+        if (dur > 0) {
+          _player?.seek(Duration(seconds: dur));
         }
       }
     } else {
@@ -932,7 +942,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (targetSec > 0) {
         _player?.seek(Duration(seconds: targetSec));
         if (!isSilent) {
-          _toast('已跳过片头');
+          _toast('已跳过片头，进入正片');
         }
       }
     }
@@ -985,10 +995,8 @@ class _PlayerScreenState extends State<PlayerScreen>
         final effectiveEnd = seg.endMs > 0 ? seg.endMs : durMs;
         if (posMs >= seg.startMs && posMs < effectiveEnd) {
           if (seg.type == SkipSegmentType.outro || seg.type == SkipSegmentType.credits) {
-            if (hasNextEpisode || durSec - posSec <= 180) {
-              matched = seg;
-              break;
-            }
+            matched = seg;
+            break;
           } else {
             matched = seg;
             break;
@@ -1009,11 +1017,10 @@ class _PlayerScreenState extends State<PlayerScreen>
             endMs: _smartSkipFallbackSec * 1000,
           );
         }
-        // 片尾兜底：距结尾最后 _smartSkipOutroFallbackSec 秒内 (且有下一集)
-        else if (hasNextEpisode &&
-            durSec > 180 &&
+        // 片尾兜底：距结尾最后 _smartSkipOutroFallbackSec 秒内 (无论是否有下一集均可触发提示)
+        else if (durSec > 180 &&
             (durSec - posSec) <= _smartSkipOutroFallbackSec &&
-            (durSec - posSec) >= 2) {
+            (durSec - posSec) >= 0) {
           matched = SkipSegment(
             type: SkipSegmentType.outro,
             startMs: (durSec - _smartSkipOutroFallbackSec) * 1000,
@@ -1023,7 +1030,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       }
     }
 
-    // 3. 状态判定与倒计时调度
+    // 3. 状态判定与倒计时调度 (防抖保护：同一片段区间内严禁重启计时器)
     if (matched != null) {
       if (_dismissedSmartSegmentThisEp) return;
 
@@ -1036,15 +1043,23 @@ class _PlayerScreenState extends State<PlayerScreen>
         return;
       }
 
-      // 处于匹配区间中，激活悬浮胶囊
-      if (_activeSmartSegment != matched) {
+      // 核心防抖判定：如果当前已有激活片段，且类型与起始时间重合，视为同一片段，绝不重新重置倒计时！
+      final isSameSegment = _activeSmartSegment != null &&
+          _activeSmartSegment!.type == matched.type &&
+          (_activeSmartSegment!.startMs - matched.startMs).abs() < 3000;
+
+      if (!isSameSegment) {
         _activeSmartSegment = matched;
         _smartSkipCountdownSec = 5;
         _smartSkipCountdownTimer?.cancel();
 
         if (_smartSkipMode == 'countdown') {
           _smartSkipCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-            if (!mounted || _activeSmartSegment == null) {
+            if (!mounted) {
+              timer.cancel();
+              return;
+            }
+            if (_activeSmartSegment == null) {
               timer.cancel();
               return;
             }
@@ -1052,16 +1067,22 @@ class _PlayerScreenState extends State<PlayerScreen>
               setState(() {
                 _smartSkipCountdownSec--;
               });
+              debugPrint('[SmartSkip] 倒计时跳动: $_smartSkipCountdownSec s');
             } else {
               timer.cancel();
-              _triggerSmartSkip(_activeSmartSegment!);
+              _smartSkipCountdownTimer = null;
+              debugPrint('[SmartSkip] 倒计时归零，自动执行跳过');
+              final segToSkip = _activeSmartSegment;
+              if (segToSkip != null) {
+                _triggerSmartSkip(segToSkip);
+              }
             }
           });
         }
         setState(() {});
       }
     } else {
-      // 走出片头/片尾区间，清理胶囊
+      // 走出片头/片尾区间，清理胶囊与定时器
       if (_activeSmartSegment != null) {
         _activeSmartSegment = null;
         _smartSkipCountdownTimer?.cancel();

@@ -59,4 +59,17 @@ class SkipSegment {
       confidence: (json['confidence'] as num?)?.toDouble() ?? 1.0,
     );
   }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SkipSegment &&
+          runtimeType == other.runtimeType &&
+          type == other.type &&
+          (startMs - other.startMs).abs() < 2000 &&
+          (endMs - other.endMs).abs() < 2000;
+
+  @override
+  int get hashCode => type.hashCode ^ (startMs ~/ 2000) ^ (endMs ~/ 2000);
 }
+
