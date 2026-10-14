@@ -2958,12 +2958,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         _episodesPageController.page?.round() != newPage) {
       _episodesPageController.jumpToPage(newPage);
     }
-    // v2.1.20: 切源时重置广告重置检测 — 之前一源 (可能带广告) 触发的
-    //   _adResetDetected 不该污染新源. _State 不重建 (还是 player_screen),
-    //   必须手动重置, 否则新源/新一集片头也不跳 (用户反馈 "改完片头
-    //   都不跳过了").
-    _adResetDetected = false;
-    _lastPosForAdDetect = -1;
+    // v2.6.93: 切源时重置智能跳过状态
+    _hasAutoSkippedThisEp = false;
+    _dismissedSmartSegmentThisEp = false;
     // v2.6.41: 切集时重置缩放 — 上一集放大了, 新一集不该沿用.
     _videoScale = 1.0;
     _pinchPointers.clear();
@@ -3840,12 +3837,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     // 导致进度同步兜底用错位置 (v2.1.13 起 _lastKnownPosition 只用于进度
     // 同步兜底, 广告跳过逻辑已移除, 不需要清其他字段).
     _lastKnownPosition = Duration.zero;
-    // v2.1.20: 切集时重置广告重置检测 — _State 不重建 (还在 player_screen
-    //   同一个 widget), _adResetDetected 状态不自动清零. 上一集检测到广告
-    //   重置 (4-5 次广告的源) → _adResetDetected=true → 切到新一集片头也
-    //   不跳 (用户反馈). 新一集可能没广告, 必须重新检测.
-    _adResetDetected = false;
-    _lastPosForAdDetect = -1;
+    // v2.6.93: 切集时重置智能跳过状态
+    _hasAutoSkippedThisEp = false;
+    _dismissedSmartSegmentThisEp = false;
     // v2.6.41: 切集时重置缩放 — 上一集放大了, 新一集不该沿用.
     _videoScale = 1.0;
     _pinchPointers.clear();
