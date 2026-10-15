@@ -111,3 +111,11 @@
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
+
+# =========================
+# Hongguo & BouncyCastle
+# =========================
+-keep class org.moontechlab.lunatv.hongguo.** { *; }
+-dontwarn org.moontechlab.lunatv.hongguo.**
+-keep class org.bouncycastle.** { *; }
+
