@@ -1692,7 +1692,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         _danmakuCount = merged.length;
         _danmakuEnabled = true;
         _danmakuSource = 'hongguo';
-        _danmakuSourceTitle = '红果短剧 · $title · 第$epNum集';
+        _danmakuSourceTitle = '短剧 · $title · 第$epNum集';
         _danmakuSelSource = DanmakuSource.hongguo;
         _danmakuSelMediaId = dramaId;
         _danmakuSelMediaTitle = title;

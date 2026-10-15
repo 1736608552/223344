@@ -49,6 +49,20 @@ class MainActivity : FlutterActivity() {
                         }
                     }.start()
                 }
+                "fetchDanmaku" -> {
+                    val seriesId = call.argument<String>("seriesId") ?: ""
+                    val vid = call.argument<String>("vid") ?: ""
+                    val startMs = (call.argument<Number>("startMs")?.toLong()) ?: 0L
+                    val durationMs = (call.argument<Number>("durationMs")?.toLong()) ?: 180000L
+                    Thread {
+                        try {
+                            val res = org.moontechlab.lunatv.hongguo.HongguoStreamResolver.fetchDanmaku(seriesId, vid, startMs, durationMs)
+                            runOnUiThread { result.success(res) }
+                        } catch (e: Exception) {
+                            runOnUiThread { result.error("DANMAKU_ERROR", e.message, null) }
+                        }
+                    }.start()
+                }
                 else -> {
                     result.notImplemented()
                 }

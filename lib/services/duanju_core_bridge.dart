@@ -2119,6 +2119,73 @@ class DuanjuCoreBridge {
       }
     }
 
+    // 通道 0: 官方 App 原生签名真实弹幕通道 (最高优先级，直接打通真实观众弹幕)
+    if (Platform.isAndroid && targetVid.isNotEmpty) {
+      try {
+        const channel = MethodChannel('com.example.lunatv/hongguo_resolver');
+        final totalDur = durationMs > (windowStart + 1000) ? durationMs : (windowStart + 180000);
+        final res = await channel.invokeMethod<Map>('fetchDanmaku', {
+          'seriesId': cleanId,
+          'vid': targetVid,
+          'startMs': windowStart,
+          'durationMs': totalDur,
+        });
+
+        if (res != null && res['items'] is List) {
+          final rows = res['items'] as List;
+          if (rows.isNotEmpty) {
+            final comments = <DanmakuComment>[];
+            for (final row in rows) {
+              if (row is! Map) continue;
+              final text = (row['text'] ?? '').toString().trim();
+              final timeMs = int.tryParse(row['timeMs']?.toString() ?? '') ?? 0;
+              if (text.isEmpty) continue;
+              comments.add(DanmakuComment(
+                timeMs: timeMs,
+                mode: 1,
+                color: 0xFFFFFF,
+                content: formatHongguoDanmakuText(text),
+              ));
+            }
+
+            if (comments.isNotEmpty) {
+              comments.sort((a, b) => a.timeMs.compareTo(b.timeMs));
+              _danmakuCache[windowCacheKey] = comments;
+
+              // 合并至单集全量缓存，严格按毫秒时间戳排序并去重
+              final existing = _episodeDanmakuCache[epCacheKey] ?? [];
+              final merged = <DanmakuComment>[...existing];
+              final existingKeys = existing.map((c) => '${c.timeMs}-${c.content}').toSet();
+              for (final c in comments) {
+                final k = '${c.timeMs}-${c.content}';
+                if (!existingKeys.contains(k)) {
+                  merged.add(c);
+                  existingKeys.add(k);
+                }
+              }
+              merged.sort((a, b) => a.timeMs.compareTo(b.timeMs));
+              _episodeDanmakuCache[epCacheKey] = merged;
+
+              if (kDebugMode) {
+                print('[DuanjuBridge] 成功拉取官方真实观众弹幕: ep=$episode, window=${windowStart}ms, 本窗${comments.length}条, 全集累计${merged.length}条, 首条="${comments.first.content}"');
+              }
+
+              // 若起播（startMs == 0），异步连续预拉取后续窗口，预热全集弹幕
+              if (startMs == 0 && totalDur > 30000) {
+                _preloadRemainingWindows(cleanId, targetVid, episode, totalDur);
+              }
+
+              return comments;
+            }
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('[DuanjuBridge] 官方 App 弹幕签名通道异常: $e');
+        }
+      }
+    }
+
     // 通道 1: 原生 Go 引擎调度 (直接复用视频播放已建立的合法 session)
     if (_isNativeAvailable && targetVid.isNotEmpty) {
       try {
@@ -2201,6 +2268,64 @@ class DuanjuCoreBridge {
     return const [];
   }
 
+  /// 异步预拉取当前集剩余时间窗口的官方弹幕
+  void _preloadRemainingWindows(String seriesId, String vid, int episode, int durationMs) {
+    Future.microtask(() async {
+      try {
+        const channel = MethodChannel('com.example.lunatv/hongguo_resolver');
+        final epCacheKey = '$seriesId-$episode';
+        for (int offset = 30000; offset < durationMs && offset <= 600000; offset += 30000) {
+          final wCacheKey = '$seriesId-$episode-$vid-$offset';
+          if (_danmakuCache.containsKey(wCacheKey) && _danmakuCache[wCacheKey]!.isNotEmpty) {
+            continue;
+          }
+          final res = await channel.invokeMethod<Map>('fetchDanmaku', {
+            'seriesId': seriesId,
+            'vid': vid,
+            'startMs': offset,
+            'durationMs': durationMs,
+          });
+          if (res != null && res['items'] is List) {
+            final rows = res['items'] as List;
+            if (rows.isNotEmpty) {
+              final comments = <DanmakuComment>[];
+              for (final row in rows) {
+                if (row is! Map) continue;
+                final text = (row['text'] ?? '').toString().trim();
+                final timeMs = int.tryParse(row['timeMs']?.toString() ?? '') ?? 0;
+                if (text.isEmpty) continue;
+                comments.add(DanmakuComment(
+                  timeMs: timeMs,
+                  mode: 1,
+                  color: 0xFFFFFF,
+                  content: formatHongguoDanmakuText(text),
+                ));
+              }
+              if (comments.isNotEmpty) {
+                comments.sort((a, b) => a.timeMs.compareTo(b.timeMs));
+                _danmakuCache[wCacheKey] = comments;
+                final existing = _episodeDanmakuCache[epCacheKey] ?? [];
+                final merged = <DanmakuComment>[...existing];
+                final existingKeys = existing.map((c) => '${c.timeMs}-${c.content}').toSet();
+                for (final c in comments) {
+                  final k = '${c.timeMs}-${c.content}';
+                  if (!existingKeys.contains(k)) {
+                    merged.add(c);
+                    existingKeys.add(k);
+                  }
+                }
+                merged.sort((a, b) => a.timeMs.compareTo(b.timeMs));
+                _episodeDanmakuCache[epCacheKey] = merged;
+              }
+            }
+          }
+          // 适度防抖
+          await Future.delayed(const Duration(milliseconds: 150));
+        }
+      } catch (_) {}
+    });
+  }
+
   /// 获取红果短剧单集全量弹幕 (对齐红果鉴)
   Future<List<DanmakuComment>> fetchHongguoDanmaku({
     required String seriesId,
@@ -2209,6 +2334,10 @@ class DuanjuCoreBridge {
     int durationMs = 180000,
     String title = '',
   }) async {
+    final epCacheKey = '${cleanSeriesId(seriesId)}-$episode';
+    if (_episodeDanmakuCache.containsKey(epCacheKey) && _episodeDanmakuCache[epCacheKey]!.isNotEmpty) {
+      return _episodeDanmakuCache[epCacheKey]!;
+    }
     return await fetchHongguoDanmakuWindow(
       seriesId: seriesId,
       vid: vid,
