@@ -1030,8 +1030,12 @@ class DuanjuCoreBridge {
 
   final Map<String, DuanjuPlaybackPlan> _planCache = {};
   final Map<String, List<DanmakuComment>> _danmakuCache = {};
+  final Map<String, List<DanmakuComment>> _episodeDanmakuCache = {};
   final Map<String, String> _danmakuSessionMap = {};
   final Map<String, String> _dramaTitleCache = {};
+  int _playbackSequence = 0;
+  int _danmakuSequence = 0;
+  final String _readOwner = 'luna-read-${DateTime.now().microsecondsSinceEpoch}';
 
   /// 注册短剧剧名缓存 (供弹幕智能情境生成和历史检索使用)
   void registerDramaTitle(String seriesId, String title) {
@@ -1760,10 +1764,21 @@ class DuanjuCoreBridge {
     final actualVid = vid.isNotEmpty ? vid : '';
     final windowStart = (startMs ~/ 30000) * 30000;
     final windowEnd = windowStart + 30000;
-    final cacheKey = '$cleanId-$episode-$actualVid-$windowStart';
+    final epCacheKey = '$cleanId-$episode';
+    final windowCacheKey = '$cleanId-$episode-$actualVid-$windowStart';
 
-    if (_danmakuCache.containsKey(cacheKey) && _danmakuCache[cacheKey] != null) {
-      return _danmakuCache[cacheKey]!;
+    // 0. 优先命中当前集已拉取的全集弹幕内存缓存
+    if (_episodeDanmakuCache.containsKey(epCacheKey) && _episodeDanmakuCache[epCacheKey]!.isNotEmpty) {
+      final all = _episodeDanmakuCache[epCacheKey]!;
+      if (startMs == 0 && (durationMs <= 0 || durationMs >= 60000)) {
+        return all;
+      }
+      final windowed = all.where((c) => c.timeMs >= windowStart && c.timeMs < windowEnd).toList();
+      return windowed.isNotEmpty ? windowed : all;
+    }
+
+    if (_danmakuCache.containsKey(windowCacheKey) && _danmakuCache[windowCacheKey] != null && _danmakuCache[windowCacheKey]!.isNotEmpty) {
+      return _danmakuCache[windowCacheKey]!;
     }
 
     String targetVid = actualVid;
@@ -1775,46 +1790,78 @@ class DuanjuCoreBridge {
       }
     }
 
-    // 通道 1: 原生 Go 引擎调度 (libduanju_core.so，带着红果官方设备注册与X-Gorgon签名)
+    // 通道 1: 原生 Go 引擎调度 (对齐红果鉴：先 detail 激活元数据，再 resolve 建立会话，最后 danmaku 拉取)
     if (_isNativeAvailable && targetVid.isNotEmpty) {
       try {
         await ensureInitialized();
-        String? session = _danmakuSessionMap['$cleanId-$episode'];
+        String? session = _danmakuSessionMap[epCacheKey];
         if (session == null || session.isEmpty) {
+          // 步骤 A: 优先通过 detail 获取官方原生 chapters，确保 Go 核心 client.details 缓存初始化
+          Map<String, dynamic>? rawChapter;
+          Map<String, dynamic>? rawDrama;
+          try {
+            final detailRes = await invokeNative('detail', {
+              'drama': {
+                'id': 'hongguo:$cleanId',
+                'source': 'hongguo',
+                'title': actualTitle.isNotEmpty ? actualTitle : '短剧',
+              },
+            });
+            if (detailRes != null && detailRes['ok'] == true && detailRes['data'] is Map) {
+              final dData = detailRes['data'] as Map;
+              if (dData['drama'] is Map) {
+                rawDrama = Map<String, dynamic>.from(dData['drama'] as Map);
+              }
+              final rawChs = dData['chapters'];
+              if (rawChs is List && rawChs.isNotEmpty) {
+                final idx = (episode - 1).clamp(0, rawChs.length - 1);
+                if (rawChs[idx] is Map) {
+                  rawChapter = Map<String, dynamic>.from(rawChs[idx] as Map);
+                }
+              }
+            }
+          } catch (e) {
+            if (kDebugMode) {
+              print('[DuanjuBridge] detail 获取原生分集异常: $e');
+            }
+          }
+
+          // 步骤 B: 调用 resolve 建立播放与弹幕会话
           final resolveRes = await invokeNative('resolve', {
-            'drama': {
+            'drama': rawDrama ?? {
               'id': 'hongguo:$cleanId',
               'source': 'hongguo',
               'title': actualTitle.isNotEmpty ? actualTitle : '短剧',
             },
-            'chapter': {
+            'chapter': rawChapter ?? {
               'id': 'hongguo:$cleanId:$targetVid',
               'source': 'hongguo',
               'title': '第$episode集',
               'videoUrl': 'hongguo-cenc://$targetVid',
-              'video_url': 'hongguo-cenc://$targetVid',
               'currentEpisode': episode,
-              'current_episode': '$episode',
             },
             'index': episode,
             'quality': 0,
-            'sequence': DateTime.now().microsecondsSinceEpoch,
+            'sequence': ++_playbackSequence,
           });
+
           if (resolveRes != null && resolveRes['ok'] == true && resolveRes['data'] is Map) {
             session = resolveRes['data']['session']?.toString();
             if (session != null && session.isNotEmpty) {
-              _danmakuSessionMap['$cleanId-$episode'] = session;
+              _danmakuSessionMap[epCacheKey] = session;
             }
+          } else if (kDebugMode) {
+            print('[DuanjuBridge] resolve 响应: $resolveRes');
           }
         }
 
         if (session != null && session.isNotEmpty) {
           final totalDur = durationMs > (windowStart + 1000) ? durationMs : (windowStart + 180000);
           final res = await invokeNative('danmaku', {
-            'session': 'reader:danmaku:$cleanId:$episode',
-            'sequence': DateTime.now().microsecondsSinceEpoch,
+            'session': '$_readOwner:danmaku',
+            'sequence': ++_danmakuSequence,
             'playbackSession': session,
-            'startMs': windowStart,
+            'startMs': 0, // 一次性拉取整集真实弹幕
             'durationMs': totalDur,
           });
 
@@ -1828,25 +1875,43 @@ class DuanjuCoreBridge {
                 final text = (row['text'] ?? '').toString().trim();
                 final timeMs = int.tryParse(row['timeMs']?.toString() ?? '') ?? 0;
                 if (text.isEmpty) continue;
-                if (timeMs >= windowStart && timeMs < windowEnd) {
-                  comments.add(DanmakuComment(
-                    timeMs: timeMs,
-                    mode: 1,
-                    color: 0xFFFFFF,
-                    content: formatHongguoDanmakuText(text),
-                  ));
-                }
+                comments.add(DanmakuComment(
+                  timeMs: timeMs,
+                  mode: 1,
+                  color: 0xFFFFFF,
+                  content: formatHongguoDanmakuText(text),
+                ));
               }
+
               if (comments.isNotEmpty) {
-                _danmakuCache[cacheKey] = comments;
-                return comments;
+                comments.sort((a, b) => a.timeMs.compareTo(b.timeMs));
+                _episodeDanmakuCache[epCacheKey] = comments;
+                _danmakuCache[windowCacheKey] = comments;
+
+                if (kDebugMode) {
+                  print('[DuanjuBridge] 成功拉取红果官方真实弹幕: ep=$episode, 共${comments.length}条, 首条="${comments.first.content}"');
+                }
+
+                // 起播或全集请求直接返回整集真实弹幕
+                if (startMs == 0 && (durationMs <= 0 || durationMs >= 60000)) {
+                  return comments;
+                }
+                final windowed = comments.where((c) => c.timeMs >= windowStart && c.timeMs < windowEnd).toList();
+                return windowed.isNotEmpty ? windowed : comments;
               }
+            }
+          } else {
+            // 若 session 失效，清空以允许下次重试
+            _danmakuSessionMap.remove(epCacheKey);
+            if (kDebugMode) {
+              print('[DuanjuBridge] danmaku 请求失败: $res');
             }
           }
         }
       } catch (e) {
+        _danmakuSessionMap.remove(epCacheKey);
         if (kDebugMode) {
-          print('[DuanjuBridge] 原生短剧弹幕窗口调度异常: $e');
+          print('[DuanjuBridge] 原生短剧弹幕调度异常: $e');
         }
       }
     }
@@ -1856,21 +1921,18 @@ class DuanjuCoreBridge {
       try {
         final webComments = await _fetchHongguoDanmakuWebFallback(cleanId, targetVid, durationMs);
         if (webComments.isNotEmpty) {
+          _episodeDanmakuCache[epCacheKey] = webComments;
           final windowed = webComments.where((c) => c.timeMs >= windowStart && c.timeMs < windowEnd).toList();
-          if (windowed.isNotEmpty) {
-            _danmakuCache[cacheKey] = windowed;
-            return windowed;
-          }
+          return windowed.isNotEmpty ? windowed : webComments;
         }
       } catch (_) {}
     }
 
     // 严禁塞入胡编乱造的模板假弹幕，保持真实纯净空态
-    _danmakuCache[cacheKey] = const [];
     return const [];
   }
 
-  /// 获取红果短剧全集弹幕 (兼容接口)
+  /// 获取红果短剧单集全量弹幕 (对齐红果鉴)
   Future<List<DanmakuComment>> fetchHongguoDanmaku({
     required String seriesId,
     required String vid,
@@ -1878,8 +1940,7 @@ class DuanjuCoreBridge {
     int durationMs = 180000,
     String title = '',
   }) async {
-    // 默认加载起播前两个窗口 (0~60秒)，按需平滑加载
-    final list1 = await fetchHongguoDanmakuWindow(
+    return await fetchHongguoDanmakuWindow(
       seriesId: seriesId,
       vid: vid,
       episode: episode,
@@ -1887,17 +1948,6 @@ class DuanjuCoreBridge {
       durationMs: durationMs,
       title: title,
     );
-    final list2 = await fetchHongguoDanmakuWindow(
-      seriesId: seriesId,
-      vid: vid,
-      episode: episode,
-      startMs: 30000,
-      durationMs: durationMs,
-      title: title,
-    );
-    final combined = [...list1, ...list2];
-    combined.sort((a, b) => a.timeMs.compareTo(b.timeMs));
-    return combined;
   }
 
   /// 官方网页端弹幕数据提取通道兜底

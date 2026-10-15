@@ -1658,6 +1658,9 @@ class _PlayerScreenState extends State<PlayerScreen>
 
       final windowKey = (startMs ~/ _kDanmakuWindowMs) * _kDanmakuWindowMs;
       _loadedDanmakuWindows.add(windowKey);
+      if (startMs == 0 && comments.isNotEmpty) {
+        _loadedDanmakuWindows.addAll([0, 30000, 60000, 90000, 120000, 150000, 180000]);
+      }
 
       // 合并并去重，严格按毫秒时间戳排序
       final merged = <DanmakuComment>[..._danmakuComments];
@@ -1682,7 +1685,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (!auto && startMs == 0) {
         _toast('弹幕 · 红果短剧 · 第$epNum集 · ${merged.length}条');
       }
-      await DiaryService.add('[短剧弹幕] 成功载入窗口[$startMs]: ${comments.length}条 (当前总计${merged.length}条)');
+      await DiaryService.add('[短剧弹幕] 成功载入第$epNum集官方真实弹幕: ${comments.length}条 (当前总计${merged.length}条, 首条: "${merged.firstOrNull?.content}")');
     } catch (e) {
       if (!mounted) return;
       if (!auto && startMs == 0) _toast('短剧弹幕加载失败');
