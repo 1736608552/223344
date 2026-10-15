@@ -1033,8 +1033,8 @@ class DuanjuCoreBridge {
   final Map<String, List<DanmakuComment>> _episodeDanmakuCache = {};
   final Map<String, String> _danmakuSessionMap = {};
   final Map<String, String> _dramaTitleCache = {};
-  int _playbackSequence = 0;
-  int _danmakuSequence = 0;
+  static int _globalSequence = DateTime.now().microsecondsSinceEpoch;
+  static int _nextSequence() => ++_globalSequence;
   final String _readOwner = 'luna-read-${DateTime.now().microsecondsSinceEpoch}';
 
   /// 注册短剧剧名缓存 (供弹幕智能情境生成和历史检索使用)
@@ -1124,6 +1124,18 @@ class DuanjuCoreBridge {
     if (_isNativeAvailable && vid.isNotEmpty) {
       try {
         await ensureInitialized();
+        // 步骤 A: 预热 detail，激活 Go 核心 client.details 缓存
+        try {
+          await invokeNative('detail', {
+            'drama': {
+              'id': 'hongguo:$cleanId',
+              'source': 'hongguo',
+              'title': '短剧',
+            },
+          });
+        } catch (_) {}
+
+        // 步骤 B: 独占调用 resolve 建立视频流播放与解密会话
         final nativeRes = await invokeNative('resolve', {
           'drama': {
             'id': 'hongguo:$cleanId',
@@ -1141,7 +1153,7 @@ class DuanjuCoreBridge {
           },
           'index': episode,
           'quality': quality,
-          'sequence': DateTime.now().millisecondsSinceEpoch,
+          'sequence': _nextSequence(),
         });
 
         if (nativeRes != null && nativeRes['ok'] == true) {
@@ -1149,6 +1161,10 @@ class DuanjuCoreBridge {
           if (data is Map) {
             final nativeUrl = data['url']?.toString();
             final decKey = data['decryptionKey']?.toString() ?? data['key']?.toString() ?? '';
+            final session = data['session']?.toString() ?? '';
+            if (session.isNotEmpty) {
+              _danmakuSessionMap['$cleanId-$episode'] = session;
+            }
             final dynamic rawQualities = data['qualities'];
             final qualities = (rawQualities is List)
                 ? rawQualities.map((e) => int.tryParse(e.toString()) ?? 0).where((q) => q > 0).toList()
@@ -1790,76 +1806,16 @@ class DuanjuCoreBridge {
       }
     }
 
-    // 通道 1: 原生 Go 引擎调度 (对齐红果鉴：先 detail 激活元数据，再 resolve 建立会话，最后 danmaku 拉取)
+    // 通道 1: 原生 Go 引擎调度 (直接复用视频播放已建立的合法 session)
     if (_isNativeAvailable && targetVid.isNotEmpty) {
       try {
         await ensureInitialized();
-        String? session = _danmakuSessionMap[epCacheKey];
-        if (session == null || session.isEmpty) {
-          // 步骤 A: 优先通过 detail 获取官方原生 chapters，确保 Go 核心 client.details 缓存初始化
-          Map<String, dynamic>? rawChapter;
-          Map<String, dynamic>? rawDrama;
-          try {
-            final detailRes = await invokeNative('detail', {
-              'drama': {
-                'id': 'hongguo:$cleanId',
-                'source': 'hongguo',
-                'title': actualTitle.isNotEmpty ? actualTitle : '短剧',
-              },
-            });
-            if (detailRes != null && detailRes['ok'] == true && detailRes['data'] is Map) {
-              final dData = detailRes['data'] as Map;
-              if (dData['drama'] is Map) {
-                rawDrama = Map<String, dynamic>.from(dData['drama'] as Map);
-              }
-              final rawChs = dData['chapters'];
-              if (rawChs is List && rawChs.isNotEmpty) {
-                final idx = (episode - 1).clamp(0, rawChs.length - 1);
-                if (rawChs[idx] is Map) {
-                  rawChapter = Map<String, dynamic>.from(rawChs[idx] as Map);
-                }
-              }
-            }
-          } catch (e) {
-            if (kDebugMode) {
-              print('[DuanjuBridge] detail 获取原生分集异常: $e');
-            }
-          }
-
-          // 步骤 B: 调用 resolve 建立播放与弹幕会话
-          final resolveRes = await invokeNative('resolve', {
-            'drama': rawDrama ?? {
-              'id': 'hongguo:$cleanId',
-              'source': 'hongguo',
-              'title': actualTitle.isNotEmpty ? actualTitle : '短剧',
-            },
-            'chapter': rawChapter ?? {
-              'id': 'hongguo:$cleanId:$targetVid',
-              'source': 'hongguo',
-              'title': '第$episode集',
-              'videoUrl': 'hongguo-cenc://$targetVid',
-              'currentEpisode': episode,
-            },
-            'index': episode,
-            'quality': 0,
-            'sequence': ++_playbackSequence,
-          });
-
-          if (resolveRes != null && resolveRes['ok'] == true && resolveRes['data'] is Map) {
-            session = resolveRes['data']['session']?.toString();
-            if (session != null && session.isNotEmpty) {
-              _danmakuSessionMap[epCacheKey] = session;
-            }
-          } else if (kDebugMode) {
-            print('[DuanjuBridge] resolve 响应: $resolveRes');
-          }
-        }
-
+        final session = _danmakuSessionMap[epCacheKey];
         if (session != null && session.isNotEmpty) {
           final totalDur = durationMs > (windowStart + 1000) ? durationMs : (windowStart + 180000);
           final res = await invokeNative('danmaku', {
             'session': '$_readOwner:danmaku',
-            'sequence': ++_danmakuSequence,
+            'sequence': _nextSequence(),
             'playbackSession': session,
             'startMs': 0, // 一次性拉取整集真实弹幕
             'durationMs': totalDur,

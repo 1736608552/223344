@@ -1769,7 +1769,9 @@ class _PlayerScreenState extends State<PlayerScreen>
           _danmakuEnabled = true;
         }
       });
-      unawaited(_loadShortDramaDanmaku(auto: true));
+      if (_phase == 'playing') {
+        unawaited(_loadShortDramaDanmaku(auto: true));
+      }
       return;
     }
 
@@ -3960,6 +3962,7 @@ class _PlayerScreenState extends State<PlayerScreen>
 
       if (duanjuPlan != null && duanjuPlan.url.isNotEmpty) {
         actualSourceUrl = duanjuPlan.url;
+        unawaited(_loadShortDramaDanmaku(auto: true));
         if (index < source.episodes.length) {
           source.episodes[index] = duanjuPlan.url;
         }
@@ -4027,6 +4030,20 @@ class _PlayerScreenState extends State<PlayerScreen>
             }
           }
         }
+      }
+    }
+
+    // 绝对安全防线：若尚未成功解析为 http 直链，尝试进行短剧专属强制重试
+    if (!actualSourceUrl.startsWith('http') && isShortDrama) {
+      final dramaId = source.id.isNotEmpty ? source.id : widget.videoInfo.id;
+      final retryPlan = await DuanjuCoreBridge.instance.getPlaybackPlan(
+        dramaId: dramaId,
+        episode: index + 1,
+      );
+      if (retryPlan != null && retryPlan.url.startsWith('http')) {
+        actualSourceUrl = retryPlan.url;
+        duanjuPlan = retryPlan;
+        unawaited(_loadShortDramaDanmaku(auto: true));
       }
     }
 
