@@ -15,7 +15,7 @@ import 'user_data_service.dart';
 class SkipSegmentService {
   static const String _theIntroDbHost = 'https://api.theintrodb.org';
   static const String _introDbAppHost = 'https://api.introdb.app';
-  static const Duration _timeout = Duration(seconds: 4);
+  static const Duration _timeout = Duration(seconds: 7);
 
   // 内存 LRU / 快速缓存
   static final Map<String, List<SkipSegment>> _memoryCache = {};
@@ -160,7 +160,6 @@ class SkipSegmentService {
     return results;
   }
 
-  static const Duration _timeout = Duration(seconds: 7);
   static const Map<String, String> _browserHeaders = {
     'Accept': 'application/json',
     'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
