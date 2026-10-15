@@ -9,7 +9,7 @@
 | 平台 | 状态 | 说明 |
 |---|---|---|
 | Android | ✅ | 主目标, GitHub Actions 自动出 APK 发 Release |
-| iOS | ✅ | GitHub Actions 自动出  |
+| iOS | ✅ | GitHub Actions 自动出 ipa 发 Release |
 
 ## 主要功能
 
