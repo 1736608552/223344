@@ -66,11 +66,13 @@ class SkipSegmentService {
   /// [episode]: 单集序号 (从 1 开始, 如第 1 集为 1)
   /// [year]: 选填年份
   /// [customSeason]: 可手动指定季数
+  /// [durationMs]: 可选当前视频流总时长 (毫秒)，传入后 TheIntroDB 会进行压制/剪辑版精准自适应匹配
   static Future<List<SkipSegment>> getSegments({
     required String title,
     required int episode,
     int? year,
     int? customSeason,
+    int? durationMs,
   }) async {
     final info = parseTitleAndSeason(title);
     final cleanTitle = info.cleanTitle;
@@ -78,7 +80,9 @@ class SkipSegmentService {
 
     if (cleanTitle.isEmpty || episode <= 0) return const [];
 
-    final cacheKey = 'skip_seg_${cleanTitle}_${season}_$episode';
+    final cacheKey = durationMs != null && durationMs > 0
+        ? 'skip_seg_${cleanTitle}_${season}_${episode}_${durationMs ~/ 10000}'
+        : 'skip_seg_${cleanTitle}_${season}_$episode';
 
     // 1. 检查内存缓存
     if (_memoryCache.containsKey(cacheKey)) {
@@ -116,11 +120,11 @@ class SkipSegmentService {
       return const [];
     }
 
-    DiaryService.add('[SkipSegment] 命中 TMDB: id=$tmdbId, type=$mediaType, season=$season, ep=$episode');
+    DiaryService.add('[SkipSegment] 命中 TMDB: id=$tmdbId, type=$mediaType, season=$season, ep=$episode, dur=${durationMs != null ? "${durationMs ~/ 1000}s" : "null"}');
 
     // 4. 双轨请求 (TheIntroDB 主源 + IntroDB.app 备用源，对齐 SeleneTV lt1.smali)
     final results = <SkipSegment>[];
-    final theIntroFuture = _fetchFromTheIntroDb(tmdbId, season, episode);
+    final theIntroFuture = _fetchFromTheIntroDb(tmdbId, season, episode, durationMs: durationMs);
     final imdbIdFuture = TmdbService.fetchImdbId(id: tmdbId, mediaType: mediaType);
 
     // 4.1 主源结果
@@ -166,8 +170,16 @@ class SkipSegmentService {
   };
 
   /// 请求 TheIntroDB 接口 (严格经过软件设置里的代理, 失败则直连兜底)
-  static Future<List<SkipSegment>> _fetchFromTheIntroDb(int tmdbId, int season, int episode) async {
-    final path = '/v3/media?tmdb_id=$tmdbId&season=$season&episode=$episode';
+  static Future<List<SkipSegment>> _fetchFromTheIntroDb(
+    int tmdbId,
+    int season,
+    int episode, {
+    int? durationMs,
+  }) async {
+    var path = '/v3/media?tmdb_id=$tmdbId&season=$season&episode=$episode';
+    if (durationMs != null && durationMs > 0) {
+      path += '&duration_ms=$durationMs';
+    }
     final directUrl = '$_theIntroDbHost$path';
 
     final source = UserDataService.getTmdbDataSourceSync();

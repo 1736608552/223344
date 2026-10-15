@@ -14,15 +14,34 @@ class SkipSegment {
   final int startMs;
   final int endMs;
   final double confidence;
+  final bool isSuspectedTrimmed; // 是否疑似为已被剪掉片头片尾的剪辑源
 
   const SkipSegment({
     required this.type,
     required this.startMs,
     required this.endMs,
     this.confidence = 1.0,
+    this.isSuspectedTrimmed = false,
   });
 
+  SkipSegment copyWith({
+    SkipSegmentType? type,
+    int? startMs,
+    int? endMs,
+    double? confidence,
+    bool? isSuspectedTrimmed,
+  }) => SkipSegment(
+    type: type ?? this.type,
+    startMs: startMs ?? this.startMs,
+    endMs: endMs ?? this.endMs,
+    confidence: confidence ?? this.confidence,
+    isSuspectedTrimmed: isSuspectedTrimmed ?? this.isSuspectedTrimmed,
+  );
+
   String get label {
+    if (isSuspectedTrimmed && (type == SkipSegmentType.intro || type == SkipSegmentType.recap)) {
+      return '跳过片头 (疑似已剪切)';
+    }
     switch (type) {
       case SkipSegmentType.intro:
         return '跳过片头';
@@ -41,6 +60,7 @@ class SkipSegment {
     'start_ms': startMs,
     'end_ms': endMs,
     'confidence': confidence,
+    'is_suspected_trimmed': isSuspectedTrimmed,
   };
 
   factory SkipSegment.fromJson(Map<String, dynamic> json) {
@@ -57,6 +77,7 @@ class SkipSegment {
       startMs: (json['start_ms'] as num?)?.toInt() ?? 0,
       endMs: (json['end_ms'] as num?)?.toInt() ?? 0,
       confidence: (json['confidence'] as num?)?.toDouble() ?? 1.0,
+      isSuspectedTrimmed: json['is_suspected_trimmed'] as bool? ?? false,
     );
   }
 
