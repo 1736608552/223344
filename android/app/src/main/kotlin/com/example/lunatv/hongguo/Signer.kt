@@ -157,37 +157,62 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         return (le32(random) + output.toByteArray()).base64()
     }
     fun sign(base: String, values: Map<String, String>, body: ByteArray? = null): Request {
-        val ts = (clock() / 1000).toInt()
-        val ticketBase = clock()
-        var ticket = ticketBase
+        val now = clock()
+        val ts = (now / 1000).toInt()
+        var ticket = now
         var query = ""
-        for (offset in 0 until 32) {
-            ticket = ticketBase + offset
-            query = (values + ("ts" to ts.toString()) + ("_rticket" to ticket.toString())).map { (k, v) ->
-                "${URLEncoder.encode(k, "UTF-8").replace("+", "%20")}=${URLEncoder.encode(v, "UTF-8").replace("+", "%20").replace("*", "%2A")}"
-            }.joinToString("&")
-            if (branch(query, body, ts) == 0) break
+        var found = false
+        // 阶段 1: 0..127 递增偏移抖动锁定 Branch 0
+        for (offset in 0..127) {
+            ticket = now + offset
+            query = encode(values + mapOf("ts" to ts.toString(), "_rticket" to ticket.toString()))
+            if (branch(query, body, ts) == 0) {
+                found = true
+                break
+            }
         }
-        val random = rand() and 0xffff
+        // 阶段 2: 极低概率兜底，随机抖动直到 100% 命中 Branch 0 (消除服务端拒签与Unsupported hash branch)
+        if (!found) {
+            for (retry in 0..255) {
+                ticket = now + 128 + (random() * 20000).toLong()
+                query = encode(values + mapOf("ts" to ts.toString(), "_rticket" to ticket.toString()))
+                if (branch(query, body, ts) == 0) {
+                    found = true
+                    break
+                }
+            }
+        }
+        val random = (random() * 65536).toInt()
+        val url = "$base?$query"
         val headers = linkedMapOf(
-            "User-Agent" to VendorConstants.VIDEO_UA,
+            "User-Agent" to (if (body != null) VendorConstants.VIDEO_UA else VendorConstants.APP_UA),
             "Accept" to "application/json; charset=utf-8,application/x-protobuf",
-            "Content-Type" to "application/json; charset=UTF-8",
-            "x-xs-from-web" to "0",
             "x-ss-req-ticket" to ticket.toString(),
             "x-tt-request-tag" to "t=0;n=0",
             "sdk-version" to "2",
             "passport-sdk-version" to "50561",
-            "x-vc-bdturing-sdk-version" to "3.7.2.cn",
-            "x-ss-stub" to (body?.let { digest("MD5", it).hex().uppercase() } ?: ""),
-            "x-gorgon" to gorgon(query, body, ts, random),
+            "x-xs-from-web" to "0",
             "x-khronos" to ts.toString(),
             "x-ladon" to be32(ts).base64(),
             "x-argus" to le32(ts).base64(),
+            "x-gorgon" to gorgon(query, body, ts, random),
             "x-helios" to helios(ts),
             "x-medusa" to medusa(query, body, ts, rand()),
             "x-tt-dt" to ""
         )
-        return Request("$base?$query", headers, body)
+        if (body != null) {
+            headers["Content-Type"] = "application/json; charset=UTF-8"
+            headers["x-vc-bdturing-sdk-version"] = "3.7.2.cn"
+            headers["x-ss-stub"] = digest("MD5", body).hex().uppercase()
+        }
+        return Request(url, headers, body)
+    }
+
+    companion object {
+        fun encode(values: Map<String, String>): String =
+            values.entries.joinToString("&") { (k, v) -> "${encode(k)}=${encode(v)}" }
+
+        fun encode(value: String): String =
+            URLEncoder.encode(value, "UTF-8").replace("+", "%20").replace("%7E", "~").replace("*", "%2A")
     }
 }

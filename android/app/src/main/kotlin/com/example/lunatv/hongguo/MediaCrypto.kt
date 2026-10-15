@@ -3,20 +3,63 @@ package org.moontechlab.lunatv.hongguo
 
 object MediaCrypto {
     fun deriveKey(value: String): ByteArray {
-        val raw = decode64(value)
-        require(raw.size >= 3) { "内容密钥格式异常" }
-        val length = minOf(raw.size - (raw[0].u() xor raw[1].u() xor raw[2].u()) + 47, raw.size - 1)
-        require(length >= 33)
-        val work = raw.copyOfRange(1, 1 + length)
-        var a = 85
-        var b = 246
-        for (i in work.indices) {
-            val old = work[i].u()
-            val previous = if (i and 1 != 0) a else b
-            if (i and 1 != 0) a = old else b = old
-            work[i] = (-21 - Integer.bitCount(i) + (previous xor old)).toByte()
+        val hexStr = deriveKeyHex(value)
+        require(hexStr.isNotEmpty()) { "内容密钥解析失败" }
+        return hex(hexStr)
+    }
+
+    fun deriveKeyHex(value: String): String {
+        val clean = value.trim()
+        if (clean.isEmpty()) return ""
+        val raw = try {
+            decode64(clean)
+        } catch (_: Exception) {
+            return ""
         }
-        return hex(String(work.copyOfRange(1, 33), Charsets.US_ASCII)).also { require(it.size == 16) }
+        if (raw.size < 3) return ""
+
+        // 尝试主派生算法 (对齐官方标准实现)
+        try {
+            val length = minOf(raw.size - (raw[0].u() xor raw[1].u() xor raw[2].u()) + 47, raw.size - 1)
+            if (length >= 33) {
+                val work = raw.copyOfRange(1, 1 + length)
+                var a = 85
+                var b = 246
+                for (i in work.indices) {
+                    val old = work[i].u()
+                    val previous = if (i and 1 != 0) a else b
+                    if (i and 1 != 0) a = old else b = old
+                    work[i] = (-21 - Integer.bitCount(i) + (previous xor old)).toByte()
+                }
+                val hexCandidate = String(work.copyOfRange(1, 33), Charsets.US_ASCII)
+                if (hexCandidate.matches(Regex("^[0-9a-fA-F]{32}$"))) {
+                    return hexCandidate.lowercase()
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 尝试备用派生算法 (变体兼容)
+        try {
+            val tagLen = (raw[0].u() xor raw[1].u() xor raw[2].u()) - 48
+            val contentLen = raw.size - tagLen - 1
+            if (tagLen in 1 until raw.size && contentLen >= 33) {
+                val decoded = ByteArray(contentLen)
+                var prevEven = 250
+                var prevOdd = 85
+                for (i in 0 until contentLen) {
+                    val cur = raw[1 + i].u()
+                    val prev = if (i % 2 == 0) prevEven else prevOdd
+                    if (i % 2 == 0) prevEven = cur else prevOdd = cur
+                    decoded[i] = ((prev xor cur) - 21 - Integer.bitCount(i)).toByte()
+                }
+                val hexCandidate = String(decoded.copyOfRange(1, 33), Charsets.US_ASCII)
+                if (hexCandidate.matches(Regex("^[0-9a-fA-F]{32}$"))) {
+                    return hexCandidate.lowercase()
+                }
+            }
+        } catch (_: Exception) {}
+
+        return ""
     }
 
     fun decryptUrl(value: String, seed: ByteArray): String {

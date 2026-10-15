@@ -4214,9 +4214,10 @@ class _PlayerScreenState extends State<PlayerScreen>
       //   (见 exo_player_backend.dart open()), Dart 端传 startAt 即可.
       //   保留 verify + 重试 seek 兜底, 万一 open() 内 seek 失败.
       final dramaId = source.id.isNotEmpty ? source.id : widget.videoInfo.id;
-      final decKey = duanjuPlan?.decryptionKey.isNotEmpty == true
-          ? duanjuPlan!.decryptionKey
-          : (isShortDrama ? DuanjuCoreBridge.instance.getDecryptionKey(dramaId, index + 1) : null);
+      final planKey = duanjuPlan?.getKeyForResolution(_currentResolution);
+      final decKey = (planKey != null && planKey.isNotEmpty)
+          ? planKey
+          : (isShortDrama ? DuanjuCoreBridge.instance.getDecryptionKey(dramaId, index + 1, resolution: _currentResolution) : null);
       await _player!.open(
         playUrl,
         headers: duanjuPlan?.headers,
@@ -6635,7 +6636,11 @@ class _PlayerScreenState extends State<PlayerScreen>
                             setState(() {
                               _currentPlayUrl = targetUrl!;
                             });
-                            final decKey = DuanjuCoreBridge.instance.getDecryptionKey(dramaId, _currentEpisodeIndex + 1);
+                            final decKey = DuanjuCoreBridge.instance.getDecryptionKey(
+                              dramaId,
+                              _currentEpisodeIndex + 1,
+                              resolution: q == 0 ? null : '${q}P',
+                            );
                             await _player!.open(targetUrl, startAt: currentPos, decryptionKey: decKey);
                             if (mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
@@ -6812,7 +6817,11 @@ class _PlayerScreenState extends State<PlayerScreen>
                       _currentPlayUrl = targetUrl!;
                     });
                     final decKey = isShortDrama
-                        ? DuanjuCoreBridge.instance.getDecryptionKey(dramaId, _currentEpisodeIndex + 1)
+                        ? DuanjuCoreBridge.instance.getDecryptionKey(
+                            dramaId,
+                            _currentEpisodeIndex + 1,
+                            resolution: res,
+                          )
                         : null;
                     await _player!.open(targetUrl, startAt: currentPos, decryptionKey: decKey);
                     if (mounted) {

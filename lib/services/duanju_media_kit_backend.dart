@@ -183,17 +183,20 @@ class DuanjuMediaKitBackend implements PlayerBackend {
     _isBuffering = true;
     _safeAdd(_bufferingCtl, true);
 
-    try {
+      _isCompleted = false;
+      _safeAdd(_completedCtl, false);
+
       // 关键解密注入：对齐 guoapp 底层解密参数 (向 demuxer-lavf-o 注入 decryption_key)
       if (_player.platform is dynamic) {
         final dynamic platform = _player.platform;
-        final key = decryptionKey?.trim() ?? '';
+        final rawKey = decryptionKey?.trim() ?? '';
+        final cleanKey = RegExp(r'^[0-9a-fA-F]{32}$').hasMatch(rawKey) ? rawKey.toLowerCase() : '';
         final options = <String>[
           'seg_max_retry=3',
           'strict=experimental',
           'allowed_extensions=ALL',
           'protocol_whitelist=[http,https,tcp,tls,crypto,data,file]',
-          if (key.isNotEmpty) 'decryption_key=$key',
+          if (cleanKey.isNotEmpty) 'decryption_key=$cleanKey',
         ].join(',');
 
         try {
@@ -231,7 +234,7 @@ class DuanjuMediaKitBackend implements PlayerBackend {
         play: true,
       );
 
-      DiaryService.add('[DuanjuMediaKit] open 成功: keyLen=${decryptionKey?.length ?? 0}, startAt=$startAt');
+      DiaryService.add('[DuanjuMediaKit] open 成功: keyLen=${decryptionKey?.trim().length ?? 0}, startAt=$startAt');
     } catch (e, st) {
       DiaryService.add('[DuanjuMediaKit] open 失败: $e\n$st');
       rethrow;

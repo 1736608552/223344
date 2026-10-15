@@ -25,19 +25,33 @@ class MainActivity : FlutterActivity() {
         VolumeKeyChannel.configure(flutterEngine, this)
         // 注册红果短剧原生签名解析与 CENC 解密通道 (对齐 hongguoTV)
         io.flutter.plugin.common.MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.example.lunatv/hongguo_resolver").setMethodCallHandler { call, result ->
-            if (call.method == "resolveStream") {
-                val vid = call.argument<String>("vid") ?: ""
-                val maxQuality = call.argument<Int>("maxQuality") ?: 1080
-                Thread {
-                    try {
-                        val res = org.moontechlab.lunatv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality)
-                        runOnUiThread { result.success(res) }
-                    } catch (e: Exception) {
-                        runOnUiThread { result.error("RESOLVE_ERROR", e.message, null) }
-                    }
-                }.start()
-            } else {
-                result.notImplemented()
+            when (call.method) {
+                "resolveStream" -> {
+                    val vid = call.argument<String>("vid") ?: ""
+                    val maxQuality = call.argument<Int>("maxQuality") ?: 1080
+                    Thread {
+                        try {
+                            val res = org.moontechlab.lunatv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality)
+                            runOnUiThread { result.success(res) }
+                        } catch (e: Exception) {
+                            runOnUiThread { result.error("RESOLVE_ERROR", e.message, null) }
+                        }
+                    }.start()
+                }
+                "fetchEpisodeVids" -> {
+                    val seriesId = call.argument<String>("seriesId") ?: ""
+                    Thread {
+                        try {
+                            val vids = org.moontechlab.lunatv.hongguo.HongguoStreamResolver.fetchEpisodeVids(seriesId)
+                            runOnUiThread { result.success(vids) }
+                        } catch (e: Exception) {
+                            runOnUiThread { result.error("FETCH_ERROR", e.message, null) }
+                        }
+                    }.start()
+                }
+                else -> {
+                    result.notImplemented()
+                }
             }
         }
     }

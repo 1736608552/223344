@@ -16,6 +16,7 @@ import 'package:luna_tv/danmaku/models/hongguo_danmaku_emojis.dart';
 class DuanjuPlaybackPlan {
   final String url;
   final String decryptionKey;
+  final Map<String, String> keys;
   final Map<String, String> headers;
   final Map<String, String> multiMap;
   final String resolution;
@@ -28,6 +29,7 @@ class DuanjuPlaybackPlan {
   const DuanjuPlaybackPlan({
     required this.url,
     this.decryptionKey = '',
+    this.keys = const {},
     this.headers = const {},
     this.multiMap = const {},
     this.resolution = '1080P',
@@ -37,6 +39,15 @@ class DuanjuPlaybackPlan {
     this.session = '',
     this.danmakuId = '',
   });
+
+  /// 获取指定清晰度标签或默认的解密 Key
+  String getKeyForResolution(String? resLabel) {
+    if (resLabel != null && keys.containsKey(resLabel)) {
+      final k = keys[resLabel]!;
+      if (k.isNotEmpty) return k;
+    }
+    return decryptionKey;
+  }
 }
 
 /// 短剧核心原生引擎与直连桥接 (支持 libduanju_core.so FFI 加速 + HTTP 智能降级)
@@ -58,12 +69,23 @@ class DuanjuCoreBridge {
   /// 检查原生 Go 核心动态库是否就绪
   bool get isNativeAvailable => _isNativeAvailable;
 
-  /// 统一清洗短剧剧集 ID（去除 hongguo: 前缀并保留纯数字大 ID）
+  /// 统一清洗短剧剧集 ID（去除各类前缀并精准保留纯数字大 ID）
   static String cleanSeriesId(dynamic raw) {
     if (raw == null) return '';
     var s = raw.toString().trim();
     if (s.startsWith('hongguo:')) {
       s = s.substring('hongguo:'.length).trim();
+    } else if (s.startsWith('hg-series-v1:')) {
+      s = s.substring('hg-series-v1:'.length).trim();
+    } else if (s.startsWith('shortdrama:')) {
+      s = s.substring('shortdrama:'.length).trim();
+    }
+    // 若仍包含非纯数字符号（如复合ID），精准提取纯数字ID
+    if (!RegExp(r'^\d+$').hasMatch(s)) {
+      final match = RegExp(r'(\d{6,32})').firstMatch(s);
+      if (match != null) {
+        return match.group(1)!;
+      }
     }
     return s;
   }
@@ -884,15 +906,15 @@ class DuanjuCoreBridge {
   final Map<String, Future<List<String>>> _pendingVidRequests = {};
   final Map<String, Future<DuanjuPlaybackPlan?>> _pendingPlanRequests = {};
 
-  /// 获取短剧全部选集 vid 列表与详情 (原生Go核心优先 + 官方Web双重解析 + 内存高速缓存 + In-Flight合并)
+  /// 获取短剧全部选集 vid 列表与详情 (原生官方App通道优先/兜底 + 原生Go核心 + 官方Web双重解析 + 内存高速缓存 + In-Flight合并)
   Future<List<String>> fetchEpisodeVidList(String dramaId) async {
-    final cleanId = dramaId.trim();
+    final cleanId = cleanSeriesId(dramaId);
     if (cleanId.isEmpty) return [];
 
-    if (_vidListCache.containsKey(cleanId) &&
-        _vidListCache[cleanId]!.isNotEmpty &&
-        _vidListCache[cleanId]!.length > 3) {
-      return _vidListCache[cleanId]!;
+    // 双键检查高速缓存
+    final cached = _vidListCache[cleanId] ?? _vidListCache[dramaId.trim()];
+    if (cached != null && cached.isNotEmpty && cached.length > 1) {
+      return cached;
     }
 
     if (_pendingVidRequests.containsKey(cleanId)) {
@@ -902,7 +924,12 @@ class DuanjuCoreBridge {
     final future = _doFetchEpisodeVidList(cleanId);
     _pendingVidRequests[cleanId] = future;
     try {
-      return await future;
+      final res = await future;
+      if (res.isNotEmpty) {
+        _vidListCache[cleanId] = res;
+        _vidListCache['hongguo:$cleanId'] = res;
+      }
+      return res;
     } finally {
       _pendingVidRequests.remove(cleanId);
     }
@@ -949,6 +976,29 @@ class DuanjuCoreBridge {
   }
 
   Future<List<String>> _doFetchEpisodeVidList(String cleanId) async {
+    // 通道 0: Android 原生官方 App 接口 (走 /novel/player/video_detail/v1/，100% 官方返回，彻底杜绝 Web 404)
+    if (Platform.isAndroid) {
+      try {
+        const channel = MethodChannel('com.example.lunatv/hongguo_resolver');
+        final rawList = await channel.invokeMethod<List<dynamic>>('fetchEpisodeVids', {
+          'seriesId': cleanId,
+        });
+        if (rawList != null && rawList.isNotEmpty) {
+          final list = rawList.map((e) => e.toString().trim()).where((s) => s.isNotEmpty).toList();
+          if (list.isNotEmpty) {
+            if (kDebugMode) {
+              print('[DuanjuBridge] 原生 Android 官方 App 接口获取章节成功: 剧集=$cleanId, 共${list.length}集');
+            }
+            return list;
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('[DuanjuBridge] 原生 Android 获取章节异常: $e');
+        }
+      }
+    }
+
     // 通道 1: 原生 Go 核心 detail 接口 (对齐鱼佬 guoapp，双通道 App + Web 提取全部分集 chapters)
     if (_isNativeAvailable) {
       try {
@@ -986,7 +1036,6 @@ class DuanjuCoreBridge {
               }
             }
             if (list.isNotEmpty) {
-              _vidListCache[cleanId] = list;
               if (kDebugMode) {
                 print('[DuanjuBridge] 原生 Go 核心解析章节成功: 剧集=$cleanId, 共${list.length}集');
               }
@@ -1037,7 +1086,6 @@ class DuanjuCoreBridge {
             if (vList is List && vList.isNotEmpty) {
               final list = vList.map((e) => e.toString().trim()).where((s) => s.isNotEmpty).toList();
               if (list.isNotEmpty) {
-                _vidListCache[cleanId] = list;
                 return list;
               }
             }
@@ -1056,16 +1104,36 @@ class DuanjuCoreBridge {
             }
           }
           if (list.length >= 3) {
-            _vidListCache[cleanId] = list;
             return list;
           }
+        }
+      } else {
+        if (kDebugMode) {
+          print('[DuanjuBridge] Web 详情请求返回非 200 (状态码: ${resp.statusCode})，启动双轨兜底');
         }
       }
     } catch (e) {
       if (kDebugMode) {
-        print('[DuanjuBridge] fetchEpisodeVidList 异常: $e');
+        print('[DuanjuBridge] fetchEpisodeVidList Web 提取异常: $e');
       }
     }
+
+    // 通道 4: 终极原生兜底 (若前面通道受限且在 Android 环境，再次请求原生 App 接口)
+    if (Platform.isAndroid) {
+      try {
+        const channel = MethodChannel('com.example.lunatv/hongguo_resolver');
+        final rawList = await channel.invokeMethod<List<dynamic>>('fetchEpisodeVids', {
+          'seriesId': cleanId,
+        });
+        if (rawList != null && rawList.isNotEmpty) {
+          final list = rawList.map((e) => e.toString().trim()).where((s) => s.isNotEmpty).toList();
+          if (list.isNotEmpty) {
+            return list;
+          }
+        }
+      } catch (_) {}
+    }
+
     return [];
   }
 
@@ -1091,10 +1159,25 @@ class DuanjuCoreBridge {
     return _dramaTitleCache[cleanSeriesId(seriesId)] ?? '';
   }
 
-  /// 获取单集短剧的解密密钥 (供播放器注入底层解密参数)
-  String? getDecryptionKey(String dramaId, int episode) {
-    final key = '$dramaId-$episode';
-    return _planCache[key]?.decryptionKey;
+  /// 获取单集短剧的解密密钥 (供播放器注入底层解密参数，支持多清晰度Key检索与ID格式容错)
+  String? getDecryptionKey(String dramaId, int episode, {String? resolution}) {
+    final cleanId = cleanSeriesId(dramaId);
+    final plan = _planCache['$cleanId-$episode'] ??
+        _planCache['$dramaId-$episode'] ??
+        _planCache['hongguo:$cleanId-$episode'];
+    if (plan != null) {
+      if (resolution != null) {
+        final k = plan.getKeyForResolution(resolution);
+        if (k.isNotEmpty) return k;
+      }
+      if (plan.decryptionKey.isNotEmpty) {
+        return plan.decryptionKey;
+      }
+      if (plan.keys.isNotEmpty) {
+        return plan.keys.values.firstWhere((k) => k.isNotEmpty, orElse: () => '');
+      }
+    }
+    return null;
   }
 
   /// 异步预取单集或相邻集的播放计划，提前注入内存缓存，实现秒开起播
@@ -1159,6 +1242,13 @@ class DuanjuCoreBridge {
         if (res != null) {
           final streamUrl = res['url']?.toString() ?? '';
           final decKey = res['decryptionKey']?.toString() ?? '';
+          final rawKeys = res['keys'];
+          final keysMap = <String, String>{};
+          if (rawKeys is Map) {
+            for (final entry in rawKeys.entries) {
+              keysMap[entry.key.toString()] = entry.value.toString();
+            }
+          }
           final rawQualities = res['qualities'];
           final qualities = (rawQualities is List)
               ? rawQualities.map((e) => int.tryParse(e.toString()) ?? 0).where((q) => q > 0).toList()
@@ -1175,6 +1265,7 @@ class DuanjuCoreBridge {
             final plan = DuanjuPlaybackPlan(
               url: streamUrl,
               decryptionKey: decKey,
+              keys: keysMap,
               headers: {
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 16; 25053RT47C) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36',
                 'Referer': 'https://novel.snssdk.com/',
@@ -1186,9 +1277,14 @@ class DuanjuCoreBridge {
               qualities: qualities,
             );
             _planCache[cacheKey] = plan;
+            _planCache['$cleanId-$episode'] = plan;
+            _planCache['hongguo:$cleanId-$episode'] = plan;
             _playbackUrlCache[cacheKey] = streamUrl;
+            _playbackUrlCache['$cleanId-$episode'] = streamUrl;
             _playbackMultiResCache[cacheKey] = multiMap;
+            _playbackMultiResCache['$cleanId-$episode'] = multiMap;
             _playbackResolutionCache[cacheKey] = '${actQ}P';
+            _playbackResolutionCache['$cleanId-$episode'] = '${actQ}P';
             if (kDebugMode) {
               print('[DuanjuBridge] 原生 HongguoStreamResolver 极速取流解密成功: ep=$episode, vid=$vid, decKey=$decKey, url=$streamUrl');
             }
@@ -1547,46 +1643,85 @@ class DuanjuCoreBridge {
 
   /// 红果 CENC 媒体密钥解密算法 (将 spade_a 解密为 16 字节 AES-128 密钥的 32 字符 Hex)
   static String _hongguoContentKey(String value) {
+    final clean = value.trim().replaceAll('-', '+').replaceAll('_', '/');
+    if (clean.isEmpty) return '';
+    final raw = tryBase64Decode(clean);
+    if (raw == null || raw.length < 3) return '';
+
+    // 算法 1: 官方标准派生 (对齐 MediaCrypto.kt 与 hongguo.cjs)
     try {
-      final raw = base64.decode(value.trim());
-      if (raw.length < 3) return '';
-      final tagLength = (raw[0] ^ raw[1] ^ raw[2]) - 48;
-      final contentLength = raw.length - tagLength - 1;
-      if (tagLength < 1 || contentLength < 33 || contentLength >= raw.length) {
-        return '';
-      }
-      final seed = raw[raw.length - tagLength - 2] ^ raw[raw.length - tagLength - 1];
-      final tagCodes = <int>[];
-      for (int i = 0; i < tagLength; i++) {
-        tagCodes.add(raw[raw.length - tagLength + i] ^ seed);
-      }
-      final tag = String.fromCharCodes(tagCodes);
-      if (tag == 'app_v2' || tag == 'web_v2') {
-        return '';
-      }
-      final decoded = Uint8List(contentLength);
-      int prevEven = 250;
-      int prevOdd = 85;
-      for (int i = 0; i < contentLength; i++) {
-        final cur = raw[1 + i];
-        final prev = (i % 2 == 0) ? prevEven : prevOdd;
-        if (i % 2 == 0) {
-          prevEven = cur;
-        } else {
-          prevOdd = cur;
+      int length = raw.length - (raw[0] ^ raw[1] ^ raw[2]) + 47;
+      if (length > raw.length - 1) length = raw.length - 1;
+      if (length >= 33) {
+        final work = Uint8List.fromList(raw.sublist(1, 1 + length));
+        int a = 85;
+        int b = 246;
+        for (int i = 0; i < work.length; i++) {
+          final old = work[i];
+          final previous = (i & 1 != 0) ? a : b;
+          if (i & 1 != 0) {
+            a = old;
+          } else {
+            b = old;
+          }
+          int pop = 0;
+          int t = i;
+          while (t > 0) {
+            pop += t & 1;
+            t >>= 1;
+          }
+          work[i] = (-21 - pop + (previous ^ old)) & 0xff;
         }
-        int bitsCount = 0;
-        int temp = i;
-        while (temp > 0) {
-          bitsCount += (temp & 1);
-          temp >>= 1;
+        final hexStr = String.fromCharCodes(work.sublist(1, 33));
+        if (RegExp(r'^[0-9a-fA-F]{32}$').hasMatch(hexStr)) {
+          return hexStr.toLowerCase();
         }
-        decoded[i] = ((prev ^ cur) - 21 - bitsCount) & 0xff;
       }
-      final hexKey = String.fromCharCodes(decoded.sublist(1, 33));
-      return hexKey.trim();
+    } catch (_) {}
+
+    // 算法 2: 变体派生兼容
+    try {
+      final tagLen = (raw[0] ^ raw[1] ^ raw[2]) - 48;
+      final contentLen = raw.length - tagLen - 1;
+      if (tagLen >= 1 && contentLen >= 33 && contentLen < raw.length) {
+        final decoded = Uint8List(contentLen);
+        int prevEven = 250;
+        int prevOdd = 85;
+        for (int i = 0; i < contentLen; i++) {
+          final cur = raw[1 + i];
+          final prev = (i % 2 == 0) ? prevEven : prevOdd;
+          if (i % 2 == 0) {
+            prevEven = cur;
+          } else {
+            prevOdd = cur;
+          }
+          int pop = 0;
+          int t = i;
+          while (t > 0) {
+            pop += t & 1;
+            t >>= 1;
+          }
+          decoded[i] = ((prev ^ cur) - 21 - pop) & 0xff;
+        }
+        final hexStr = String.fromCharCodes(decoded.sublist(1, 33));
+        if (RegExp(r'^[0-9a-fA-F]{32}$').hasMatch(hexStr)) {
+          return hexStr.toLowerCase();
+        }
+      }
+    } catch (_) {}
+
+    return '';
+  }
+
+  static Uint8List? tryBase64Decode(String s) {
+    try {
+      var normalized = s;
+      while (normalized.length % 4 != 0) {
+        normalized += '=';
+      }
+      return base64.decode(normalized);
     } catch (_) {
-      return '';
+      return null;
     }
   }
 
