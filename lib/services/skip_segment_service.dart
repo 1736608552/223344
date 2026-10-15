@@ -100,10 +100,12 @@ class SkipSegmentService {
     // 3. 获取 TMDB 引用 (★ 严格经过用户的 TMDB 代理链接)
     // TmdbService.search 内部已经完全接入了 UserDataService.getTmdbProxyDomainSync() 与 tmdb_proxy 加速
     int? tmdbId;
+    String mediaType = 'tv';
     try {
       final ref = await TmdbService.search(title: cleanTitle, year: year);
       if (ref != null) {
         tmdbId = ref.id;
+        mediaType = ref.mediaType;
       }
     } catch (e) {
       DiaryService.add('[SkipSegment] TMDB search err: $e');
@@ -114,10 +116,36 @@ class SkipSegmentService {
       return const [];
     }
 
-    DiaryService.add('[SkipSegment] 命中 TMDB: id=$tmdbId, season=$season, ep=$episode');
+    DiaryService.add('[SkipSegment] 命中 TMDB: id=$tmdbId, type=$mediaType, season=$season, ep=$episode');
 
-    // 4. 请求 TheIntroDB (兼容用户自建 Worker 代理与直连双轨)
-    final results = await _fetchFromTheIntroDb(tmdbId, season, episode);
+    // 4. 双轨请求 (TheIntroDB 主源 + IntroDB.app 备用源，对齐 SeleneTV lt1.smali)
+    final results = <SkipSegment>[];
+    final theIntroFuture = _fetchFromTheIntroDb(tmdbId, season, episode);
+    final imdbIdFuture = TmdbService.fetchImdbId(id: tmdbId, mediaType: mediaType);
+
+    // 4.1 主源结果
+    final theIntroSegments = await theIntroFuture;
+    results.addAll(theIntroSegments);
+
+    // 4.2 检查是否缺少片头或片尾
+    final hasIntro = results.any((s) => s.type == SkipSegmentType.intro || s.type == SkipSegmentType.recap);
+    final hasOutro = results.any((s) => s.type == SkipSegmentType.outro || s.type == SkipSegmentType.credits);
+
+    // 4.3 若数据不全，尝试使用 imdb_id 从 IntroDB.app 补充
+    if (!hasIntro || !hasOutro) {
+      final imdbId = await imdbIdFuture;
+      if (imdbId != null && imdbId.isNotEmpty) {
+        DiaryService.add('[SkipSegment] 触发 IntroDB.app 补充查询: imdbId=$imdbId, s=$season, e=$episode');
+        final introDbSegments = await _fetchFromIntroDbApp(imdbId, season, episode);
+        for (final seg in introDbSegments) {
+          final isIntroType = seg.type == SkipSegmentType.intro || seg.type == SkipSegmentType.recap;
+          final isOutroType = seg.type == SkipSegmentType.outro || seg.type == SkipSegmentType.credits;
+          if (isIntroType && hasIntro) continue;
+          if (isOutroType && hasOutro) continue;
+          results.add(seg);
+        }
+      }
+    }
 
     // 5. 写入缓存并返回
     if (results.isNotEmpty) {
@@ -171,6 +199,43 @@ class SkipSegmentService {
     return const [];
   }
 
+  /// 请求 IntroDB.app 接口 (基于 IMDB ID 查询, 支持代理与直连双轨)
+  static Future<List<SkipSegment>> _fetchFromIntroDbApp(String imdbId, int season, int episode) async {
+    final path = '/segments?imdb_id=$imdbId&season=$season&episode=$episode';
+    final directUrl = '$_introDbAppHost$path';
+
+    final source = UserDataService.getTmdbDataSourceSync();
+    final proxy = UserDataService.getTmdbProxyDomainSync();
+
+    // 优先尝试代理
+    if (source == 'tmdb_proxy' && proxy.isNotEmpty) {
+      final proxyUrl = '$proxy/introdb$path';
+      try {
+        final resp = await http.get(Uri.parse(proxyUrl), headers: {
+          'Accept': 'application/json',
+        }).timeout(_timeout);
+        if (resp.statusCode == 200) {
+          final list = _parseIntroDbAppJson(resp.body);
+          if (list.isNotEmpty) return list;
+        }
+      } catch (_) {}
+    }
+
+    // 直连请求 IntroDB.app
+    try {
+      final resp = await http.get(Uri.parse(directUrl), headers: {
+        'Accept': 'application/json',
+      }).timeout(_timeout);
+      if (resp.statusCode == 200) {
+        return _parseIntroDbAppJson(resp.body);
+      }
+    } catch (e) {
+      DiaryService.add('[SkipSegment] IntroDB.app direct req err: $e');
+    }
+
+    return const [];
+  }
+
   /// 解析 TheIntroDB JSON 格式 (对齐 SeleneTV mt1.e)
   static List<SkipSegment> _parseTheIntroDbJson(String body) {
     final List<SkipSegment> list = [];
@@ -201,6 +266,45 @@ class SkipSegmentService {
       extract('preview', SkipSegmentType.preview);
     } catch (e) {
       DiaryService.add('[SkipSegment] parse json err: $e');
+    }
+    return list;
+  }
+
+  /// 解析 IntroDB.app JSON 格式 (对齐 SeleneTV mt1.b 与 lt1.smali:1374)
+  static List<SkipSegment> _parseIntroDbAppJson(String body) {
+    final List<SkipSegment> list = [];
+    try {
+      final data = jsonDecode(body);
+      if (data is! Map<String, dynamic> || data.containsKey('error')) {
+        return list;
+      }
+
+      void parseSection(String key, SkipSegmentType type) {
+        final sec = data[key];
+        if (sec is Map<String, dynamic>) {
+          final confidence = (sec['confidence'] as num?)?.toDouble() ?? 0.0;
+          final submissionCount = (sec['submission_count'] as num?)?.toInt() ?? 0;
+          // 对齐 SeleneTV: 置信度 >= 0.5 或者至少 2 人提交，才采纳
+          if (confidence >= 0.5 || submissionCount >= 2) {
+            final start = (sec['start_ms'] as num?)?.toInt() ?? 0;
+            final end = (sec['end_ms'] as num?)?.toInt() ?? 0;
+            if (end > start) {
+              list.add(SkipSegment(
+                type: type,
+                startMs: start,
+                endMs: end,
+                confidence: confidence,
+              ));
+            }
+          }
+        }
+      }
+
+      parseSection('intro', SkipSegmentType.intro);
+      parseSection('recap', SkipSegmentType.recap);
+      parseSection('outro', SkipSegmentType.outro);
+    } catch (e) {
+      DiaryService.add('[SkipSegment] IntroDB.app parse json err: $e');
     }
     return list;
   }

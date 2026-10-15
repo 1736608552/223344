@@ -793,6 +793,73 @@ class TmdbService {
     }
   }
 
+  /// 获取 TMDB 条目关联的 IMDB ID (如 "tt4574334")
+  /// 缓存 key: "tmdb_imdb_{mediaType}_{id}"
+  static Future<String?> fetchImdbId({
+    required int id,
+    required String mediaType,
+  }) async {
+    final apiKey = UserDataService.getTmdbApiKeySync();
+    if (apiKey == null || apiKey.isEmpty) return null;
+
+    final source = UserDataService.getTmdbDataSourceSync();
+    if (source == 'off') return null;
+
+    final cacheKey = 'tmdb_imdb_${mediaType}_$id';
+    final cached = await _readStringCache(cacheKey);
+    if (cached != null && cached.isNotEmpty) {
+      return cached;
+    }
+
+    final origUrl = '$_baseUrl/$mediaType/$id/external_ids?api_key=$apiKey';
+    final url = _buildTmdbApiUrl(origUrl, source);
+
+    final resp = await _httpGetWithFallback(
+      origUrl: origUrl,
+      url: url,
+      source: source,
+      apiKey: apiKey,
+      tag: 'external_ids',
+    );
+    if (resp == null || resp.statusCode != 200) return null;
+
+    try {
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      final imdbId = data['imdb_id'] as String?;
+      if (imdbId != null && imdbId.isNotEmpty) {
+        await _writeStringCache(cacheKey, imdbId);
+        return imdbId;
+      }
+    } catch (e) {
+      DiaryService.add('[TMDB] external_ids parse err: $e');
+    }
+    return null;
+  }
+
+  static Future<String?> _readStringCache(String key) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(key);
+    if (raw == null) return null;
+    try {
+      final json = jsonDecode(raw) as Map<String, dynamic>;
+      final ts = json['ts'] as int? ?? 0;
+      if (DateTime.now().millisecondsSinceEpoch - ts > _cacheTtl.inMilliseconds) {
+        return null;
+      }
+      return json['val'] as String?;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> _writeStringCache(String key, String val) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(key, jsonEncode({
+      'ts': DateTime.now().millisecondsSinceEpoch,
+      'val': val,
+    }));
+  }
+
   static Future<void> _writeArtCache(String key, TmdbArt data) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(key, jsonEncode({
