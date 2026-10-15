@@ -84,6 +84,11 @@ export default {
         return await handleTheIntroDb(request, url, corsHeaders)
       }
 
+      // IntroDB.app 片头数据代理 (基于 IMDB ID 查询)
+      if (url.pathname.startsWith('/introdb/')) {
+        return await handleIntroDb(request, url, corsHeaders)
+      }
+
       // TMDB 图片代理
       if (url.pathname.startsWith('/image/')) {
         return await handleTmdbImage(request, url, corsHeaders)
@@ -236,12 +241,31 @@ async function handleTheIntroDb(request, url, corsHeaders) {
       method: 'GET',
       headers: {
         'Accept': 'application/json',
-        'User-Agent': 'LunaTV-Mobile/2.6',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
       }
     })
     return withCors(response, corsHeaders)
   } catch (err) {
     return jsonError('TheIntroDB fetch failed: ' + err.message, 502, corsHeaders)
+  }
+}
+
+// ===== IntroDB.app 片头数据代理 (api.introdb.app) =====
+async function handleIntroDb(request, url, corsHeaders) {
+  // /introdb/segments?... -> https://api.introdb.app/segments?...
+  const apiPath = url.pathname.replace('/introdb', '')
+  const targetUrl = `https://api.introdb.app${apiPath}${url.search}`
+  try {
+    const response = await fetch(targetUrl, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+      }
+    })
+    return withCors(response, corsHeaders)
+  } catch (err) {
+    return jsonError('IntroDB.app fetch failed: ' + err.message, 502, corsHeaders)
   }
 }
 

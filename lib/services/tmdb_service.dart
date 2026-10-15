@@ -116,46 +116,34 @@ class TmdbService {
   ///   direct 直连, 国内 GFW 还是不通, 但代码层不崩).
   static String _buildTmdbApiUrl(String fullUrl, String source) {
     if (source == 'tmdb_proxy') {
-      final proxy = UserDataService.getTmdbProxyDomainSync();
+      final rawProxy = UserDataService.getTmdbProxyDomainSync();
+      final proxy = UserDataService.normalizeProxyDomain(rawProxy);
       if (proxy.isNotEmpty) {
         // fullUrl 形如 'https://api.themoviedb.org/3/movie/550?api_key=xxx'
-        // 找 '/3' 位置, 后面是 '/movie/550?...'
+        // 找 '/3' 位置, 后面是 '/movie/550?...' (substring(idx + 2) 开头带 '/')
         final idx = fullUrl.indexOf('/3/');
         if (idx > 0) {
-          final rest = fullUrl.substring(idx + 2); // 跳过 '/3'
-          // worker 端 handleTmdbApi 期望 pathname 形如 /movie/550
-          // api_key 走 query string 透传, 调用方 _httpGetWithFallback
-          // 的 origUrl 已经带了 api_key (TmdbService.search / fetchArt
-          // / fetchOverview / fetchCredits 全自己拼的), rest 里就有.
-          // 这里不动 query, 直接拼 proxy.
+          final rest = fullUrl.substring(idx + 2); // 跳过 '/3', 剩下 '/movie/550?...'
           return '$proxy$rest';
         }
       }
     }
-    // v2.1.40: 删加速后只剩 'direct' 路径, 1:1 返原 URL.
+    // direct 路径, 1:1 返原 URL.
     return fullUrl;
   }
 
   // v2.1.2: 把 URL 里的 api_key=… 替换成前4+…+后4, 避免日记明文打印 key
-  // (用户截屏 = 泄露 key). 只对 api_key=xxx 这种 query string 做处理, 不会
-  // 误伤其他参数.
   static String _maskKeyInUrl(String url, String apiKey) {
     if (apiKey.isEmpty) return url;
     return url.replaceAll('api_key=$apiKey', 'api_key=${_maskKey(apiKey)}');
   }
 
   // v2.1.2: 单 key 显示成 "abcd…wxyz" (32 字符 hex 留首尾, 中间隐藏).
-  // 短于等于 8 字符 → "…", 太短全部隐藏.
   static String _maskKey(String key) {
     if (key.length <= 8) return '…';
     return '${key.substring(0, 4)}…${key.substring(key.length - 4)}';
   }
 
-  // v2.1.40: 网络/握手/TLS/超时类错误 → retry 1 次 direct.
-  // 4xx/5xx 走的是 statusCode 分支, 不在这里 catch, 也不 retry
-  // (key 失效 / 限流 / 服务异常, retry 无意义).
-  // v2.1.40 改: 删 cf_worker 兜底 (v2.1.2 注释"自动 fallback 1 次 direct"),
-  //   加速删了只 direct 模式, 改 retry 1 次 direct 救客户端出口路由抖.
   static bool _isNetworkInfraError(Object e) {
     return e is SocketException ||
         e is HandshakeException ||
@@ -164,43 +152,55 @@ class TmdbService {
         e is http.ClientException;
   }
 
-  // v2.1.40: 通用 http.get + 1 层 retry + 短超时. 删 cf_worker / cors_proxy 加速.
-  //
-  // v2.1.40 改: 删 'cf_worker' (CORSAPI worker 加速) 和 'cors_proxy'
-  //   (ciao-cors 公共代理) 两条重试链, 只剩 direct 模式:
-  //   1) direct 第一次 (6s)
-  //   2) direct 网络/握手/TLS/超时错 → retry 1 次 direct (6s) — 救国内出口路由抖
-  //   3) 全部失败 → return null
-  //
-  // v2.1.39 删了 [headers] 参数: ciao-cors 没了, 不需要 X-Requested-With
-  //   注入. 跟 v2.1.22 行为一致, 不带额外 header.
+  static const Map<String, String> _tmdbHeaders = {
+    'Accept': 'application/json',
+    'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+  };
+
+  /// 通用 http.get + 代理/直连双轨兜底
   static Future<http.Response?> _httpGetWithFallback({
     required String origUrl,
     required String url,
     required String source,
     required String apiKey,
     required String tag,
-    Duration timeout = const Duration(seconds: 6),
+    Duration timeout = const Duration(seconds: 7),
   }) async {
-    // direct 模式: 第一次
+    // 1. 尝试当前 URL (若为 tmdb_proxy 则走代理, 若为 direct 则走直连)
     try {
-      return await http.get(Uri.parse(url)).timeout(timeout);
-    } catch (e) {
-      // 网络/握手/TLS/超时错 → retry 1 次 direct
-      if (_isNetworkInfraError(e)) {
-        DiaryService.add(
-            '[TMDB] direct $tag 网络/握手失败: $e (timeout=${timeout.inSeconds}s), retry 1 次');
+      final resp = await http.get(Uri.parse(url), headers: _tmdbHeaders).timeout(timeout);
+      if (resp.statusCode == 200) {
+        return resp;
+      }
+      DiaryService.add('[TMDB] $tag 响应状态码异常: ${resp.statusCode}, url=$url');
+      // 代理模式且返回非 200 (如 500/404 等), 若用户有 Key 尝试直连官方兜底
+      if (source == 'tmdb_proxy' && url != origUrl && apiKey.isNotEmpty) {
+        DiaryService.add('[TMDB] 代理 $tag 失败(${resp.statusCode})，尝试直连官方 API 兜底');
         try {
-          return await http.get(Uri.parse(url)).timeout(timeout);
+          final directResp = await http.get(Uri.parse(origUrl), headers: _tmdbHeaders).timeout(timeout);
+          if (directResp.statusCode == 200) return directResp;
         } catch (e2) {
-          DiaryService.add(
-              '[TMDB] direct retry $tag err: $e2 (direct+retry 全挂)');
-          return null;
+          DiaryService.add('[TMDB] 直连官方 API 兜底异常: $e2');
         }
       }
-      // v2.0.99.2: 网络错也写进日记, 用户排查 "TMDB 大背景没出来为啥"
-      DiaryService.add(
-          '[TMDB] $tag network err: $e (timeout=${timeout.inSeconds}s)');
+      return resp;
+    } catch (e) {
+      DiaryService.add('[TMDB] $tag 网络/握手异常: $e, url=$url');
+      // 代理模式抛出网络异常，若有 Key 尝试官方直连兜底
+      if (source == 'tmdb_proxy' && url != origUrl && apiKey.isNotEmpty) {
+        DiaryService.add('[TMDB] 代理网络中断，尝试直连官方 API 兜底');
+        try {
+          final directResp = await http.get(Uri.parse(origUrl), headers: _tmdbHeaders).timeout(timeout);
+          if (directResp.statusCode == 200) return directResp;
+        } catch (e2) {
+          DiaryService.add('[TMDB] 直连官方 API 兜底失败: $e2');
+        }
+      } else if (source != 'tmdb_proxy' && _isNetworkInfraError(e)) {
+        // 直连模式网络抖动重试 1 次
+        try {
+          return await http.get(Uri.parse(url), headers: _tmdbHeaders).timeout(timeout);
+        } catch (_) {}
+      }
       return null;
     }
   }
@@ -240,20 +240,22 @@ class TmdbService {
       return null;
     }
 
-    final apiKey = UserDataService.getTmdbApiKeySync();
-    if (apiKey == null || apiKey.isEmpty) {
-      DiaryService.add('[TMDB] search skip: apiKey 空');
-      return null;
-    }
-
-    // v2.0.97: 配了 key 但数据源 = 'off' → 强制不走 TMDB, 走豆瓣兜底
     final source = UserDataService.getTmdbDataSourceSync();
     if (source == 'off') {
       DiaryService.add('[TMDB] search skip: source=off');
       return null;
     }
+
+    final apiKey = UserDataService.getTmdbApiKeySync() ?? '';
+    final proxy = UserDataService.normalizeProxyDomain(UserDataService.getTmdbProxyDomainSync());
+
+    // 严密校验与放行：代理模式下无论是否输入Key均放行；直连模式下无Key则跳过
+    if (apiKey.isEmpty && (source != 'tmdb_proxy' || proxy.isEmpty)) {
+      DiaryService.add('[TMDB] search skip: 未配置 TMDB API Key 且未启用 Worker 代理');
+      return null;
+    }
     DiaryService.add(
-        '[TMDB] search begin: cleaned="$cleaned" year=$year source=$source');
+        '[TMDB] search begin: cleaned="$cleaned" year=$year source=$source hasKey=${apiKey.isNotEmpty} hasProxy=${proxy.isNotEmpty}');
 
     // 1) 缓存查
     final cacheKey = 'tmdb_ref_${cleaned}_${year ?? ""}';
@@ -264,16 +266,15 @@ class TmdbService {
       return cached;
     }
 
-    // 2) search/multi 请求 — v2.0.96 不传 year 给 TMDB (命中率更高)
+    // 2) search/multi 请求
     final params = <String, String>{
-      'api_key': apiKey,
       'query': cleaned,
       'include_adult': 'false',
       'page': '1',
     };
-    // v2.0.96: 删 year from URL — TMDB 内部按 popularity DESC 排, year
-    //   只是 hint, 传了经常 0 结果. 改用 soft bonus 在 result 上过滤.
-    // if (year != null) params['year'] = year.toString();
+    if (apiKey.isNotEmpty) {
+      params['api_key'] = apiKey;
+    }
     final query =
         params.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&');
     final origUrl = '$_baseUrl/search/multi?$query';
@@ -799,11 +800,15 @@ class TmdbService {
     required int id,
     required String mediaType,
   }) async {
-    final apiKey = UserDataService.getTmdbApiKeySync();
-    if (apiKey == null || apiKey.isEmpty) return null;
-
     final source = UserDataService.getTmdbDataSourceSync();
     if (source == 'off') return null;
+
+    final apiKey = UserDataService.getTmdbApiKeySync() ?? '';
+    final proxy = UserDataService.normalizeProxyDomain(UserDataService.getTmdbProxyDomainSync());
+
+    if (apiKey.isEmpty && (source != 'tmdb_proxy' || proxy.isEmpty)) {
+      return null;
+    }
 
     final cacheKey = 'tmdb_imdb_${mediaType}_$id';
     final cached = await _readStringCache(cacheKey);
@@ -811,7 +816,8 @@ class TmdbService {
       return cached;
     }
 
-    final origUrl = '$_baseUrl/$mediaType/$id/external_ids?api_key=$apiKey';
+    final query = apiKey.isNotEmpty ? '?api_key=$apiKey' : '';
+    final origUrl = '$_baseUrl/$mediaType/$id/external_ids$query';
     final url = _buildTmdbApiUrl(origUrl, source);
 
     final resp = await _httpGetWithFallback(

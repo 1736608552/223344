@@ -790,6 +790,12 @@ class UserDataService {
     return v;
   }
 
+  /// 标准化代理域名 (确保 https:// 开头，末尾无斜杠). 空或无效返回空字符串.
+  static String normalizeProxyDomain(String? proxy) {
+    if (proxy == null || proxy.trim().isEmpty) return '';
+    return _cleanWorkerBaseUrl(proxy) ?? '';
+  }
+
   /// 校验/清理 TMDB 代理 URL. 返回 null = 无效 (清空).
   /// 强转 https://, 去尾斜杠 / 空白 / 协议, 保留 host:port.
   static String? _cleanWorkerBaseUrl(String input) {

@@ -160,77 +160,95 @@ class SkipSegmentService {
     return results;
   }
 
-  /// 请求 TheIntroDB 接口 (优先尝试代理路由, 失败则直连兜底)
+  static const Duration _timeout = Duration(seconds: 7);
+  static const Map<String, String> _browserHeaders = {
+    'Accept': 'application/json',
+    'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+  };
+
+  /// 请求 TheIntroDB 接口 (严格经过软件设置里的代理, 失败则直连兜底)
   static Future<List<SkipSegment>> _fetchFromTheIntroDb(int tmdbId, int season, int episode) async {
     final path = '/v3/media?tmdb_id=$tmdbId&season=$season&episode=$episode';
     final directUrl = '$_theIntroDbHost$path';
 
     final source = UserDataService.getTmdbDataSourceSync();
-    final proxy = UserDataService.getTmdbProxyDomainSync();
+    final proxy = UserDataService.normalizeProxyDomain(UserDataService.getTmdbProxyDomainSync());
 
-    // 如果用户配置了 tmdb_proxy, 优先尝试从用户的 Worker 代理拉取
+    // 1. 如果用户配置了 tmdb_proxy, 优先调用软件设置里的 Worker 代理
     if (source == 'tmdb_proxy' && proxy.isNotEmpty) {
       final proxyUrl = '$proxy/theintrodb$path';
       try {
-        final resp = await http.get(Uri.parse(proxyUrl), headers: {
-          'Accept': 'application/json',
-        }).timeout(_timeout);
+        DiaryService.add('[SkipSegment] 调用设置代理拉取 TheIntroDB: $proxyUrl');
+        final resp = await http.get(Uri.parse(proxyUrl), headers: _browserHeaders).timeout(_timeout);
+        DiaryService.add('[SkipSegment] TheIntroDB 代理响应: code=${resp.statusCode}');
         if (resp.statusCode == 200) {
           final list = _parseTheIntroDbJson(resp.body);
-          if (list.isNotEmpty) return list;
+          if (list.isNotEmpty) {
+            DiaryService.add('[SkipSegment] TheIntroDB 代理命中: ${list.length} 个片段');
+            return list;
+          }
         }
-      } catch (_) {
-        // 代理若暂无该路由或失败，平滑降级到直连
+      } catch (e) {
+        DiaryService.add('[SkipSegment] TheIntroDB 代理异常: $e, 平滑降级直连');
       }
     }
 
-    // 直连请求 TheIntroDB
+    // 2. 直连请求 TheIntroDB (注入真实浏览器 UA 杜绝 Cloudflare WAF 拦截)
     try {
-      final resp = await http.get(Uri.parse(directUrl), headers: {
-        'Accept': 'application/json',
-      }).timeout(_timeout);
+      DiaryService.add('[SkipSegment] 发起 TheIntroDB 直连: $directUrl');
+      final resp = await http.get(Uri.parse(directUrl), headers: _browserHeaders).timeout(_timeout);
+      DiaryService.add('[SkipSegment] TheIntroDB 直连响应: code=${resp.statusCode}');
       if (resp.statusCode == 200) {
-        return _parseTheIntroDbJson(resp.body);
+        final list = _parseTheIntroDbJson(resp.body);
+        DiaryService.add('[SkipSegment] TheIntroDB 直连获取成功: ${list.length} 个片段');
+        return list;
       }
     } catch (e) {
-      DiaryService.add('[SkipSegment] TheIntroDB direct req err: $e');
+      DiaryService.add('[SkipSegment] TheIntroDB 直连失败: $e');
     }
 
     return const [];
   }
 
-  /// 请求 IntroDB.app 接口 (基于 IMDB ID 查询, 支持代理与直连双轨)
+  /// 请求 IntroDB.app 接口 (基于 IMDB ID 查询, 严格经过设置代理与直连双轨)
   static Future<List<SkipSegment>> _fetchFromIntroDbApp(String imdbId, int season, int episode) async {
     final path = '/segments?imdb_id=$imdbId&season=$season&episode=$episode';
     final directUrl = '$_introDbAppHost$path';
 
     final source = UserDataService.getTmdbDataSourceSync();
-    final proxy = UserDataService.getTmdbProxyDomainSync();
+    final proxy = UserDataService.normalizeProxyDomain(UserDataService.getTmdbProxyDomainSync());
 
-    // 优先尝试代理
+    // 1. 优先调用软件设置里的代理
     if (source == 'tmdb_proxy' && proxy.isNotEmpty) {
       final proxyUrl = '$proxy/introdb$path';
       try {
-        final resp = await http.get(Uri.parse(proxyUrl), headers: {
-          'Accept': 'application/json',
-        }).timeout(_timeout);
+        DiaryService.add('[SkipSegment] 调用设置代理拉取 IntroDB.app: $proxyUrl');
+        final resp = await http.get(Uri.parse(proxyUrl), headers: _browserHeaders).timeout(_timeout);
+        DiaryService.add('[SkipSegment] IntroDB.app 代理响应: code=${resp.statusCode}');
         if (resp.statusCode == 200) {
           final list = _parseIntroDbAppJson(resp.body);
-          if (list.isNotEmpty) return list;
+          if (list.isNotEmpty) {
+            DiaryService.add('[SkipSegment] IntroDB.app 代理命中: ${list.length} 个片段');
+            return list;
+          }
         }
-      } catch (_) {}
+      } catch (e) {
+        DiaryService.add('[SkipSegment] IntroDB.app 代理异常: $e, 平滑降级直连');
+      }
     }
 
-    // 直连请求 IntroDB.app
+    // 2. 直连请求 IntroDB.app
     try {
-      final resp = await http.get(Uri.parse(directUrl), headers: {
-        'Accept': 'application/json',
-      }).timeout(_timeout);
+      DiaryService.add('[SkipSegment] 发起 IntroDB.app 直连: $directUrl');
+      final resp = await http.get(Uri.parse(directUrl), headers: _browserHeaders).timeout(_timeout);
+      DiaryService.add('[SkipSegment] IntroDB.app 直连响应: code=${resp.statusCode}');
       if (resp.statusCode == 200) {
-        return _parseIntroDbAppJson(resp.body);
+        final list = _parseIntroDbAppJson(resp.body);
+        DiaryService.add('[SkipSegment] IntroDB.app 直连获取成功: ${list.length} 个片段');
+        return list;
       }
     } catch (e) {
-      DiaryService.add('[SkipSegment] IntroDB.app direct req err: $e');
+      DiaryService.add('[SkipSegment] IntroDB.app 直连失败: $e');
     }
 
     return const [];

@@ -1028,7 +1028,7 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     SkipSegment? matched;
 
-    // 1. 优先从 TheIntroDB 云端精准打点匹配 (对齐 SeleneTV: 片尾 credits/outro/preview 延展至视频末尾)
+    // 1. 优先从 TheIntroDB / IntroDB.app 云端精准打点匹配 (对齐 SeleneTV: 片尾 credits/outro/preview 延展至视频末尾)
     if (_smartSkipSegments.isNotEmpty) {
       for (final seg in _smartSkipSegments) {
         final isOutroType = seg.type == SkipSegmentType.outro ||
@@ -1046,30 +1046,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       }
     }
 
-    // 2. 若云端未收录片头或片尾，采用智能通用兜底 (多集电视剧/动漫/长片)
-    if (matched == null) {
-      final isSeriesOrLong = hasNextEpisode || _currentEpisodeIndex > 0 || durSec > 240;
-      if (isSeriesOrLong) {
-        // 片头兜底：开播前 _smartSkipFallbackSec 秒内 (2s ~ 90s)
-        if (posSec >= 2 && posSec < _smartSkipFallbackSec && durSec > (_smartSkipFallbackSec + 30)) {
-          matched = SkipSegment(
-            type: SkipSegmentType.intro,
-            startMs: 0,
-            endMs: _smartSkipFallbackSec * 1000,
-          );
-        }
-        // 片尾兜底：距结尾最后 _smartSkipOutroFallbackSec 秒内 (放宽边界至 >= -5，防止末尾微弱负数丢识别)
-        else if (durSec > 120 &&
-            (durSec - posSec) <= _smartSkipOutroFallbackSec &&
-            (durSec - posSec) >= -5) {
-          matched = SkipSegment(
-            type: SkipSegmentType.outro,
-            startMs: (durSec - _smartSkipOutroFallbackSec) * 1000,
-            endMs: durMs,
-          );
-        }
-      }
-    }
+    // 彻底移除本地通用片头/片尾兜底：无云端精准打点时不触发跳过，彻底杜绝电影误跳片头或误跳片尾彩蛋的问题
 
     // 3. 状态判定与倒计时调度 (防抖保护：同一片段区间内严禁重启计时器)
     if (matched != null) {
@@ -1141,9 +1118,9 @@ class _PlayerScreenState extends State<PlayerScreen>
           (_activeSmartSegment!.type == SkipSegmentType.outro ||
            _activeSmartSegment!.type == SkipSegmentType.credits ||
            _activeSmartSegment!.type == SkipSegmentType.preview);
-      final isPlayingNearEnd = durSec > 0 && (durSec - posSec) <= (_smartSkipOutroFallbackSec + 8);
+      final isPlayingInActiveOutro = isOutroActive && posMs >= _activeSmartSegment!.startMs;
 
-      if (isOutroActive && isPlayingNearEnd && !_dismissedOutroThisEp && !_hasAutoSkippedOutroThisEp) {
+      if (isOutroActive && isPlayingInActiveOutro && !_dismissedOutroThisEp && !_hasAutoSkippedOutroThisEp) {
         // 片尾正在倒计时中，保持常驻锁定，不被瞬时波动截断
         return;
       }
@@ -1157,12 +1134,10 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
-  /// 打开智能跳过片头片尾设置弹窗 (彻底废弃旧版繁琐手动 Slider 设置)
+  /// 打开智能跳过片头片尾设置弹窗 (彻底废弃旧版通用盲跳兜底)
   Future<void> _showSmartSkipSettingsDialog() async {
     bool enabled = _smartSkipEnabled;
     String mode = _smartSkipMode;
-    int fallbackIntro = _smartSkipFallbackSec;
-    int fallbackOutro = _smartSkipOutroFallbackSec;
 
     await showDialog<void>(
       context: context,
@@ -1191,7 +1166,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                       contentPadding: EdgeInsets.zero,
                       title: const Text('启用智能跳过', style: TextStyle(color: Colors.white, fontSize: 14)),
                       subtitle: const Text(
-                        '支持 TheIntroDB 精准打点与通用智能兜底',
+                        '基于 TheIntroDB / IntroDB 全球云端打点，电影综艺绝不误跳',
                         style: TextStyle(color: Colors.white54, fontSize: 11),
                       ),
                       value: enabled,
@@ -1232,41 +1207,26 @@ class _PlayerScreenState extends State<PlayerScreen>
                         activeColor: kLunaTheme,
                         onChanged: (v) => setDialogState(() => mode = v!),
                       ),
-                      const Divider(color: Colors.white24, height: 20),
-                      const Text('通用片头兜底时长 (云端未收录时)', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [60, 90, 120].map((sec) {
-                          final isSel = fallbackIntro == sec;
-                          return Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: ChoiceChip(
-                              label: Text('$sec 秒', style: TextStyle(color: isSel ? Colors.black : Colors.white70, fontSize: 12)),
-                              selected: isSel,
-                              selectedColor: kLunaTheme,
-                              backgroundColor: const Color(0xFF334155),
-                              onSelected: (_) => setDialogState(() => fallbackIntro = sec),
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0F172A),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.white12),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.verified_user_rounded, color: kLunaTheme, size: 16),
+                            const SizedBox(width: 8),
+                            const Expanded(
+                              child: Text(
+                                '已彻底禁用本地通用盲跳兜底，100% 依循全球云端真实打点数据，电影、综艺无收录时绝不误跳。',
+                                style: TextStyle(color: Colors.white70, fontSize: 11, height: 1.3),
+                              ),
                             ),
-                          );
-                        }).toList(),
-                      ),
-                      const SizedBox(height: 14),
-                      const Text('通用片尾兜底时长 (云端未收录时)', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [90, 120, 150].map((sec) {
-                          final isSel = fallbackOutro == sec;
-                          return Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: ChoiceChip(
-                              label: Text('$sec 秒', style: TextStyle(color: isSel ? Colors.black : Colors.white70, fontSize: 12)),
-                              selected: isSel,
-                              selectedColor: const Color(0xFF38BDF8),
-                              backgroundColor: const Color(0xFF334155),
-                              onSelected: (_) => setDialogState(() => fallbackOutro = sec),
-                            ),
-                          );
-                        }).toList(),
+                          ],
+                        ),
                       ),
                     ],
                   ],
@@ -1282,8 +1242,6 @@ class _PlayerScreenState extends State<PlayerScreen>
                     setState(() {
                       _smartSkipEnabled = enabled;
                       _smartSkipMode = mode;
-                      _smartSkipFallbackSec = fallbackIntro;
-                      _smartSkipOutroFallbackSec = fallbackOutro;
                     });
                     _saveSmartSkipConfig();
                     Navigator.pop(ctx);

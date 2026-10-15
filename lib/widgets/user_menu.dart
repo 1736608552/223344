@@ -691,7 +691,7 @@ class _UserMenuState extends State<UserMenu> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '部署 [djsevenx1/tmdb-proxy] 到 Cloudflare Pages, 拿到 https://xxx.pages.dev 粘到这里. 配上后「TMDB 数据源」选「TMDB Worker 加速」即走 CF 加速, 解决国内 GFW 问题.',
+              '部署 [djsevenx1/tmdb-proxy] 到 Cloudflare Pages, 拿到 https://xxx.pages.dev 粘到这里. 统一加速服务 TMDB 元数据、TheIntroDB/IntroDB 智能片头打点、Bangumi 番剧、短剧及 GitHub Releases.',
               style: FontUtils.poppins(
                 ctx,
                 fontSize: 12,
@@ -702,7 +702,7 @@ class _UserMenuState extends State<UserMenu> {
             ),
             const SizedBox(height: 4),
             Text(
-              '不填 = 走「直连」 (国内 GFW, 配 VPN 才通). 自动强转 https://, 去尾斜杠.',
+              '配上后选 Worker 加速即走 CF 全球 CDN，智能片头优先通过代理获取. 自动强转 https:// 并去除尾部斜杠.',
               style: FontUtils.poppins(
                 ctx,
                 fontSize: 12,
@@ -1971,7 +1971,7 @@ class _UserMenuState extends State<UserMenu> {
               //   服务三套路由 (TMDB / Bangumi / GitHub), 不再单开
               //   "GitHub 代理 URL" 独立项 (用户反馈 "重复了吧").
               _buildInputOption(
-                title: '代理 URL (TMDB / Bangumi / GitHub)',
+                title: '代理 URL (TMDB / 片头 / 番剧 / GitHub)',
                 currentValue: _tmdbProxyDomain.isEmpty
                     ? '未配置'
                     : _tmdbProxyDomain,
