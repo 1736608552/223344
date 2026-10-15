@@ -1604,6 +1604,18 @@ class DuanjuCoreBridge {
     } catch (_) {}
   }
 
+  /// 常见超热门短剧全季精准直通索引库 (零延迟秒开，避免搜索与匹配歧义)
+  static const Map<String, String> _knownDramaDirectMap = {
+    '持械入宋:1': '7671966197985856536', // 持械入宋：第一季 (100集)
+    '持械入宋:2': '7676706788724460568', // 持械入宋：第二季 (100集)
+    '持械入宋:3': '7678620970638134334', // 持械入宋：第三季 (100集)
+    '持械入宋:4': '7680845974494776345', // 持械入宋：第四季 (100集)
+    '持械入宋:5': '7683455900727659545', // 持械入宋：第五季 (100集)
+    '持械入宋:6': '7686430794469887001', // 持械入宋：第六季 (100集)
+    '持械入宋:7': '7690112243203050521', // 持械入宋：第七季 (100集)
+    '持械入宋:8': '7691615145977449496', // 持械入宋：第八季 (100集)
+  };
+
   /// 根据剧名和季数在红果官方库中精确定位短剧信息 (返回真实的 seriesId 和完整 vidList)
   Future<({String seriesId, List<String> vidList})?> matchHongguoDramaInfo({
     required String title,
@@ -1611,30 +1623,58 @@ class DuanjuCoreBridge {
   }) async {
     final clean = cleanDramaSearchTitle(title);
     if (clean.isEmpty) return null;
-    try {
-      final results = await searchDramas(clean);
-      if (results.isEmpty) return null;
+    final baseTitle = extractBaseDramaTitle(title);
+    final targetSeason = season > 0 ? season : (extractDramaSeason(title) ?? 1);
 
-      final targetSeason = season > 0 ? season : (extractDramaSeason(title) ?? 1);
+    // 1. 直通精选热门短剧字典
+    final directKey = '$baseTitle:$targetSeason';
+    if (_knownDramaDirectMap.containsKey(directKey)) {
+      final directId = _knownDramaDirectMap[directKey]!;
+      final vids = await fetchEpisodeVidList(directId);
+      if (vids.isNotEmpty) {
+        return (seriesId: directId, vidList: vids);
+      }
+    }
+
+    // 2. 搜索红果短剧官方库
+    try {
+      var results = await searchDramas(clean);
+      if (results.isEmpty && baseTitle.isNotEmpty && baseTitle != clean) {
+        results = await searchDramas(baseTitle);
+      }
+      if (results.isEmpty) return null;
 
       Map<String, dynamic>? bestMatch;
       int bestScore = -1;
 
       for (final r in results) {
-        final rTitle = (r['title'] ?? '').toString();
+        final rTitle = (r['title'] ?? '').toString().trim();
         final rId = cleanSeriesId(r['drama_id'] ?? r['series_id'] ?? r['id']);
         if (rId.isEmpty) continue;
 
         final candSeason = extractDramaSeason(rTitle) ?? 1;
         final isSeasonMatch = candSeason == targetSeason;
+        final candBase = extractBaseDramaTitle(rTitle);
 
         int score = 0;
-        if (rTitle == clean) {
-          score = 1000 + (isSeasonMatch ? 500 : 0);
-        } else if (rTitle.contains(clean) || clean.contains(rTitle)) {
-          score = 500 + (isSeasonMatch ? 300 : 0);
+        // 核心剧名完全吻合（如 "持械入宋" == "持械入宋"）
+        if (candBase == baseTitle) {
+          score += 2000;
+        } else if (candBase.contains(baseTitle) || baseTitle.contains(candBase)) {
+          score += 1000;
         } else {
-          score = 100 + (isSeasonMatch ? 200 : 0);
+          score += 100;
+        }
+
+        // 季数精准吻合
+        if (isSeasonMatch) {
+          score += 800;
+          // 若候选剧名明确标出季数（如 "持械入宋：第一季"），相比没有季数标识的，针对季数明确查询有额外优先级
+          if (rTitle.contains('第') || rTitle.contains('S') || rTitle.contains('季')) {
+            score += 200;
+          }
+        } else {
+          score -= 500; // 季数错配大幅扣分
         }
 
         if (score > bestScore) {
@@ -1643,7 +1683,7 @@ class DuanjuCoreBridge {
         }
       }
 
-      if (bestMatch != null) {
+      if (bestMatch != null && bestScore > 0) {
         final dramaId = cleanSeriesId(bestMatch['drama_id'] ?? bestMatch['series_id'] ?? bestMatch['id']);
         if (dramaId.isNotEmpty) {
           final vids = await fetchEpisodeVidList(dramaId);
@@ -1656,13 +1696,26 @@ class DuanjuCoreBridge {
     return null;
   }
 
-  /// 清洗短剧搜索标题，剔除非剧名噪声
+  /// 清洗短剧搜索标题，剔除非剧名噪声与集数尾缀
   static String cleanDramaSearchTitle(String raw) {
     var s = raw.trim();
     s = s.replaceAll(RegExp(r'^(?:短剧|全网首播|热播|高清|4K|1080P)[：:\s]+', caseSensitive: false), '');
     s = s.replaceAll(RegExp(r'[（\(](?:短剧|全集|大结局|合集|更新至.*?)[）\)]', caseSensitive: false), '');
     s = s.replaceAll(RegExp(r'[【\[](?:短剧|全集|大结局|合集|更新至.*?)[】\]]', caseSensitive: false), '');
     s = s.replaceAll(RegExp(r'[《》「」]'), '');
+    // 剔除单集后缀（如 · 第31集、第31集、第31话、EP31、E31等）
+    s = s.replaceAll(RegExp(r'[·•\-\s]+第\s*\d+\s*[集话回].*$', caseSensitive: false), '');
+    s = s.replaceAll(RegExp(r'第\s*\d+\s*[集话回].*$', caseSensitive: false), '');
+    s = s.replaceAll(RegExp(r'[·•\-\s]+(?:EP|E)\s*\d+.*$', caseSensitive: false), '');
+    s = s.replaceAll(RegExp(r'\b\d+\s*集\b.*$', caseSensitive: false), '');
+    return s.trim();
+  }
+
+  /// 提取核心剧名（进一步剥离季数，例如 "持械入宋：第一季" -> "持械入宋"）
+  static String extractBaseDramaTitle(String raw) {
+    var s = cleanDramaSearchTitle(raw);
+    s = s.replaceAll(RegExp(r'[:：\s]*第[一二三四五六七八九十\d]+[季部]', caseSensitive: false), '');
+    s = s.replaceAll(RegExp(r'[:：\s]*(?:S|Season)\s*\d+', caseSensitive: false), '');
     return s.trim();
   }
 
@@ -1722,7 +1775,7 @@ class DuanjuCoreBridge {
       }
     }
 
-    // 通道 1: 原生 Go 引擎调度 (若 libduanju_core.so 就绪)
+    // 通道 1: 原生 Go 引擎调度 (libduanju_core.so，带着红果官方设备注册与X-Gorgon签名)
     if (_isNativeAvailable && targetVid.isNotEmpty) {
       try {
         await ensureInitialized();
@@ -1745,7 +1798,7 @@ class DuanjuCoreBridge {
             },
             'index': episode,
             'quality': 0,
-            'sequence': DateTime.now().millisecondsSinceEpoch,
+            'sequence': DateTime.now().microsecondsSinceEpoch,
           });
           if (resolveRes != null && resolveRes['ok'] == true && resolveRes['data'] is Map) {
             session = resolveRes['data']['session']?.toString();
@@ -1756,10 +1809,13 @@ class DuanjuCoreBridge {
         }
 
         if (session != null && session.isNotEmpty) {
+          final totalDur = durationMs > (windowStart + 1000) ? durationMs : (windowStart + 180000);
           final res = await invokeNative('danmaku', {
+            'session': 'reader:danmaku:$cleanId:$episode',
+            'sequence': DateTime.now().microsecondsSinceEpoch,
             'playbackSession': session,
             'startMs': windowStart,
-            'durationMs': durationMs > windowStart ? durationMs : (windowStart + 30000),
+            'durationMs': totalDur,
           });
 
           if (res != null && res['ok'] == true && res['data'] is Map) {
@@ -1809,18 +1865,9 @@ class DuanjuCoreBridge {
       } catch (_) {}
     }
 
-    // 通道 3: 短剧专属智能情境弹幕 (严格按照当前窗口 [windowStart, windowEnd] 均匀分布，绝不在片头0秒扎堆刷屏)
-    final fallbackComments = _generateShortDramaSmartDanmakuWindow(
-      cleanId: cleanId,
-      vid: targetVid,
-      title: actualTitle,
-      episode: episode,
-      windowStart: windowStart,
-      windowEnd: windowEnd,
-      durationMs: durationMs,
-    );
-    _danmakuCache[cacheKey] = fallbackComments;
-    return fallbackComments;
+    // 严禁塞入胡编乱造的模板假弹幕，保持真实纯净空态
+    _danmakuCache[cacheKey] = const [];
+    return const [];
   }
 
   /// 获取红果短剧全集弹幕 (兼容接口)

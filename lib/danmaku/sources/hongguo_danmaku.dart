@@ -100,8 +100,8 @@ class HongguoDanmaku extends BaseDanmakuSource {
 
     try {
       final startMs = startSec > 0 ? (startSec * 1000) : 0;
-      final durationMs = (endSec > startSec && endSec > 0)
-          ? ((endSec - startSec) * 1000)
+      final totalDurationMs = (endSec > startSec && endSec > 0)
+          ? (endSec * 1000 + 120000)
           : 180000;
 
       if (startSec > 0 || (endSec > 0 && endSec <= 60)) {
@@ -110,7 +110,7 @@ class HongguoDanmaku extends BaseDanmakuSource {
           vid: vid,
           episode: episode,
           startMs: startMs,
-          durationMs: durationMs,
+          durationMs: totalDurationMs,
         );
       }
 
@@ -118,7 +118,7 @@ class HongguoDanmaku extends BaseDanmakuSource {
         seriesId: seriesId,
         vid: vid,
         episode: episode,
-        durationMs: durationMs,
+        durationMs: totalDurationMs,
       );
     } catch (_) {
       return const [];
