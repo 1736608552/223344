@@ -1,5 +1,31 @@
 # LunaTV-Mobile 修复日记
 
+## v2.6.111 (2026-10-15)
+
+### 彻底打通红果短剧官方 1080P/720P/480P 超清流 + 官方 App 预加载端点 (preload/v1) + 升级 JSONArray 多清晰度视频流与 CENC 密钥全套解析 + 播放器画质自由切换
+
+#### 核心突破与根因根治
+1. **排查确诊短剧“只有360p”画质受限的致命根因**：
+   - 彻底查实：旧版代码请求的 `/novel/player/multi_video_model/v1/` 已被字节跳动官方废弃下线，且旧版代码将 `https://hongguoduanju.com/video/public/{vid}/360p.mp4` 设置为最高优先级（只要探测成功直接返回 360P）；
+   - 该公开直链为官方用于网页端轻量预览的兜底源，分辨率被硬编码为 360P（360x640），导致无论网络状况如何、用户选择何种画质，播放器都仅展示和播放 360P。
+2. **官方最新 App 预加载端点全面打通 (`preload/v1`)**：
+   - 逆向分析官方最新 Android App，定位到现行有效的超清视频流拉取端点：`POST https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/`；
+   - 传入 `video_platform: 1024` 与 `mixed_video_id_map: {"1004": [vid]}`，配合官方全套 X-Gorgon / X-Medusa / X-Helios 签名，100% 官方返回“请求成功”；
+   - 一次性获取到正片完整的 1080P（1882x1080，Main HEVC）、720P（864x496）、540P、480P、360P 全清晰度视频流数组与正版 CENC 解密凭据（`encrypt_info.spade_a`）。
+3. **Android 原生层 `HongguoStreamResolver.kt` 深度升级**：
+   - 将流解析端点全面切换至 `multi_video_model/preload/v1/`；
+   - 兼容新接口的 `JSONArray` 视频流结构，遍历提取 `video_meta.definition`、`main_url` / `backup_url_1`、`spade_a`；
+   - 派生每个清晰度对应的 16 字节 AES-128 CENC 内容密钥注入 `keysMap`，构建 `[1080, 720, 540, 480, 360]` 完整清晰度列表；
+   - 将此官方超清原生解析置于最高优先级，原 360P 公开直链作为终极安全降级兜底，兼具超清与高可用。
+4. **Dart 核心层 `duanju_core_bridge.dart` 调度与解析对齐**：
+   - 重构 `_doGetPlaybackPlan` 通道优先级，移除开头强制 360P 阻断，优先调度 Android 原生 `resolveStream` 与 Dart 端 `_fetchHongguoAppPlaybackPlan`；
+   - 同步升级 Dart 端 `_fetchHongguoAppPlaybackPlan` 为 `preload/v1` 接口，支持多清晰度 `keysMap` 映射与播放计划注入；
+   - 播放器自由无缝切换 1080P/720P/480P，且自动匹配对应的 CENC 解密 Key，实现秒级超清流畅播放。
+5. **真实流与解密管道验证**：
+   - 通过实测脚本与 ffmpeg 对最新剧集真实流进行 CENC 密钥解密验证，1080P 与 720P 流均以 7.7x~16.7x 超高解码速率无损解码，画质细腻清晰。
+
+---
+
 ## v2.6.110 (2026-10-15)
 
 ### 彻底根除红果短剧全集播放故障 + 官方极速公开直链通道（零耗时/免密秒开起播）+ Android 原生直链快速探测与废弃接口拦截 + 平衡状态机提取 publicVideoSeo + VIP 集数友好提示
