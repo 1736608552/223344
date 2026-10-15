@@ -183,6 +183,7 @@ class DuanjuMediaKitBackend implements PlayerBackend {
     _isBuffering = true;
     _safeAdd(_bufferingCtl, true);
 
+    try {
       _isCompleted = false;
       _safeAdd(_completedCtl, false);
 
