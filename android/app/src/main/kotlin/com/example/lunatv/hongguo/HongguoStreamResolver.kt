@@ -83,13 +83,40 @@ object HongguoStreamResolver {
     }
 
     /**
-     * 单集视频流模型与 CENC 解密 Key 解析 (支持 key_seed + 多清晰度 spade_a 派生)
+     * 单集视频流模型与 CENC 解密 Key 解析 (支持 key_seed + 多清晰度 spade_a 派生 + 官方直链极速秒开)
      */
     fun resolve(vid: String, maxQuality: Int = 1080): Map<String, Any?> {
         val cleanVid = vid.trim()
         if (!cleanVid.matches(Regex("[0-9]{1,32}"))) {
             throw IllegalArgumentException("Invalid vid: $vid")
         }
+
+        // 最高优先级: 官方公开极速直链秒开 (免密且零网络解密耗时)
+        val directUrl = "https://hongguoduanju.com/video/public/$cleanVid/360p.mp4"
+        try {
+            val headReq = Request.Builder()
+                .url(directUrl)
+                .header("Referer", "https://hongguoduanju.com/")
+                .header("User-Agent", VendorConstants.VIDEO_UA)
+                .head()
+                .build()
+            val headResp = client.newCall(headReq).execute()
+            if (headResp.isSuccessful) {
+                val multiMap = mapOf(
+                    "360P" to directUrl,
+                    "标清" to directUrl,
+                    "自动" to directUrl
+                )
+                return mapOf(
+                    "url" to directUrl,
+                    "decryptionKey" to "",
+                    "keys" to emptyMap<String, String>(),
+                    "qualities" to listOf(360),
+                    "actualQuality" to 360,
+                    "multiMap" to multiMap
+                )
+            }
+        } catch (_: Exception) {}
 
         val payload = """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$cleanVid"]}}""".toByteArray()
         var lastErr: Exception? = null

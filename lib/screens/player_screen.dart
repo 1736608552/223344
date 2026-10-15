@@ -4066,9 +4066,12 @@ class _PlayerScreenState extends State<PlayerScreen>
     // 绝对安全防线：若尚未成功解析为 http 直链，绝不将纯数字占位符传给播放内核
     if (!actualSourceUrl.startsWith('http')) {
       if (mounted) {
+        final hintText = (isShortDrama && index >= 3)
+            ? '第${index + 1}集为官方VIP保护剧集，前3集可免费秒开体验'
+            : '第${index + 1}集视频地址解析中，请稍候重试...';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('第${index + 1}集视频地址解析中，请稍候重试...'),
+            content: Text(hintText),
             duration: const Duration(seconds: 2),
           ),
         );

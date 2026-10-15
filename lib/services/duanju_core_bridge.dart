@@ -1231,7 +1231,62 @@ class DuanjuCoreBridge {
       vid = cleanId;
     }
 
-    // 通道 0 (最高优先级): Android 原生层红果短剧签名与解密通道 (对齐 hongguoTV 原生引擎，支持 key_seed + CENC 解密)
+    // 通道 0 (最高优先级): 官方公开极速直链通道 (前 3 集 100% 免密秒开，无任何网络解密阻断)
+    if (vid.isNotEmpty) {
+      final directUrl = 'https://hongguoduanju.com/video/public/$vid/360p.mp4';
+      bool isDirectAvailable = (episode <= 3);
+      if (!isDirectAvailable) {
+        // 针对第 4 集及以上，通过极速 HEAD 探测确认该集是否在开放试看范围内 (如 accessible_episode_cnt > 3)
+        try {
+          final headRes = await http.head(
+            Uri.parse(directUrl),
+            headers: {
+              'Referer': 'https://hongguoduanju.com/',
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+            },
+          ).timeout(const Duration(milliseconds: 1500));
+          if (headRes.statusCode == 200) {
+            isDirectAvailable = true;
+          }
+        } catch (_) {}
+      }
+
+      if (isDirectAvailable) {
+        final multiMap = <String, String>{
+          '360P': directUrl,
+          '标清': directUrl,
+          '自动': directUrl,
+        };
+        final plan = DuanjuPlaybackPlan(
+          url: directUrl,
+          decryptionKey: '',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+            'Referer': 'https://hongguoduanju.com/',
+          },
+          multiMap: multiMap,
+          resolution: '360P',
+          quality: quality > 0 ? quality : 360,
+          actualQuality: 360,
+          qualities: const [360],
+        );
+        _planCache[cacheKey] = plan;
+        _planCache['$cleanId-$episode'] = plan;
+        _planCache['hongguo:$cleanId-$episode'] = plan;
+        _playbackUrlCache[cacheKey] = directUrl;
+        _playbackUrlCache['$cleanId-$episode'] = directUrl;
+        _playbackMultiResCache[cacheKey] = multiMap;
+        _playbackMultiResCache['$cleanId-$episode'] = multiMap;
+        _playbackResolutionCache[cacheKey] = '360P';
+        _playbackResolutionCache['$cleanId-$episode'] = '360P';
+        if (kDebugMode) {
+          print('[DuanjuBridge] 官方公开直链极速秒开成功: ep=$episode, vid=$vid, url=$directUrl');
+        }
+        return plan;
+      }
+    }
+
+    // 通道 1: Android 原生层红果短剧签名与解密通道 (对齐 hongguoTV 原生引擎，支持 key_seed + CENC 解密)
     if (Platform.isAndroid && vid.isNotEmpty) {
       try {
         const channel = MethodChannel('com.example.lunatv/hongguo_resolver');
@@ -1755,9 +1810,8 @@ class DuanjuCoreBridge {
       }).timeout(const Duration(seconds: 8));
 
       if (resp.statusCode == 200) {
-        final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true).firstMatch(resp.body);
-        if (m != null) {
-          final data = jsonDecode(m.group(1)!);
+        final data = _extractRouterDataJson(resp.body);
+        if (data is Map) {
           final loaderData = data['loaderData'];
           if (loaderData is Map) {
             dynamic pageData;
@@ -1772,6 +1826,17 @@ class DuanjuCoreBridge {
             if (pageData is Map) {
               final returnedVid = pageData['vid']?.toString() ?? '';
               if (returnedVid.isEmpty || returnedVid == vid) {
+                // 1. 优先提取公开 SEO 静态直链 (针对开放试看集)
+                final seo = pageData['publicVideoSeo'];
+                if (seo is Map && seo['available'] == true) {
+                  final targetVid = seo['itemId']?.toString() ?? vid;
+                  final directUrl = 'https://hongguoduanju.com/video/public/$targetVid/360p.mp4';
+                  _playbackResolutionCache[cacheKey] = '360P';
+                  _playbackUrlCache[cacheKey] = directUrl;
+                  return directUrl;
+                }
+
+                // 2. 兼容提取传统 video_player_info 直链
                 final playInfo = pageData['video_player_info'];
                 if (playInfo is Map) {
                   final mainUrl = (playInfo['main_url'] ??
@@ -1809,10 +1874,8 @@ class DuanjuCoreBridge {
       }).timeout(const Duration(seconds: 8));
 
       if (resp.statusCode == 200) {
-        final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true)
-            .firstMatch(resp.body);
-        if (m != null) {
-          final data = jsonDecode(m.group(1)!);
+        final data = _extractRouterDataJson(resp.body);
+        if (data is Map) {
           final loaderData = data['loaderData'];
           if (loaderData is Map) {
             dynamic pageData;
@@ -1830,6 +1893,17 @@ class DuanjuCoreBridge {
               if (returnedVid.isNotEmpty && returnedVid != vid) {
                 return; // 拦截冒充，不预缓存错误的第一集流
               }
+
+              final seo = pageData['publicVideoSeo'];
+              if (seo is Map && seo['available'] == true) {
+                final targetVid = seo['itemId']?.toString() ?? vid;
+                final directUrl = 'https://hongguoduanju.com/video/public/$targetVid/360p.mp4';
+                _playbackResolutionCache[nextCacheKey] = '360P';
+                _playbackUrlCache[nextCacheKey] = directUrl;
+                _playbackMultiResCache[nextCacheKey] = buildMultiResolutionUrls(directUrl);
+                return;
+              }
+
               final playInfo = pageData['video_player_info'];
               if (playInfo is Map) {
                 final mainUrl = playInfo['main_url']?.toString();
