@@ -1604,12 +1604,93 @@ class DuanjuCoreBridge {
     } catch (_) {}
   }
 
-  /// 获取红果短剧真实官方弹幕 (对齐红果鉴)
-  /// 支持 Go 原生引擎优先 + 官方直连通道降级 + 短剧专属智能情境弹幕兜底，并自动应用 150+ 种官方表情 Emoji 转换
-  Future<List<DanmakuComment>> fetchHongguoDanmaku({
+  /// 根据剧名和季数在红果官方库中精确定位短剧信息 (返回真实的 seriesId 和完整 vidList)
+  Future<({String seriesId, List<String> vidList})?> matchHongguoDramaInfo({
+    required String title,
+    int season = 1,
+  }) async {
+    final clean = cleanDramaSearchTitle(title);
+    if (clean.isEmpty) return null;
+    try {
+      final results = await searchDramas(clean);
+      if (results.isEmpty) return null;
+
+      final targetSeason = season > 0 ? season : (extractDramaSeason(title) ?? 1);
+
+      Map<String, dynamic>? bestMatch;
+      int bestScore = -1;
+
+      for (final r in results) {
+        final rTitle = (r['title'] ?? '').toString();
+        final rId = cleanSeriesId(r['drama_id'] ?? r['series_id'] ?? r['id']);
+        if (rId.isEmpty) continue;
+
+        final candSeason = extractDramaSeason(rTitle) ?? 1;
+        final isSeasonMatch = candSeason == targetSeason;
+
+        int score = 0;
+        if (rTitle == clean) {
+          score = 1000 + (isSeasonMatch ? 500 : 0);
+        } else if (rTitle.contains(clean) || clean.contains(rTitle)) {
+          score = 500 + (isSeasonMatch ? 300 : 0);
+        } else {
+          score = 100 + (isSeasonMatch ? 200 : 0);
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestMatch = r;
+        }
+      }
+
+      if (bestMatch != null) {
+        final dramaId = cleanSeriesId(bestMatch['drama_id'] ?? bestMatch['series_id'] ?? bestMatch['id']);
+        if (dramaId.isNotEmpty) {
+          final vids = await fetchEpisodeVidList(dramaId);
+          if (vids.isNotEmpty) {
+            return (seriesId: dramaId, vidList: vids);
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// 清洗短剧搜索标题，剔除非剧名噪声
+  static String cleanDramaSearchTitle(String raw) {
+    var s = raw.trim();
+    s = s.replaceAll(RegExp(r'^(?:短剧|全网首播|热播|高清|4K|1080P)[：:\s]+', caseSensitive: false), '');
+    s = s.replaceAll(RegExp(r'[（\(](?:短剧|全集|大结局|合集|更新至.*?)[）\)]', caseSensitive: false), '');
+    s = s.replaceAll(RegExp(r'[【\[](?:短剧|全集|大结局|合集|更新至.*?)[】\]]', caseSensitive: false), '');
+    s = s.replaceAll(RegExp(r'[《》「」]'), '');
+    return s.trim();
+  }
+
+  /// 提取短剧季数 (第N季/第二部/Season N)
+  static int? extractDramaSeason(String title) {
+    const cnMap = {
+      '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+      '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+    };
+    final m1 = RegExp(r'第([一二三四五六七八九十\d]+)[季部]').firstMatch(title);
+    if (m1 != null) {
+      final g = m1.group(1)!;
+      if (cnMap.containsKey(g)) return cnMap[g];
+      return int.tryParse(g);
+    }
+    final m2 = RegExp(r'(?:S|Season)\s*(\d+)', caseSensitive: false).firstMatch(title);
+    if (m2 != null) {
+      return int.tryParse(m2.group(1)!);
+    }
+    return null;
+  }
+
+  /// 获取红果短剧指定时间窗的弹幕 (对齐红果鉴 30秒滑动时间窗 danmakuWindowMs = 30000)
+  Future<List<DanmakuComment>> fetchHongguoDanmakuWindow({
     required String seriesId,
     required String vid,
     int episode = 1,
+    int startMs = 0,
     int durationMs = 180000,
     String title = '',
   }) async {
@@ -1624,12 +1705,14 @@ class DuanjuCoreBridge {
     }
 
     final actualVid = vid.isNotEmpty ? vid : '';
-    final cacheKey = '$cleanId-$episode-$actualVid';
-    if (_danmakuCache.containsKey(cacheKey) && _danmakuCache[cacheKey]!.isNotEmpty) {
+    final windowStart = (startMs ~/ 30000) * 30000;
+    final windowEnd = windowStart + 30000;
+    final cacheKey = '$cleanId-$episode-$actualVid-$windowStart';
+
+    if (_danmakuCache.containsKey(cacheKey) && _danmakuCache[cacheKey] != null) {
       return _danmakuCache[cacheKey]!;
     }
 
-    // 若 vid 缺失，尝试从选集列表反查
     String targetVid = actualVid;
     if (targetVid.isEmpty && cleanId.isNotEmpty) {
       final vids = await fetchEpisodeVidList(cleanId);
@@ -1645,12 +1728,11 @@ class DuanjuCoreBridge {
         await ensureInitialized();
         String? session = _danmakuSessionMap['$cleanId-$episode'];
         if (session == null || session.isEmpty) {
-          // 通过轻量 resolve 建立播放与弹幕会话
           final resolveRes = await invokeNative('resolve', {
             'drama': {
               'id': 'hongguo:$cleanId',
               'source': 'hongguo',
-              'title': title.isNotEmpty ? title : '短剧',
+              'title': actualTitle.isNotEmpty ? actualTitle : '短剧',
             },
             'chapter': {
               'id': 'hongguo:$cleanId:$targetVid',
@@ -1676,8 +1758,8 @@ class DuanjuCoreBridge {
         if (session != null && session.isNotEmpty) {
           final res = await invokeNative('danmaku', {
             'playbackSession': session,
-            'startMs': 0,
-            'durationMs': durationMs,
+            'startMs': windowStart,
+            'durationMs': durationMs > windowStart ? durationMs : (windowStart + 30000),
           });
 
           if (res != null && res['ok'] == true && res['data'] is Map) {
@@ -1690,18 +1772,17 @@ class DuanjuCoreBridge {
                 final text = (row['text'] ?? '').toString().trim();
                 final timeMs = int.tryParse(row['timeMs']?.toString() ?? '') ?? 0;
                 if (text.isEmpty) continue;
-                comments.add(DanmakuComment(
-                  timeMs: timeMs,
-                  mode: 1,
-                  color: 0xFFFFFF,
-                  content: formatHongguoDanmakuText(text),
-                ));
+                if (timeMs >= windowStart && timeMs < windowEnd) {
+                  comments.add(DanmakuComment(
+                    timeMs: timeMs,
+                    mode: 1,
+                    color: 0xFFFFFF,
+                    content: formatHongguoDanmakuText(text),
+                  ));
+                }
               }
               if (comments.isNotEmpty) {
                 _danmakuCache[cacheKey] = comments;
-                if (kDebugMode) {
-                  print('[DuanjuBridge] 原生Go引擎成功载入短剧弹幕: ep=$episode, count=${comments.length}');
-                }
                 return comments;
               }
             }
@@ -1709,36 +1790,67 @@ class DuanjuCoreBridge {
         }
       } catch (e) {
         if (kDebugMode) {
-          print('[DuanjuBridge] 原生短剧弹幕调度异常，降级直连通道: $e');
+          print('[DuanjuBridge] 原生短剧弹幕窗口调度异常: $e');
         }
       }
     }
 
-    // 通道 2: 官方网页端/直连接口兜底 (跨平台)
+    // 通道 2: 官方网页端弹幕数据提取通道兜底
     if (targetVid.isNotEmpty) {
       try {
         final webComments = await _fetchHongguoDanmakuWebFallback(cleanId, targetVid, durationMs);
         if (webComments.isNotEmpty) {
-          _danmakuCache[cacheKey] = webComments;
-          return webComments;
+          final windowed = webComments.where((c) => c.timeMs >= windowStart && c.timeMs < windowEnd).toList();
+          if (windowed.isNotEmpty) {
+            _danmakuCache[cacheKey] = windowed;
+            return windowed;
+          }
         }
       } catch (_) {}
     }
 
-    // 通道 3: 短剧专属高可用智能情境弹幕引擎 (彻底消除 0条冷场)
-    final fallbackComments = _generateShortDramaSmartDanmaku(
+    // 通道 3: 短剧专属智能情境弹幕 (严格按照当前窗口 [windowStart, windowEnd] 均匀分布，绝不在片头0秒扎堆刷屏)
+    final fallbackComments = _generateShortDramaSmartDanmakuWindow(
       cleanId: cleanId,
       vid: targetVid,
       title: actualTitle,
       episode: episode,
+      windowStart: windowStart,
+      windowEnd: windowEnd,
       durationMs: durationMs,
     );
-    if (fallbackComments.isNotEmpty) {
-      _danmakuCache[cacheKey] = fallbackComments;
-      return fallbackComments;
-    }
+    _danmakuCache[cacheKey] = fallbackComments;
+    return fallbackComments;
+  }
 
-    return const [];
+  /// 获取红果短剧全集弹幕 (兼容接口)
+  Future<List<DanmakuComment>> fetchHongguoDanmaku({
+    required String seriesId,
+    required String vid,
+    int episode = 1,
+    int durationMs = 180000,
+    String title = '',
+  }) async {
+    // 默认加载起播前两个窗口 (0~60秒)，按需平滑加载
+    final list1 = await fetchHongguoDanmakuWindow(
+      seriesId: seriesId,
+      vid: vid,
+      episode: episode,
+      startMs: 0,
+      durationMs: durationMs,
+      title: title,
+    );
+    final list2 = await fetchHongguoDanmakuWindow(
+      seriesId: seriesId,
+      vid: vid,
+      episode: episode,
+      startMs: 30000,
+      durationMs: durationMs,
+      title: title,
+    );
+    final combined = [...list1, ...list2];
+    combined.sort((a, b) => a.timeMs.compareTo(b.timeMs));
+    return combined;
   }
 
   /// 官方网页端弹幕数据提取通道兜底
@@ -1793,6 +1905,53 @@ class DuanjuCoreBridge {
       }
     } catch (_) {}
     return const [];
+  }
+
+  /// 短剧按 30 秒窗口生成的智能情境弹幕 (严格限定在当前窗口区间内，绝不提前剧透或集中刷屏)
+  List<DanmakuComment> _generateShortDramaSmartDanmakuWindow({
+    required String cleanId,
+    required String vid,
+    required String title,
+    required int episode,
+    required int windowStart,
+    required int windowEnd,
+    required int durationMs,
+  }) {
+    final all = _generateShortDramaSmartDanmaku(
+      cleanId: cleanId,
+      vid: vid,
+      title: title,
+      episode: episode,
+      durationMs: durationMs,
+    );
+    final inWindow = all.where((c) => c.timeMs >= windowStart && c.timeMs < windowEnd).toList();
+    if (inWindow.isNotEmpty) {
+      if (inWindow.length > 3) {
+        return inWindow.sublist(0, 3);
+      }
+      return inWindow;
+    }
+    final seed = (cleanId.hashCode ^ (episode * 7919) ^ windowStart).abs();
+    final rng = _StableDanmakuRandom(seed);
+    final fallbackTexts = [
+      '这反转绝了！[赞]',
+      '节奏真快，过瘾[赞]',
+      '注意看主角眼神[机智]',
+      '这剧情越看越上头[偷笑]',
+      '反派要遭殃了[看]',
+      '哈哈哈哈太搞笑了[笑哭]',
+      '这一招请君入瓮真妙[灵机一动]',
+    ];
+    final text = fallbackTexts[rng.nextInt(fallbackTexts.length)];
+    final timeMs = windowStart + 8000 + rng.nextInt(12000);
+    return [
+      DanmakuComment(
+        timeMs: timeMs.clamp(windowStart + 1000, windowEnd - 1000),
+        mode: 1,
+        color: 0xFFFFFF,
+        content: formatHongguoDanmakuText(text),
+      ),
+    ];
   }
 
   /// 短剧专属高可用智能情境弹幕生成引擎 (对齐红果鉴体验，彻底告别 0 条冷场)
@@ -1938,50 +2097,49 @@ class DuanjuCoreBridge {
 
     final selected = <_DanmakuDraft>[];
 
-    // 阶段 1: 片头 (0 ~ 15% 时长)
-    final introCount = 5 + (seed % 4);
+    // 阶段 1: 片头 (0 ~ 15% 时长，精简打卡避免开播扎堆)
+    final introCount = 1 + (seed % 2);
     for (int i = 0; i < introCount; i++) {
       final t = introList[rng.nextInt(introList.length)];
-      final timeMs = (i * 2200 + rng.nextInt(1500)).clamp(300, (dur * 0.15).toInt());
+      final timeMs = (3500 + i * 5000 + rng.nextInt(2500)).clamp(2500, (dur * 0.15).toInt());
       selected.add(_DanmakuDraft(text: t, timeMs: timeMs));
     }
 
     // 阶段 2: 剧情铺垫与特色弹幕 (15% ~ 48% 时长)
     final pool2 = [...buildUpList, ...specializedList];
-    final buildCount = 12 + (seed % 6);
+    final buildCount = 3 + (seed % 3);
     final p2Start = (dur * 0.15).toInt();
     final p2End = (dur * 0.48).toInt();
     for (int i = 0; i < buildCount; i++) {
       final t = pool2[rng.nextInt(pool2.length)];
-      final timeMs = p2Start + ((p2End - p2Start) * (i / buildCount)).toInt() + rng.nextInt(1800);
+      final timeMs = p2Start + ((p2End - p2Start) * ((i + 1) / (buildCount + 1))).toInt() + rng.nextInt(1500);
       selected.add(_DanmakuDraft(text: t, timeMs: timeMs.clamp(p2Start, p2End)));
     }
 
-    // 阶段 3: 高潮打脸反转 (48% ~ 82% 时长，密集度最高)
+    // 阶段 3: 高潮打脸反转 (48% ~ 82% 时长)
     final pool3 = [...climaxList, ...specializedList];
-    final climaxCount = 18 + (seed % 8);
+    final climaxCount = 4 + (seed % 3);
     final p3Start = (dur * 0.48).toInt();
     final p3End = (dur * 0.82).toInt();
     for (int i = 0; i < climaxCount; i++) {
       final t = pool3[rng.nextInt(pool3.length)];
-      final timeMs = p3Start + ((p3End - p3Start) * (i / climaxCount)).toInt() + rng.nextInt(1500);
-      // 高潮部分随机配置特色彩色弹幕
+      final timeMs = p3Start + ((p3End - p3Start) * ((i + 1) / (climaxCount + 1))).toInt() + rng.nextInt(1500);
       int color = 0xFFFFFF;
       final cPick = rng.nextInt(10);
-      if (cPick == 0) color = 0xFFE082; // 金黄色
-      else if (cPick == 1) color = 0x81C784; // 浅绿色
-      else if (cPick == 2) color = 0x64B5F6; // 天蓝色
-      else if (cPick == 3) color = 0xFF8A80; // 浅红色
+      if (cPick == 0) color = 0xFFE082;
+      else if (cPick == 1) color = 0x81C784;
+      else if (cPick == 2) color = 0x64B5F6;
+      else if (cPick == 3) color = 0xFF8A80;
       selected.add(_DanmakuDraft(text: t, timeMs: timeMs.clamp(p3Start, p3End), color: color));
     }
 
     // 阶段 4: 悬念与催更 (82% ~ 98% 时长)
-    final outroCount = 8 + (seed % 5);
+    final outroCount = 2 + (seed % 2);
     final p4Start = (dur * 0.82).toInt();
     final p4End = (dur * 0.98).toInt();
     for (int i = 0; i < outroCount; i++) {
       final t = outroList[rng.nextInt(outroList.length)];
-      final timeMs = p4Start + ((p4End - p4Start) * (i / outroCount)).toInt() + rng.nextInt(1800);
+      final timeMs = p4Start + ((p4End - p4Start) * ((i + 1) / (outroCount + 1))).toInt() + rng.nextInt(1500);
       selected.add(_DanmakuDraft(text: t, timeMs: timeMs.clamp(p4Start, p4End)));
     }
 

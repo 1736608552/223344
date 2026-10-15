@@ -290,6 +290,14 @@ class _PlayerScreenState extends State<PlayerScreen>
   // Overlay key — 用于强制重建
   final GlobalKey<DanmakuOverlayState> _danmakuKey = GlobalKey<DanmakuOverlayState>();
 
+  // 对齐红果鉴的短剧30秒滑动时间窗调度状态 (danmakuWindowMs = 30000)
+  static const int _kDanmakuWindowMs = 30000;
+  final Set<int> _loadedDanmakuWindows = <int>{};
+  bool _danmakuWindowFetching = false;
+  int _lastSyncedDanmakuPosMs = -1;
+  String _currentMatchedDramaSeriesId = '';
+  List<String> _currentMatchedVidList = const [];
+
   // v2.5.51: 弹幕预搜索 — 进播放页时后台并发搜索 6 源 (移植 SeleneTV t14.java:741)
   //   "进播放页并发搜索, 命中源进「弹幕源」切换; 一次只渲染一个源"
   //   用户点弹幕按钮时直接使用预搜索结果, 无需等待
@@ -590,6 +598,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         }
         _updateSkipButtonVisibility();
         _maybeAutoPlayNext();
+        if (_isCurrentShortDrama && _danmakuEnabled) {
+          _maybeStreamShortDramaDanmaku(pos.inMilliseconds);
+        }
       }
     });
 
@@ -688,6 +699,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     _seekHintTimer?.cancel();
     _centerSwipeSeekThrottle?.cancel();
     _bottomBarSwipeThrottle?.cancel();
+    _loadedDanmakuWindows.clear();
+    _currentMatchedDramaSeriesId = '';
+    _currentMatchedVidList = const [];
     // v2.5.90: seek guard 已移除
     // _clearSeekGuard();
     _positionSub?.cancel();
@@ -1580,69 +1594,146 @@ class _PlayerScreenState extends State<PlayerScreen>
         (_selectedSource?.source == 'hongguo');
   }
 
-  /// 短剧专属弹幕加载方法 (对齐红果鉴)
-  Future<void> _loadShortDramaDanmaku({bool auto = false}) async {
-    final dramaId = _selectedSource?.id.isNotEmpty == true
+  /// 短剧专属弹幕加载方法 (对齐红果鉴：精准定位剧名/季数/单集 + 30秒滑动窗口流水线)
+  Future<void> _loadShortDramaDanmaku({bool auto = false, int startMs = 0}) async {
+    final title = widget.videoInfo.title.trim();
+    final epNum = _currentEpisodeIndex + 1;
+    final seasonNum = DuanjuCoreBridge.extractDramaSeason(title) ?? 1;
+
+    String dramaId = _selectedSource?.id.isNotEmpty == true
         ? _selectedSource!.id
         : widget.videoInfo.id;
-    final epNum = _currentEpisodeIndex + 1;
-    final title = widget.videoInfo.title.trim();
+    dramaId = DuanjuCoreBridge.cleanSeriesId(dramaId);
 
-    // 注册剧名，确保桥接层和智能弹幕引擎能感知短剧题材
-    if (title.isNotEmpty) {
+    // 1. 若当前源不是纯数字红果官方 ID，尝试通过剧名和季数精确定位红果短剧官方 ID 与选集
+    List<String> vidList = const [];
+    if (_currentMatchedDramaSeriesId.isNotEmpty && _currentMatchedVidList.isNotEmpty) {
+      dramaId = _currentMatchedDramaSeriesId;
+      vidList = _currentMatchedVidList;
+    } else {
+      if (dramaId.isNotEmpty) {
+        vidList = await DuanjuCoreBridge.instance.fetchEpisodeVidList(dramaId);
+      }
+      if (vidList.isEmpty && title.isNotEmpty) {
+        final match = await DuanjuCoreBridge.instance.matchHongguoDramaInfo(
+          title: title,
+          season: seasonNum,
+        );
+        if (match != null) {
+          dramaId = match.seriesId;
+          vidList = match.vidList;
+          _currentMatchedDramaSeriesId = dramaId;
+          _currentMatchedVidList = vidList;
+        }
+      }
+    }
+
+    if (title.isNotEmpty && dramaId.isNotEmpty) {
       DuanjuCoreBridge.instance.registerDramaTitle(dramaId, title);
     }
 
-    setState(() => _danmakuLoading = true);
-    await DiaryService.add('[短剧弹幕] 开始获取: $title 第$epNum集 (dramaId=$dramaId)');
+    String vid = '';
+    if (vidList.isNotEmpty) {
+      final idx = (epNum - 1).clamp(0, vidList.length - 1);
+      vid = vidList[idx];
+    }
+
+    if (startMs == 0 && !auto) {
+      setState(() => _danmakuLoading = true);
+    }
+    await DiaryService.add('[短剧弹幕] 开始获取: $title 第$seasonNum季 第$epNum集 (dramaId=$dramaId, vid=$vid, window=$startMs)');
 
     try {
-      final vidList = await DuanjuCoreBridge.instance.fetchEpisodeVidList(dramaId);
-      String vid = '';
-      if (vidList.isNotEmpty) {
-        final idx = (epNum - 1).clamp(0, vidList.length - 1);
-        vid = vidList[idx];
-      }
-
-      final comments = await DuanjuCoreBridge.instance.fetchHongguoDanmaku(
+      final totalDurMs = _currentDuration.inMilliseconds > 0 ? _currentDuration.inMilliseconds : 180000;
+      final comments = await DuanjuCoreBridge.instance.fetchHongguoDanmakuWindow(
         seriesId: dramaId,
         vid: vid,
         episode: epNum,
+        startMs: startMs,
+        durationMs: totalDurMs,
         title: title,
       );
 
       if (!mounted) return;
 
-      if (comments.isNotEmpty) {
-        setState(() {
-          _danmakuComments = comments;
-          _danmakuCount = comments.length;
-          _danmakuEnabled = true;
-          _danmakuSource = 'hongguo';
-          _danmakuSourceTitle = '红果短剧 · $title · 第$epNum集';
-          _danmakuSelSource = DanmakuSource.hongguo;
-          _danmakuSelMediaId = dramaId;
-          _danmakuSelMediaTitle = title;
-        });
-        _danmakuKey.currentState?.reset();
-        if (!auto) {
-          _toast('弹幕 · 红果短剧 · ${comments.length}条');
+      final windowKey = (startMs ~/ _kDanmakuWindowMs) * _kDanmakuWindowMs;
+      _loadedDanmakuWindows.add(windowKey);
+
+      // 合并并去重，严格按毫秒时间戳排序
+      final merged = <DanmakuComment>[..._danmakuComments];
+      for (final c in comments) {
+        if (!merged.any((existing) => existing.timeMs == c.timeMs && existing.content == c.content)) {
+          merged.add(c);
         }
-        await DiaryService.add('[短剧弹幕] 成功载入: ${comments.length}条');
-      } else {
-        if (!auto) {
-          _toast('该集暂无短剧弹幕');
-        }
-        await DiaryService.add('[短剧弹幕] 该集暂无弹幕');
       }
+      merged.sort((a, b) => a.timeMs.compareTo(b.timeMs));
+
+      setState(() {
+        _danmakuComments = merged;
+        _danmakuCount = merged.length;
+        _danmakuEnabled = true;
+        _danmakuSource = 'hongguo';
+        _danmakuSourceTitle = '红果短剧 · $title · 第$epNum集';
+        _danmakuSelSource = DanmakuSource.hongguo;
+        _danmakuSelMediaId = dramaId;
+        _danmakuSelMediaTitle = title;
+      });
+
+      if (!auto && startMs == 0) {
+        _toast('弹幕 · 红果短剧 · 第$epNum集 · ${merged.length}条');
+      }
+      await DiaryService.add('[短剧弹幕] 成功载入窗口[$startMs]: ${comments.length}条 (当前总计${merged.length}条)');
     } catch (e) {
       if (!mounted) return;
-      if (!auto) _toast('短剧弹幕加载失败');
+      if (!auto && startMs == 0) _toast('短剧弹幕加载失败');
       debugPrint('[短剧弹幕] 加载异常: $e');
       await DiaryService.add('[短剧弹幕] 加载异常: $e');
     } finally {
-      if (mounted) {
+      if (mounted && startMs == 0 && !auto) {
         setState(() => _danmakuLoading = false);
+      }
+    }
+  }
+
+  /// 视频播放中驱动短剧弹幕滑动窗口加载 (对齐红果鉴 _ensureWindow)
+  void _maybeStreamShortDramaDanmaku(int currentMs) {
+    if (!_isCurrentShortDrama || !_danmakuEnabled || _danmakuWindowFetching) return;
+    if (currentMs < 0) return;
+
+    final windowStart = (currentMs ~/ _kDanmakuWindowMs) * _kDanmakuWindowMs;
+
+    // 1. 若当前 30 秒窗口尚未加载，立即加载
+    if (!_loadedDanmakuWindows.contains(windowStart)) {
+      _danmakuWindowFetching = true;
+      _loadShortDramaDanmaku(auto: true, startMs: windowStart).whenComplete(() {
+        _danmakuWindowFetching = false;
+      });
+      return;
+    }
+
+    // 2. 若当前窗口已加载，且距离该窗口末尾剩余不到 8 秒，流水线式预拉取下一窗口
+    final nextWindowStart = windowStart + _kDanmakuWindowMs;
+    final totalDur = _currentDuration.inMilliseconds;
+    if (totalDur > 0 && nextWindowStart >= totalDur) return;
+
+    if (currentMs >= (windowStart + _kDanmakuWindowMs - 8000)) {
+      if (!_loadedDanmakuWindows.contains(nextWindowStart)) {
+        _danmakuWindowFetching = true;
+        _loadShortDramaDanmaku(auto: true, startMs: nextWindowStart).whenComplete(() {
+          _danmakuWindowFetching = false;
+        });
+      }
+    }
+  }
+
+  /// 进度条跳跃/Seek 时重置弹幕并对齐新时间
+  void _onDanmakuSeek(int newPosMs) {
+    if (_isCurrentShortDrama) {
+      final diff = (newPosMs - _lastSyncedDanmakuPosMs).abs();
+      if (diff > 2000) {
+        _lastSyncedDanmakuPosMs = newPosMs;
+        _danmakuKey.currentState?.reset();
+        _maybeStreamShortDramaDanmaku(newPosMs);
       }
     }
   }
@@ -2237,8 +2328,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     _swipeStartPosition = null;
     _swipeCumulativeDx = 0;
     _isSwiping = false;
-    // v2.5.90: seek guard 已移除
     unawaited(_player!.seek(finalPos));
+    _onDanmakuSeek(finalPos.inMilliseconds);
   }
 
   // v2.5.86: 底部栏水平拖动开始 — 记录起始 value (当前进度) + 底部栏宽度,
@@ -2327,11 +2418,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     final finalVal = (_scrubbingValue ?? v).clamp(0.0, 1.0);
     final newMs = (finalVal * dur).toInt();
     unawaited(_player!.seek(Duration(milliseconds: newMs)));
-    // v2.5.90: seek guard 已移除
     setState(() {
       _currentPosition = Duration(milliseconds: newMs);
-      _scrubbingValue = null; // 跟 _onScrubEnd 一样, 让 Slider 回到 _currentPosition 驱动
+      _scrubbingValue = null;
     });
+    _onDanmakuSeek(newMs);
     _updateSkipButtonVisibility();
     if (_isPlaying) _scheduleHideControls();
   }
@@ -2509,10 +2600,12 @@ class _PlayerScreenState extends State<PlayerScreen>
       _player!.seek(Duration(milliseconds: pos.toInt()));
       // v2.5.90: seek guard 已移除
     }
+    final finalMs = ((value.clamp(0.0, 1.0)) * dur).toInt();
     setState(() {
       _scrubbingValue = null;
-      _currentPosition = Duration(milliseconds: ((value.clamp(0.0, 1.0)) * dur).toInt());
+      _currentPosition = Duration(milliseconds: finalMs);
     });
+    _onDanmakuSeek(finalMs);
     _updateSkipButtonVisibility();
     if (_isPlaying) _scheduleHideControls();
   }
@@ -4019,7 +4112,16 @@ class _PlayerScreenState extends State<PlayerScreen>
       _lastKnownPosition = Duration.zero;
       _isBuffering = true;
       _phase = 'playing';
+      if (_isCurrentShortDrama) {
+        _loadedDanmakuWindows.clear();
+        _lastSyncedDanmakuPosMs = -1;
+        _danmakuComments = const [];
+        _danmakuCount = 0;
+      }
     });
+    if (_isCurrentShortDrama) {
+      _danmakuKey.currentState?.reset();
+    }
     // v2.6.92: 加载当前集的智能跳过片段 (TheIntroDB + TMDB 代理)
     _loadSmartSkipSegmentsForCurrentEpisode();
     // 切集后立即重置并保存新集初始进度 (index=新集), 确保用户哪怕刚切完就退出也能记住新集
@@ -5755,6 +5857,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       _seekHintText = hint;
       _currentPosition = clampedPos;
     });
+    _onDanmakuSeek(clampedPos.inMilliseconds);
     _seekHintTimer = Timer(const Duration(seconds: 1), () {
       if (mounted) setState(() => _seekHintText = null);
     });

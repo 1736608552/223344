@@ -71,7 +71,7 @@ class HongguoDanmaku extends BaseDanmakuSource {
     }
   }
 
-  /// 拉取指定集的红果官方弹幕
+  /// 拉取指定集的红果官方弹幕 (支持时间窗口)
   @override
   Future<List<DanmakuComment>> getDanmaku(
     String episodeId, {
@@ -99,9 +99,20 @@ class HongguoDanmaku extends BaseDanmakuSource {
     }
 
     try {
+      final startMs = startSec > 0 ? (startSec * 1000) : 0;
       final durationMs = (endSec > startSec && endSec > 0)
           ? ((endSec - startSec) * 1000)
           : 180000;
+
+      if (startSec > 0 || (endSec > 0 && endSec <= 60)) {
+        return await DuanjuCoreBridge.instance.fetchHongguoDanmakuWindow(
+          seriesId: seriesId,
+          vid: vid,
+          episode: episode,
+          startMs: startMs,
+          durationMs: durationMs,
+        );
+      }
 
       return await DuanjuCoreBridge.instance.fetchHongguoDanmaku(
         seriesId: seriesId,
