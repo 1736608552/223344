@@ -243,11 +243,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   StreamSubscription<Duration>? _durationSub;
 
   // v2.6.93: 全新智能片头/片尾跳过系统 (彻底替代旧版繁琐手动秒数设置)
-  // 支持 TheIntroDB 全球影视数据库打点 + 通用 90 秒智能兜底
+  // v2.6.101: 纯净依据 TheIntroDB / IntroDB 全球云端打点，彻底禁用本地通用盲跳兜底，杜绝误跳电影与综艺
   bool _smartSkipEnabled = true; // 智能片头跳过总开关
   String _smartSkipMode = 'countdown'; // 'countdown'(5秒倒计时自动跳过), 'instant'(立即跳过), 'manual'(仅手动点击)
-  int _smartSkipFallbackSec = 90; // 通用片头时长(秒)
-  int _smartSkipOutroFallbackSec = 90; // 通用片尾时长(秒)
 
   List<SkipSegment> _smartSkipSegments = [];
   SkipSegment? _activeSmartSegment;
@@ -868,8 +866,6 @@ class _PlayerScreenState extends State<PlayerScreen>
       setState(() {
         _smartSkipEnabled = prefs.getBool('smart_skip_enabled') ?? true;
         _smartSkipMode = prefs.getString('smart_skip_mode') ?? 'countdown';
-        _smartSkipFallbackSec = prefs.getInt('smart_skip_fallback_sec') ?? 90;
-        _smartSkipOutroFallbackSec = prefs.getInt('smart_skip_outro_fallback_sec') ?? 120;
       });
     } catch (_) {}
   }
@@ -880,8 +876,6 @@ class _PlayerScreenState extends State<PlayerScreen>
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('smart_skip_enabled', _smartSkipEnabled);
       await prefs.setString('smart_skip_mode', _smartSkipMode);
-      await prefs.setInt('smart_skip_fallback_sec', _smartSkipFallbackSec);
-      await prefs.setInt('smart_skip_outro_fallback_sec', _smartSkipOutroFallbackSec);
     } catch (_) {}
   }
 
