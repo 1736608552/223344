@@ -104,4 +104,5 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.4.1")                 // PlayerView
     implementation("androidx.media3:media3-datasource-okhttp:1.4.1")  // OkHttp DataSource
     implementation("androidx.media3:media3-common:1.4.1")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.79")
 }

@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:luna_tv/danmaku/models/danmaku_comment.dart';
@@ -907,6 +908,46 @@ class DuanjuCoreBridge {
     }
   }
 
+  /// 平衡括号状态机：100% 完整准确提取 HTML 中的 _ROUTER_DATA JSON (对齐 hongguoTV)
+  static dynamic _extractRouterDataJson(String source, {String marker = '_ROUTER_DATA'}) {
+    final start = source.indexOf(marker);
+    if (start < 0) return null;
+    final first = source.indexOf('{', start);
+    if (first < 0) return null;
+    int depth = 0;
+    bool quote = false;
+    bool escaped = false;
+    for (int i = first; i < source.length; i++) {
+      final ch = source[i];
+      if (quote) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch == '\\') {
+          escaped = true;
+        } else if (ch == '"') {
+          quote = false;
+        }
+        continue;
+      }
+      if (ch == '"') {
+        quote = true;
+      } else if (ch == '{' || ch == '[') {
+        depth++;
+      } else if (ch == '}' || ch == ']') {
+        depth--;
+        if (depth == 0) {
+          final jsonStr = source.substring(first, i + 1);
+          try {
+            return jsonDecode(jsonStr);
+          } catch (_) {
+            return null;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   Future<List<String>> _doFetchEpisodeVidList(String cleanId) async {
     // 通道 1: 原生 Go 核心 detail 接口 (对齐鱼佬 guoapp，双通道 App + Web 提取全部分集 chapters)
     if (_isNativeAvailable) {
@@ -960,7 +1001,7 @@ class DuanjuCoreBridge {
       }
     }
 
-    // 通道 2: 官方 Web 协议 SSR 数据提取
+    // 通道 2: 官方 Web 协议 SSR 数据提取 (基于平衡状态机提取 _ROUTER_DATA，对齐 hongguoTV)
     try {
       final detailUri =
           Uri.parse('https://hongguoduanju.com/detail?series_id=$cleanId');
@@ -972,10 +1013,8 @@ class DuanjuCoreBridge {
       }).timeout(const Duration(seconds: 8));
 
       if (resp.statusCode == 200) {
-        final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true)
-            .firstMatch(resp.body);
-        if (m != null) {
-          final data = jsonDecode(m.group(1)!);
+        final data = _extractRouterDataJson(resp.body);
+        if (data is Map) {
           final loaderData = data['loaderData'];
           if (loaderData is Map) {
             dynamic vList =
@@ -996,9 +1035,11 @@ class DuanjuCoreBridge {
             }
 
             if (vList is List && vList.isNotEmpty) {
-              final list = vList.map((e) => e.toString()).toList();
-              _vidListCache[cleanId] = list;
-              return list;
+              final list = vList.map((e) => e.toString().trim()).where((s) => s.isNotEmpty).toList();
+              if (list.isNotEmpty) {
+                _vidListCache[cleanId] = list;
+                return list;
+              }
             }
           }
         }
@@ -1029,7 +1070,13 @@ class DuanjuCoreBridge {
   }
 
   final Map<String, DuanjuPlaybackPlan> _planCache = {};
+  final Map<String, List<DanmakuComment>> _danmakuCache = {};
+  final Map<String, List<DanmakuComment>> _episodeDanmakuCache = {};
+  final Map<String, String> _danmakuSessionMap = {};
   final Map<String, String> _dramaTitleCache = {};
+  static int _globalSequence = DateTime.now().microsecondsSinceEpoch;
+  static int _nextSequence() => ++_globalSequence;
+  final String _readOwner = 'luna-read-${DateTime.now().microsecondsSinceEpoch}';
 
   /// 注册短剧剧名缓存 (供弹幕智能情境生成和历史检索使用)
   void registerDramaTitle(String seriesId, String title) {
@@ -1097,6 +1144,62 @@ class DuanjuCoreBridge {
     if (vidList.isNotEmpty) {
       final idx = (episode - 1).clamp(0, vidList.length - 1);
       vid = vidList[idx];
+    } else if (RegExp(r'^\d{10,25}$').hasMatch(cleanId)) {
+      vid = cleanId;
+    }
+
+    // 通道 0 (最高优先级): Android 原生层红果短剧签名与解密通道 (对齐 hongguoTV 原生引擎，支持 key_seed + CENC 解密)
+    if (Platform.isAndroid && vid.isNotEmpty) {
+      try {
+        const channel = MethodChannel('com.example.lunatv/hongguo_resolver');
+        final res = await channel.invokeMethod<Map<dynamic, dynamic>>('resolveStream', {
+          'vid': vid,
+          'maxQuality': quality > 0 ? quality : 1080,
+        });
+        if (res != null) {
+          final streamUrl = res['url']?.toString() ?? '';
+          final decKey = res['decryptionKey']?.toString() ?? '';
+          final rawQualities = res['qualities'];
+          final qualities = (rawQualities is List)
+              ? rawQualities.map((e) => int.tryParse(e.toString()) ?? 0).where((q) => q > 0).toList()
+              : [1080, 720, 480];
+          final actQ = int.tryParse(res['actualQuality']?.toString() ?? '') ?? (qualities.isNotEmpty ? qualities.first : 1080);
+          final rawMulti = res['multiMap'];
+          final multiMap = <String, String>{};
+          if (rawMulti is Map) {
+            for (final entry in rawMulti.entries) {
+              multiMap[entry.key.toString()] = entry.value.toString();
+            }
+          }
+          if (streamUrl.isNotEmpty && streamUrl.startsWith('http')) {
+            final plan = DuanjuPlaybackPlan(
+              url: streamUrl,
+              decryptionKey: decKey,
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 16; 25053RT47C) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36',
+                'Referer': 'https://novel.snssdk.com/',
+              },
+              multiMap: multiMap,
+              resolution: '${actQ}P',
+              quality: quality,
+              actualQuality: actQ,
+              qualities: qualities,
+            );
+            _planCache[cacheKey] = plan;
+            _playbackUrlCache[cacheKey] = streamUrl;
+            _playbackMultiResCache[cacheKey] = multiMap;
+            _playbackResolutionCache[cacheKey] = '${actQ}P';
+            if (kDebugMode) {
+              print('[DuanjuBridge] 原生 HongguoStreamResolver 极速取流解密成功: ep=$episode, vid=$vid, decKey=$decKey, url=$streamUrl');
+            }
+            return plan;
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('[DuanjuBridge] 原生 HongguoStreamResolver 解析异常: $e');
+        }
+      }
     }
 
     // 通道 1: 官方 App 原生接口（带 X-Gorgon 签名 + spade_a 解密提取真实 CENC Key）
@@ -1118,6 +1221,18 @@ class DuanjuCoreBridge {
     if (_isNativeAvailable && vid.isNotEmpty) {
       try {
         await ensureInitialized();
+        // 步骤 A: 预热 detail，激活 Go 核心 client.details 缓存
+        try {
+          await invokeNative('detail', {
+            'drama': {
+              'id': 'hongguo:$cleanId',
+              'source': 'hongguo',
+              'title': '短剧',
+            },
+          });
+        } catch (_) {}
+
+        // 步骤 B: 独占调用 resolve 建立视频流播放与解密会话
         final nativeRes = await invokeNative('resolve', {
           'drama': {
             'id': 'hongguo:$cleanId',
@@ -1135,7 +1250,7 @@ class DuanjuCoreBridge {
           },
           'index': episode,
           'quality': quality,
-          'sequence': DateTime.now().millisecondsSinceEpoch,
+          'sequence': _nextSequence(),
         });
 
         if (nativeRes != null && nativeRes['ok'] == true) {
@@ -1143,6 +1258,10 @@ class DuanjuCoreBridge {
           if (data is Map) {
             final nativeUrl = data['url']?.toString();
             final decKey = data['decryptionKey']?.toString() ?? data['key']?.toString() ?? '';
+            final session = data['session']?.toString() ?? '';
+            if (session.isNotEmpty) {
+              _danmakuSessionMap['$cleanId-$episode'] = session;
+            }
             final dynamic rawQualities = data['qualities'];
             final qualities = (rawQualities is List)
                 ? rawQualities.map((e) => int.tryParse(e.toString()) ?? 0).where((q) => q > 0).toList()
@@ -1602,12 +1721,613 @@ class DuanjuCoreBridge {
     } catch (_) {}
   }
 
-  /// 彻底剥离短剧弹幕逻辑，直接返回空列表
+  /// 常见超热门短剧全季精准直通索引库 (零延迟秒开，避免搜索与匹配歧义)
+  static const Map<String, String> _knownDramaDirectMap = {
+    '持械入宋:1': '7671966197985856536', // 持械入宋：第一季 (100集)
+    '持械入宋:2': '7676706788724460568', // 持械入宋：第二季 (100集)
+    '持械入宋:3': '7678620970638134334', // 持械入宋：第三季 (100集)
+    '持械入宋:4': '7680845974494776345', // 持械入宋：第四季 (100集)
+    '持械入宋:5': '7683455900727659545', // 持械入宋：第五季 (100集)
+    '持械入宋:6': '7686430794469887001', // 持械入宋：第六季 (100集)
+    '持械入宋:7': '7690112243203050521', // 持械入宋：第七季 (100集)
+    '持械入宋:8': '7691615145977449496', // 持械入宋：第八季 (100集)
+  };
+
+  /// 根据剧名和季数在红果官方库中精确定位短剧信息 (返回真实的 seriesId 和完整 vidList)
+  Future<({String seriesId, List<String> vidList})?> matchHongguoDramaInfo({
+    required String title,
+    int season = 1,
+  }) async {
+    final clean = cleanDramaSearchTitle(title);
+    if (clean.isEmpty) return null;
+    final baseTitle = extractBaseDramaTitle(title);
+    final targetSeason = season > 0 ? season : (extractDramaSeason(title) ?? 1);
+
+    // 1. 直通精选热门短剧字典
+    final directKey = '$baseTitle:$targetSeason';
+    if (_knownDramaDirectMap.containsKey(directKey)) {
+      final directId = _knownDramaDirectMap[directKey]!;
+      final vids = await fetchEpisodeVidList(directId);
+      if (vids.isNotEmpty) {
+        return (seriesId: directId, vidList: vids);
+      }
+    }
+
+    // 2. 搜索红果短剧官方库
+    try {
+      var results = await searchDramas(clean);
+      if (results.isEmpty && baseTitle.isNotEmpty && baseTitle != clean) {
+        results = await searchDramas(baseTitle);
+      }
+      if (results.isEmpty) return null;
+
+      Map<String, dynamic>? bestMatch;
+      int bestScore = -1;
+
+      for (final r in results) {
+        final rTitle = (r['title'] ?? '').toString().trim();
+        final rId = cleanSeriesId(r['drama_id'] ?? r['series_id'] ?? r['id']);
+        if (rId.isEmpty) continue;
+
+        final candSeason = extractDramaSeason(rTitle) ?? 1;
+        final isSeasonMatch = candSeason == targetSeason;
+        final candBase = extractBaseDramaTitle(rTitle);
+
+        int score = 0;
+        // 核心剧名完全吻合（如 "持械入宋" == "持械入宋"）
+        if (candBase == baseTitle) {
+          score += 2000;
+        } else if (candBase.contains(baseTitle) || baseTitle.contains(candBase)) {
+          score += 1000;
+        } else {
+          score += 100;
+        }
+
+        // 季数精准吻合
+        if (isSeasonMatch) {
+          score += 800;
+          // 若候选剧名明确标出季数（如 "持械入宋：第一季"），相比没有季数标识的，针对季数明确查询有额外优先级
+          if (rTitle.contains('第') || rTitle.contains('S') || rTitle.contains('季')) {
+            score += 200;
+          }
+        } else {
+          score -= 500; // 季数错配大幅扣分
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestMatch = r;
+        }
+      }
+
+      if (bestMatch != null && bestScore > 0) {
+        final dramaId = cleanSeriesId(bestMatch['drama_id'] ?? bestMatch['series_id'] ?? bestMatch['id']);
+        if (dramaId.isNotEmpty) {
+          final vids = await fetchEpisodeVidList(dramaId);
+          if (vids.isNotEmpty) {
+            return (seriesId: dramaId, vidList: vids);
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// 清洗短剧搜索标题，剔除非剧名噪声与集数尾缀
+  static String cleanDramaSearchTitle(String raw) {
+    var s = raw.trim();
+    s = s.replaceAll(RegExp(r'^(?:短剧|全网首播|热播|高清|4K|1080P)[：:\s]+', caseSensitive: false), '');
+    s = s.replaceAll(RegExp(r'[（\(](?:短剧|全集|大结局|合集|更新至.*?)[）\)]', caseSensitive: false), '');
+    s = s.replaceAll(RegExp(r'[【\[](?:短剧|全集|大结局|合集|更新至.*?)[】\]]', caseSensitive: false), '');
+    s = s.replaceAll(RegExp(r'[《》「」]'), '');
+    // 剔除单集后缀（如 · 第31集、第31集、第31话、EP31、E31等）
+    s = s.replaceAll(RegExp(r'[·•\-\s]+第\s*\d+\s*[集话回].*$', caseSensitive: false), '');
+    s = s.replaceAll(RegExp(r'第\s*\d+\s*[集话回].*$', caseSensitive: false), '');
+    s = s.replaceAll(RegExp(r'[·•\-\s]+(?:EP|E)\s*\d+.*$', caseSensitive: false), '');
+    s = s.replaceAll(RegExp(r'\b\d+\s*集\b.*$', caseSensitive: false), '');
+    return s.trim();
+  }
+
+  /// 提取核心剧名（进一步剥离季数，例如 "持械入宋：第一季" -> "持械入宋"）
+  static String extractBaseDramaTitle(String raw) {
+    var s = cleanDramaSearchTitle(raw);
+    s = s.replaceAll(RegExp(r'[:：\s]*第[一二三四五六七八九十\d]+[季部]', caseSensitive: false), '');
+    s = s.replaceAll(RegExp(r'[:：\s]*(?:S|Season)\s*\d+', caseSensitive: false), '');
+    return s.trim();
+  }
+
+  /// 提取短剧季数 (第N季/第二部/Season N)
+  static int? extractDramaSeason(String title) {
+    const cnMap = {
+      '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+      '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+    };
+    final m1 = RegExp(r'第([一二三四五六七八九十\d]+)[季部]').firstMatch(title);
+    if (m1 != null) {
+      final g = m1.group(1)!;
+      if (cnMap.containsKey(g)) return cnMap[g];
+      return int.tryParse(g);
+    }
+    final m2 = RegExp(r'(?:S|Season)\s*(\d+)', caseSensitive: false).firstMatch(title);
+    if (m2 != null) {
+      return int.tryParse(m2.group(1)!);
+    }
+    return null;
+  }
+
+  /// 获取红果短剧指定时间窗的弹幕 (对齐红果鉴 30秒滑动时间窗 danmakuWindowMs = 30000)
+  Future<List<DanmakuComment>> fetchHongguoDanmakuWindow({
+    required String seriesId,
+    required String vid,
+    int episode = 1,
+    int startMs = 0,
+    int durationMs = 180000,
+    String title = '',
+  }) async {
+    final cleanId = cleanSeriesId(seriesId);
+    if (cleanId.isEmpty && vid.isEmpty) return const [];
+
+    final actualTitle = title.trim().isNotEmpty
+        ? title.trim()
+        : getDramaTitle(cleanId);
+    if (actualTitle.isNotEmpty) {
+      registerDramaTitle(cleanId, actualTitle);
+    }
+
+    final actualVid = vid.isNotEmpty ? vid : '';
+    final windowStart = (startMs ~/ 30000) * 30000;
+    final windowEnd = windowStart + 30000;
+    final epCacheKey = '$cleanId-$episode';
+    final windowCacheKey = '$cleanId-$episode-$actualVid-$windowStart';
+
+    // 0. 优先命中当前集已拉取的全集弹幕内存缓存
+    if (_episodeDanmakuCache.containsKey(epCacheKey) && _episodeDanmakuCache[epCacheKey]!.isNotEmpty) {
+      final all = _episodeDanmakuCache[epCacheKey]!;
+      if (startMs == 0 && (durationMs <= 0 || durationMs >= 60000)) {
+        return all;
+      }
+      final windowed = all.where((c) => c.timeMs >= windowStart && c.timeMs < windowEnd).toList();
+      return windowed.isNotEmpty ? windowed : all;
+    }
+
+    if (_danmakuCache.containsKey(windowCacheKey) && _danmakuCache[windowCacheKey] != null && _danmakuCache[windowCacheKey]!.isNotEmpty) {
+      return _danmakuCache[windowCacheKey]!;
+    }
+
+    String targetVid = actualVid;
+    if (targetVid.isEmpty && cleanId.isNotEmpty) {
+      final vids = await fetchEpisodeVidList(cleanId);
+      if (vids.isNotEmpty) {
+        final idx = (episode - 1).clamp(0, vids.length - 1);
+        targetVid = vids[idx];
+      }
+    }
+
+    // 通道 1: 原生 Go 引擎调度 (直接复用视频播放已建立的合法 session)
+    if (_isNativeAvailable && targetVid.isNotEmpty) {
+      try {
+        await ensureInitialized();
+        final session = _danmakuSessionMap[epCacheKey];
+        if (session != null && session.isNotEmpty) {
+          final totalDur = durationMs > (windowStart + 1000) ? durationMs : (windowStart + 180000);
+          final res = await invokeNative('danmaku', {
+            'session': '$_readOwner:danmaku',
+            'sequence': _nextSequence(),
+            'playbackSession': session,
+            'startMs': 0, // 一次性拉取整集真实弹幕
+            'durationMs': totalDur,
+          });
+
+          if (res != null && res['ok'] == true && res['data'] is Map) {
+            final data = res['data'] as Map;
+            final rows = data['items'];
+            if (rows is List && rows.isNotEmpty) {
+              final comments = <DanmakuComment>[];
+              for (final row in rows) {
+                if (row is! Map) continue;
+                final text = (row['text'] ?? '').toString().trim();
+                final timeMs = int.tryParse(row['timeMs']?.toString() ?? '') ?? 0;
+                if (text.isEmpty) continue;
+                comments.add(DanmakuComment(
+                  timeMs: timeMs,
+                  mode: 1,
+                  color: 0xFFFFFF,
+                  content: formatHongguoDanmakuText(text),
+                ));
+              }
+
+              if (comments.isNotEmpty) {
+                comments.sort((a, b) => a.timeMs.compareTo(b.timeMs));
+                _episodeDanmakuCache[epCacheKey] = comments;
+                _danmakuCache[windowCacheKey] = comments;
+
+                if (kDebugMode) {
+                  print('[DuanjuBridge] 成功拉取红果官方真实弹幕: ep=$episode, 共${comments.length}条, 首条="${comments.first.content}"');
+                }
+
+                // 起播或全集请求直接返回整集真实弹幕
+                if (startMs == 0 && (durationMs <= 0 || durationMs >= 60000)) {
+                  return comments;
+                }
+                final windowed = comments.where((c) => c.timeMs >= windowStart && c.timeMs < windowEnd).toList();
+                return windowed.isNotEmpty ? windowed : comments;
+              }
+            }
+          } else {
+            // 若 session 失效，清空以允许下次重试
+            _danmakuSessionMap.remove(epCacheKey);
+            if (kDebugMode) {
+              print('[DuanjuBridge] danmaku 请求失败: $res');
+            }
+          }
+        }
+      } catch (e) {
+        _danmakuSessionMap.remove(epCacheKey);
+        if (kDebugMode) {
+          print('[DuanjuBridge] 原生短剧弹幕调度异常: $e');
+        }
+      }
+    }
+
+    // 通道 2: 官方网页端弹幕数据提取通道兜底
+    if (targetVid.isNotEmpty) {
+      try {
+        final webComments = await _fetchHongguoDanmakuWebFallback(cleanId, targetVid, durationMs);
+        if (webComments.isNotEmpty) {
+          _episodeDanmakuCache[epCacheKey] = webComments;
+          final windowed = webComments.where((c) => c.timeMs >= windowStart && c.timeMs < windowEnd).toList();
+          return windowed.isNotEmpty ? windowed : webComments;
+        }
+      } catch (_) {}
+    }
+
+    // 严禁塞入胡编乱造的模板假弹幕，保持真实纯净空态
+    return const [];
+  }
+
+  /// 获取红果短剧单集全量弹幕 (对齐红果鉴)
   Future<List<DanmakuComment>> fetchHongguoDanmaku({
     required String seriesId,
     required String vid,
     int episode = 1,
     int durationMs = 180000,
     String title = '',
-  }) async => const [];
+  }) async {
+    return await fetchHongguoDanmakuWindow(
+      seriesId: seriesId,
+      vid: vid,
+      episode: episode,
+      startMs: 0,
+      durationMs: durationMs,
+      title: title,
+    );
+  }
+
+  /// 官方网页端弹幕数据提取通道兜底
+  Future<List<DanmakuComment>> _fetchHongguoDanmakuWebFallback(
+    String cleanId,
+    String vid,
+    int durationMs,
+  ) async {
+    try {
+      final uri = Uri.parse('https://hongguoduanju.com/player/$cleanId/$vid');
+      final resp = await http.get(uri, headers: {
+        'User-Agent': _defaultUserAgent,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      }).timeout(const Duration(seconds: 6));
+
+      if (resp.statusCode == 200) {
+        final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true).firstMatch(resp.body);
+        if (m != null) {
+          final data = jsonDecode(m.group(1)!);
+          final loaderData = data['loaderData'];
+          if (loaderData is Map) {
+            dynamic pageData;
+            for (final k in loaderData.keys) {
+              final kStr = k.toString();
+              if (kStr.contains('player_') && kStr.endsWith('/page')) {
+                pageData = loaderData[k];
+                break;
+              }
+            }
+            pageData ??= loaderData['player_(series_id)/(vid)/page'] ?? loaderData['player_page'];
+            if (pageData is Map) {
+              final commentsRaw = pageData['danmaku_list'] ?? pageData['comment_list'];
+              if (commentsRaw is List && commentsRaw.isNotEmpty) {
+                final comments = <DanmakuComment>[];
+                for (final c in commentsRaw) {
+                  if (c is! Map) continue;
+                  final text = (c['text'] ?? c['content'] ?? '').toString().trim();
+                  final timeMs = int.tryParse(c['time']?.toString() ?? c['offset_time']?.toString() ?? '') ?? 0;
+                  if (text.isEmpty) continue;
+                  comments.add(DanmakuComment(
+                    timeMs: timeMs,
+                    mode: 1,
+                    color: 0xFFFFFF,
+                    content: formatHongguoDanmakuText(text),
+                  ));
+                }
+                if (comments.isNotEmpty) return comments;
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
+    return const [];
+  }
+
+  /// 短剧按 30 秒窗口生成的智能情境弹幕 (严格限定在当前窗口区间内，绝不提前剧透或集中刷屏)
+  List<DanmakuComment> _generateShortDramaSmartDanmakuWindow({
+    required String cleanId,
+    required String vid,
+    required String title,
+    required int episode,
+    required int windowStart,
+    required int windowEnd,
+    required int durationMs,
+  }) {
+    final all = _generateShortDramaSmartDanmaku(
+      cleanId: cleanId,
+      vid: vid,
+      title: title,
+      episode: episode,
+      durationMs: durationMs,
+    );
+    final inWindow = all.where((c) => c.timeMs >= windowStart && c.timeMs < windowEnd).toList();
+    if (inWindow.isNotEmpty) {
+      if (inWindow.length > 3) {
+        return inWindow.sublist(0, 3);
+      }
+      return inWindow;
+    }
+    final seed = (cleanId.hashCode ^ (episode * 7919) ^ windowStart).abs();
+    final rng = _StableDanmakuRandom(seed);
+    final fallbackTexts = [
+      '这反转绝了！[赞]',
+      '节奏真快，过瘾[赞]',
+      '注意看主角眼神[机智]',
+      '这剧情越看越上头[偷笑]',
+      '反派要遭殃了[看]',
+      '哈哈哈哈太搞笑了[笑哭]',
+      '这一招请君入瓮真妙[灵机一动]',
+    ];
+    final text = fallbackTexts[rng.nextInt(fallbackTexts.length)];
+    final timeMs = windowStart + 8000 + rng.nextInt(12000);
+    return [
+      DanmakuComment(
+        timeMs: timeMs.clamp(windowStart + 1000, windowEnd - 1000),
+        mode: 1,
+        color: 0xFFFFFF,
+        content: formatHongguoDanmakuText(text),
+      ),
+    ];
+  }
+
+  /// 短剧专属高可用智能情境弹幕生成引擎 (对齐红果鉴体验，彻底告别 0 条冷场)
+  List<DanmakuComment> _generateShortDramaSmartDanmaku({
+    required String cleanId,
+    required String vid,
+    required String title,
+    required int episode,
+    required int durationMs,
+  }) {
+    final displayTitle = title.trim().isNotEmpty ? title.trim() : '这部短剧';
+    final dur = durationMs > 30000 ? durationMs : 150000;
+
+    // 1. 题材特征识别
+    final isHistoryCross = displayTitle.contains(RegExp(
+        r'入宋|大宋|大明|大唐|秦|汉|穿越|皇帝|太子|锦衣卫|王爷|开局|武器|军工|神枪|科技|火枪|持械|带把|重工'));
+    final isWarGodDragon = displayTitle.contains(RegExp(
+        r'战神|龙王|至尊|狂龙|修仙|神医|赘婿|神豪|天尊|宗师|无敌|归来|退婚|天师'));
+    final isSweetLove = displayTitle.contains(RegExp(
+        r'夫人|总裁|千金|豪门|替嫁|闪婚|甜宠|萌宝|真假|爱|撩|嫁给|心动|少夫人'));
+    final isRebornRevenge = displayTitle.contains(RegExp(
+        r'重生|复仇|反杀|末日|末世|安全屋|囤积|异能|深渊|判官|绝地|复苏'));
+
+    // 2. 特色弹幕库
+    final specializedList = <String>[];
+    if (isHistoryCross) {
+      specializedList.addAll([
+        '带着现代重火力回古代，简直降维打击[赞]',
+        '大人，时代变了！[大笑]',
+        '在古代掏出这玩意，对面全看傻了[笑哭]',
+        '哈哈哈哈古人直呼神仙下凡[偷笑]',
+        '现代科技狠活在大宋横推一切[灵机一动]',
+        '物理超度最为致命，太解压了[看]',
+        '皇帝当场给整不会了[捂脸]',
+        '一人单挑千军万马，帅爆！[酷]',
+        '这才是穿越剧的正确打开方式[赞]',
+        '王爷吓得当场跪地求饶[打脸]',
+        '哈哈哈哈现代工业结晶不讲武德[笑翻]',
+        '在冷兵器时代掏出热武器，真爽剧！[机智]',
+        '降维打击，全场起立[赞]',
+      ]);
+    } else if (isWarGodDragon) {
+      specializedList.addAll([
+        '三年之期已到，恭迎龙王回归！[赞]',
+        '一声令下，十万将士奔赴而来[酷]',
+        '有眼不识泰山，反派等死吧[打脸]',
+        '战神之威，岂容尔等蝼蚁挑衅[机智]',
+        '真正的巨佬往往伪装成新手[看]',
+        '跪下叫爸爸！[偷笑]',
+        '哈哈哈哈打脸来得太快就像龙卷风[笑哭]',
+        '岳母一家马上就要肠子悔青了[偷笑]',
+        '别忍了，直接动手灭了他们！[抓狂]',
+        '全场肃静！龙王要发飙了[酷]',
+        '主角眼神里杀气藏不住了[看]',
+      ]);
+    } else if (isSweetLove) {
+      specializedList.addAll([
+        '霸道总裁护妻狂魔正式上线[爱慕]',
+        '男女主颜值好高啊，锁死！[比心]',
+        '这眼神拉丝了，甜死我算了[喜欢]',
+        '民政局我搬来了，请你们原地结婚[飞吻]',
+        '敢动我的人，你配吗？[酷]',
+        '反派绿茶又在作妖，坐等女主反杀[看]',
+        '哈哈哈吃醋的样子太可爱了[可爱]',
+        '全员助攻，男主终于开窍了[笑哭]',
+        '太宠了吧，柠檬树下你和我[吃瓜]',
+      ]);
+    } else if (isRebornRevenge) {
+      specializedList.addAll([
+        '重活一世，失去的我都要拿回来！[酷]',
+        '开局直接囤积百亿物资，安全感拉满[赞]',
+        '这一世绝不再当冤大头！[打脸]',
+        '全知全能，剧透流爽到飞起[机智]',
+        '仇人名单已拉满，一个都别想跑[坏笑]',
+        '前世害我的人，百倍奉还！[发怒]',
+        '步步为营，这心机智商在线[灵机一动]',
+      ]);
+    }
+
+    // 3. 通用短剧爽文节奏弹幕库 (分为片头、推进、高潮反转、结尾)
+    final introList = [
+      '第$episode集打卡！[爱心]',
+      '第一排前排打卡！[看]',
+      '热榜第一慕名而来[赞]',
+      '熬夜追剧停不下来[灵机一动]',
+      '冲着 $displayTitle 来的！[比心]',
+      '开局高能，非战斗人员迅速撤离[酷]',
+      '全员就位，好戏开场了[偷笑]',
+      '一口气看到第$episode集，太上头了[赞]',
+      '终于等到更新了！[互粉]',
+    ];
+
+    final buildUpList = [
+      '这节奏飞快，毫不拖泥带水[赞]',
+      '反派这嘴脸，看着就想揍[打脸]',
+      '主角眼神里全是戏[看]',
+      '哈哈哈哈这台词太搞笑了[笑哭]',
+      '注意看右边群演的小表情[偷笑]',
+      '伏笔回收了！原来在这里[灵机一动]',
+      '前方高能预警，弹幕护体！[看]',
+      '这个反派演员演技真到位[赞]',
+      '主角：给你机会你不中用啊[坏笑]',
+      '好家伙，一言不合就开大[吃瓜]',
+      '这局势看得我屏住呼吸了[机智]',
+      '别急，主角肯定留了后手[看]',
+      '哈哈哈哈真把主角当软柿子了[偷笑]',
+    ];
+
+    final climaxList = [
+      '卧槽卧槽反转了！！！[惊恐]',
+      '哈哈哈哈哈当场打脸太爽了[打脸]',
+      '全场起立！全体目光向我看齐[酷]',
+      '主角终于亮底牌了！[机智]',
+      '这波操作在大气层，服了[赞]',
+      '反派直接看傻眼了[呆住]',
+      '爽！就喜欢这种暴脾气主角[赞]',
+      '笑得我手机差点砸脸[笑翻]',
+      '帅呆了！这才是短剧该有的爽感[赞]',
+      '战力天花板名不虚传！[酷]',
+      '反派：小丑竟是我自己[捂脸]',
+      '大快人心！看得我一身鸡皮疙瘩[赞]',
+      '哈哈哈哈反转来得猝不及防[笑哭]',
+      '绝杀！彻底没有悬念了[打脸]',
+      '这一招叫请君入瓮[灵机一动]',
+    ];
+
+    final outroList = [
+      '卡在这里是人干的事吗？！[抓狂]',
+      '一集太短了根本不够看[泪奔]',
+      '进度条你怎么这么不争气啊！[泪奔]',
+      '下一集快端上来，求求了[可怜]',
+      '急急急，谁有下一集剧透[偷笑]',
+      '停在最精彩的地方，急死我了[发怒]',
+      '火速切换第${episode + 1}集！[互粉]',
+      '今晚不睡了，通宵也要刷完[赞]',
+      '第${episode + 1}集见，兄弟们冲！[比心]',
+      '高能预警，下一集要放大招了[看]',
+    ];
+
+    // 4. 采用稳定伪随机种子进行打乱与选取
+    final seed = (cleanId.hashCode ^ (episode * 7919) ^ displayTitle.hashCode).abs();
+    final rng = _StableDanmakuRandom(seed);
+
+    final selected = <_DanmakuDraft>[];
+
+    // 阶段 1: 片头 (0 ~ 15% 时长，精简打卡避免开播扎堆)
+    final introCount = 1 + (seed % 2);
+    for (int i = 0; i < introCount; i++) {
+      final t = introList[rng.nextInt(introList.length)];
+      final timeMs = (3500 + i * 5000 + rng.nextInt(2500)).clamp(2500, (dur * 0.15).toInt());
+      selected.add(_DanmakuDraft(text: t, timeMs: timeMs));
+    }
+
+    // 阶段 2: 剧情铺垫与特色弹幕 (15% ~ 48% 时长)
+    final pool2 = [...buildUpList, ...specializedList];
+    final buildCount = 3 + (seed % 3);
+    final p2Start = (dur * 0.15).toInt();
+    final p2End = (dur * 0.48).toInt();
+    for (int i = 0; i < buildCount; i++) {
+      final t = pool2[rng.nextInt(pool2.length)];
+      final timeMs = p2Start + ((p2End - p2Start) * ((i + 1) / (buildCount + 1))).toInt() + rng.nextInt(1500);
+      selected.add(_DanmakuDraft(text: t, timeMs: timeMs.clamp(p2Start, p2End)));
+    }
+
+    // 阶段 3: 高潮打脸反转 (48% ~ 82% 时长)
+    final pool3 = [...climaxList, ...specializedList];
+    final climaxCount = 4 + (seed % 3);
+    final p3Start = (dur * 0.48).toInt();
+    final p3End = (dur * 0.82).toInt();
+    for (int i = 0; i < climaxCount; i++) {
+      final t = pool3[rng.nextInt(pool3.length)];
+      final timeMs = p3Start + ((p3End - p3Start) * ((i + 1) / (climaxCount + 1))).toInt() + rng.nextInt(1500);
+      int color = 0xFFFFFF;
+      final cPick = rng.nextInt(10);
+      if (cPick == 0) color = 0xFFE082;
+      else if (cPick == 1) color = 0x81C784;
+      else if (cPick == 2) color = 0x64B5F6;
+      else if (cPick == 3) color = 0xFF8A80;
+      selected.add(_DanmakuDraft(text: t, timeMs: timeMs.clamp(p3Start, p3End), color: color));
+    }
+
+    // 阶段 4: 悬念与催更 (82% ~ 98% 时长)
+    final outroCount = 2 + (seed % 2);
+    final p4Start = (dur * 0.82).toInt();
+    final p4End = (dur * 0.98).toInt();
+    for (int i = 0; i < outroCount; i++) {
+      final t = outroList[rng.nextInt(outroList.length)];
+      final timeMs = p4Start + ((p4End - p4Start) * ((i + 1) / (outroCount + 1))).toInt() + rng.nextInt(1500);
+      selected.add(_DanmakuDraft(text: t, timeMs: timeMs.clamp(p4Start, p4End)));
+    }
+
+    // 5. 按时间升序排序并格式化
+    selected.sort((a, b) => a.timeMs.compareTo(b.timeMs));
+
+    final result = <DanmakuComment>[];
+    for (final draft in selected) {
+      result.add(DanmakuComment(
+        timeMs: draft.timeMs,
+        mode: 1,
+        color: draft.color,
+        content: formatHongguoDanmakuText(draft.text),
+      ));
+    }
+
+    if (kDebugMode) {
+      print('[DuanjuBridge] 激活短剧专属智能情境弹幕引擎: title=$displayTitle, ep=$episode, count=${result.length}');
+    }
+    return result;
+  }
 }
+
+class _DanmakuDraft {
+  final String text;
+  final int timeMs;
+  final int color;
+  _DanmakuDraft({required this.text, required this.timeMs, this.color = 0xFFFFFF});
+}
+
+class _StableDanmakuRandom {
+  int _state;
+  _StableDanmakuRandom(int seed) : _state = seed == 0 ? 123456789 : seed;
+
+  int nextInt(int max) {
+    if (max <= 0) return 0;
+    _state = (_state * 1103515245 + 12345) & 0x7fffffff;
+    return _state % max;
+  }
+}
+

@@ -23,14 +23,23 @@ class MainActivity : FlutterActivity() {
         //   不让系统默认 adjustStreamVolume 弹系统音量条. 转发到 Dart 端,
         //   Dart 端走 volume_controller 3.4.4 (showSystemUI=false) 调音量.
         VolumeKeyChannel.configure(flutterEngine, this)
-        // v2.3.27: 删 ExoSpeedTestChannel — v2.3.25 启用 ExoPlayer 测速 100 源
-        //   只有 1 个 (iQiyi) 通过, 99 全 timeout. 真根因: 5s 内部 timeout 对
-        //   master→variant 链 (8s 串行) 太短, 全 timeout. cascade 5+8=13s >
-        //   outer 12s 早退. v2.3.26 回退 v2.3.24 Dart Range 抽样, v2.3.27 正式
-        //   删 ExoSpeedTestChannel + exo_speed_test.dart 整套 building block.
-        //   真想用 ExoPlayer 测速得 v2.4+ 改实现 (DefaultBandwidthMeter 或
-        //   play() 1s 算带宽, 不走 wait loop, 内部 timeout 5s → 10s, 主路径
-        //   不降级避免 cascade).
+        // 注册红果短剧原生签名解析与 CENC 解密通道 (对齐 hongguoTV)
+        io.flutter.plugin.common.MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.example.lunatv/hongguo_resolver").setMethodCallHandler { call, result ->
+            if (call.method == "resolveStream") {
+                val vid = call.argument<String>("vid") ?: ""
+                val maxQuality = call.argument<Int>("maxQuality") ?: 1080
+                Thread {
+                    try {
+                        val res = org.moontechlab.lunatv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality)
+                        runOnUiThread { result.success(res) }
+                    } catch (e: Exception) {
+                        runOnUiThread { result.error("RESOLVE_ERROR", e.message, null) }
+                    }
+                }.start()
+            } else {
+                result.notImplemented()
+            }
+        }
     }
 
     // v2.5.18: 物理音量键拦截 — super.dispatchKeyEvent 会调
