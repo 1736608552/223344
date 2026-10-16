@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -543,7 +544,10 @@ class _PlayerScreenState extends State<PlayerScreen>
         widget.videoInfo.source == 'shortdrama' ||
         widget.preferredSource == 'hongguo' ||
         widget.preferredSource == 'shortdrama';
-    final isDesktop = !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+    final isDesktop = !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.windows ||
+            defaultTargetPlatform == TargetPlatform.linux ||
+            defaultTargetPlatform == TargetPlatform.macOS);
 
     try {
       if (isShortDrama || isDesktop) {
@@ -680,7 +684,10 @@ class _PlayerScreenState extends State<PlayerScreen>
       await _player?.dispose();
     } catch (_) {}
 
-    final isDesktop = !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+    final isDesktop = !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.windows ||
+            defaultTargetPlatform == TargetPlatform.linux ||
+            defaultTargetPlatform == TargetPlatform.macOS);
     try {
       if (toShortDrama || isDesktop) {
         _player = await DuanjuMediaKitBackend.create();
@@ -4014,7 +4021,10 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
 
     // 播放器后端类型自适应：桌面端或短剧使用 DuanjuMediaKitBackend，移动端非短剧维持 ExoPlayerBackend
-    final isDesktop = !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+    final isDesktop = !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.windows ||
+            defaultTargetPlatform == TargetPlatform.linux ||
+            defaultTargetPlatform == TargetPlatform.macOS);
     if ((isShortDrama || isDesktop) && _player is! DuanjuMediaKitBackend) {
       await _switchPlayerBackend(true);
     } else if (!isShortDrama && !isDesktop && _player is! ExoPlayerBackend) {

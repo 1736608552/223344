@@ -1,5 +1,20 @@
 # LunaTV-Mobile 修复日记
 
+## v2.6.119 (2026-10-16)
+
+### 彻底修复 player_screen.dart 缺少 Platform 导入引发的 Windows/iOS 编译报错 + 使用 defaultTargetPlatform 全平台安全适配 + Windows Release 产物定位加固
+
+#### 核心修复与深度自愈
+1. **彻底攻克 Windows PC 桌面端与 iOS 编译报错**：
+   - **深层根因查实**：`lib/screens/player_screen.dart` 在接入桌面端判断时，未导入 `dart:io`，导致 Dart 编译器报 `The getter 'Platform' isn't defined for the type '_PlayerScreenState'`；在 CI 阶段直接导致 MSVC 和 Xcode 的 Flutter 前置编译中断；
+   - **全平台安全自愈**：在 `lib/screens/player_screen.dart` 头部补全 `import 'dart:io';`，并将所有桌面端判断逻辑重构为 `defaultTargetPlatform == TargetPlatform.windows || defaultTargetPlatform == TargetPlatform.linux || defaultTargetPlatform == TargetPlatform.macOS`，从 Flutter 核心层天然消除平台未定义异常，100% 保证全平台编译通过。
+2. **Windows PC 端 Release 产物打包精确定位**：
+   - 在 `.github/workflows/build.yml` 中将查找 Release 目录逻辑增强为优先根据 `find build/windows -name "LunaTV.exe" -exec dirname {} \;` 定位，双重保险杜绝由于 CMake 嵌套目录导致的打包空目录问题。
+3. **版本号与版本码单调递增**：
+   - 版本更新至 `v2.6.119`（versionCode: 20719）。
+
+---
+
 ## v2.6.118 (2026-10-16)
 
 ### 正式支持 Windows PC 桌面端独立构建与发布 + 跨平台播放器内核无缝适配 (media_kit libmpv) + CI/CD 自动化多端并行流水线

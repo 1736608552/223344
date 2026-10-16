@@ -231,9 +231,12 @@ jobs:
             TAG="v${BASE_VERSION}"
           fi
 
-          RELEASE_DIR=$(find build/windows -type d -name "Release" | head -n 1)
+          RELEASE_DIR=$(find build/windows -name "LunaTV.exe" -exec dirname {} \; | head -n 1)
           if [ -z "$RELEASE_DIR" ]; then
-            echo "::error::未找到编译生成的 Windows Release 目录"
+            RELEASE_DIR=$(find build/windows -type d -name "Release" | head -n 1)
+          fi
+          if [ -z "$RELEASE_DIR" ]; then
+            echo "::error::未找到编译生成的 Windows Release 目录或 LunaTV.exe"
             exit 1
           fi
           echo "找到 Windows Release 目录: $RELEASE_DIR"
