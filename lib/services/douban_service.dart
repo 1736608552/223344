@@ -639,7 +639,7 @@ class DoubanService {
   /// 参数说明：
   /// - doubanId: 豆瓣ID
   static Future<ApiResponse<DoubanMovieDetails>> getDoubanDetails(
-    BuildContext context, {
+    BuildContext? context, {
     required String doubanId,
   }) async {
     // 初始化缓存服务

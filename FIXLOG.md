@@ -1,5 +1,18 @@
 # LunaTV-Mobile 修复日记
 
+## v2.6.115 (2026-10-15)
+
+### 修复 NextSeasonService 编译报错与全平台 Release 构建保障
+
+#### 核心修复与深度自愈
+1. **彻底修复 Flutter Release 编译报错**：
+   - 修复 `lib/services/next_season_service.dart` 中调用 `DoubanService.getDoubanDetails` 传参不匹配问题，重构 `DoubanService.getDoubanDetails` 兼容支持可选 `BuildContext? context` 与传空安全；
+   - 修复短剧推荐调用 `fetchDramas` 未定义报错，在 `DuanjuCoreBridge` 中补齐 `fetchDramas` 别名委托方法并规范统一调用 `fetchCatalog(category: 'hot', page: 1, size: 20)`。
+2. **版本号与构建流水线升级**：
+   - 版本更新至 `v2.6.115`（versionCode: 20715）。
+
+---
+
 ## v2.6.114 (2026-10-15)
 
 ### 弹幕默认关闭与跨集开关记忆 + 彻底根治第一集切第二集偶发连跳两集 + 弹幕渲染图层隔离与错峰装填消除卡顿 + 自动连播新增无下一季时展示智能推荐

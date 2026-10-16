@@ -219,6 +219,21 @@ class DuanjuCoreBridge {
   static const String _defaultUserAgent =
       'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36';
 
+  /// 获取短剧剧目列表（兼容别名方法，委托至 fetchCatalog）
+  Future<List<Map<String, dynamic>>> fetchDramas({
+    String category = 'hot',
+    String sort = 'hot',
+    int page = 1,
+    int pageSize = 20,
+    int size = 20,
+  }) async {
+    return fetchCatalog(
+      category: category,
+      page: page,
+      size: pageSize != 20 ? pageSize : size,
+    );
+  }
+
   /// 拉取红果精选分类短剧列表
   /// 拉取红果精选分类短剧列表 (原生引擎优先 + 官方真实 Web 协议抓取自愈)
   Future<List<Map<String, dynamic>>> fetchCatalog({

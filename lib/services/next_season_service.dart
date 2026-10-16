@@ -300,7 +300,7 @@ class NextSeasonService {
     final curTitle = currentVideoInfo.title.trim();
     if (isShortDrama) {
       try {
-        final dramas = await DuanjuCoreBridge.instance.fetchDramas(category: '全部', sort: 'hot');
+        final dramas = await DuanjuCoreBridge.instance.fetchCatalog(category: 'hot', page: 1, size: 20);
         if (dramas.isNotEmpty) {
           for (final d in dramas) {
             final title = (d['title'] ?? '').toString().trim();
@@ -348,7 +348,7 @@ class NextSeasonService {
       try {
         final doubanId = currentVideoInfo.doubanId;
         if (doubanId != null && doubanId.isNotEmpty) {
-          final resDetails = await DoubanService.getDoubanDetails(doubanId);
+          final resDetails = await DoubanService.getDoubanDetails(null, doubanId: doubanId);
           final detail = resDetails.data;
           if (detail != null && detail.recommends.isNotEmpty) {
             for (final rec in detail.recommends) {
