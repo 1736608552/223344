@@ -1,0 +1,281 @@
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'package:luna_tv/models/search_result.dart';
+import 'package:luna_tv/models/video_info.dart';
+import 'package:luna_tv/services/duanju_core_bridge.dart';
+import 'package:luna_tv/services/search_service.dart';
+
+/// 下一季剧集候选模型 (用于播放器居中弹窗展示与自动连播)
+class NextSeasonCandidate {
+  final String title;
+  final int seasonNumber;
+  final String seasonLabel;
+  final String poster;
+  final String year;
+  final String desc;
+  final int totalEpisodes;
+  final String source;
+  final String sourceName;
+  final VideoInfo nextVideoInfo;
+
+  const NextSeasonCandidate({
+    required this.title,
+    required this.seasonNumber,
+    required this.seasonLabel,
+    required this.poster,
+    required this.year,
+    required this.desc,
+    required this.totalEpisodes,
+    required this.source,
+    required this.sourceName,
+    required this.nextVideoInfo,
+  });
+}
+
+/// 下一季剧集推导与匹配服务
+class NextSeasonService {
+  static final Map<String, NextSeasonCandidate?> _cache = {};
+
+  /// 中文数字映射
+  static const Map<String, int> _cnNumberMap = {
+    '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+    '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+    '十一': 11, '十二': 12, '十三': 13, '十四': 14, '十五': 15,
+  };
+
+  /// 数字转中文数字
+  static String toChineseNumber(int n) {
+    const list = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+    if (n <= 10 && n >= 0) return list[n];
+    if (n < 20) return '十${list[n % 10]}';
+    return '$n';
+  }
+
+  /// 解析标题与季数
+  /// 例如:
+  ///   "庆余年 第一季" -> baseTitle: "庆余年", season: 1, nextSeason: 2
+  ///   "持械入宋：第一季" -> baseTitle: "持械入宋", season: 1, nextSeason: 2
+  ///   "Stranger Things Season 1" -> baseTitle: "Stranger Things", season: 1, nextSeason: 2
+  ///   "狂飙" -> baseTitle: "狂飙", season: 1, nextSeason: 2
+  static ({String baseTitle, int currentSeason, int nextSeason}) parseSeason(String rawTitle) {
+    String title = rawTitle.trim();
+    int season = 1;
+    String base = title;
+
+    // 1. 中文第X季/部
+    final zhMatch = RegExp(r'第\s*([0-9一二三四五六七八九十]+)\s*[季部]').firstMatch(title);
+    if (zhMatch != null) {
+      final sStr = zhMatch.group(1)!;
+      final parsed = int.tryParse(sStr) ?? _cnNumberMap[sStr] ?? 1;
+      season = parsed;
+      base = title.replaceAll(RegExp(r'[:：\s]*第\s*[0-9一二三四五六七八九十]+\s*[季部]'), '').trim();
+    } else {
+      // 2. 英文 Season X / S X
+      final enMatch = RegExp(r'(?:season|\bS)\s*(\d+)', caseSensitive: false).firstMatch(title);
+      if (enMatch != null) {
+        final parsed = int.tryParse(enMatch.group(1)!);
+        if (parsed != null && parsed > 0) {
+          season = parsed;
+          base = title.replaceAll(RegExp(r'[:：\s]*(?:season|\bS)\s*\d+', caseSensitive: false), '').trim();
+        }
+      }
+    }
+
+    base = base.replaceAll(RegExp(r'[:：\s]*完结$'), '').trim();
+    if (base.isEmpty) base = rawTitle.trim();
+
+    return (
+      baseTitle: base,
+      currentSeason: season,
+      nextSeason: season + 1,
+    );
+  }
+
+  /// 异步寻找并解析下一季候选信息
+  static Future<NextSeasonCandidate?> findNextSeason({
+    required VideoInfo currentVideoInfo,
+    String? currentSource,
+  }) async {
+    final title = currentVideoInfo.title.trim();
+    if (title.isEmpty) return null;
+
+    final cacheKey = '${currentVideoInfo.source}-${currentVideoInfo.id}-$title';
+    if (_cache.containsKey(cacheKey)) {
+      return _cache[cacheKey];
+    }
+
+    try {
+      final parsed = parseSeason(title);
+      final baseTitle = parsed.baseTitle;
+      final nextSeason = parsed.nextSeason;
+      final nextSeasonCn = toChineseNumber(nextSeason);
+
+      final isShortDrama = currentVideoInfo.source == 'hongguo' ||
+          currentVideoInfo.source == 'shortdrama' ||
+          currentSource == 'hongguo' ||
+          currentSource == 'shortdrama';
+
+      NextSeasonCandidate? candidate;
+
+      // 1. 短剧专属通道推导
+      if (isShortDrama) {
+        candidate = await _findNextSeasonShortDrama(
+          baseTitle: baseTitle,
+          currentVideoInfo: currentVideoInfo,
+          nextSeason: nextSeason,
+          nextSeasonCn: nextSeasonCn,
+        );
+      }
+
+      // 2. 通用全网聚合搜索推导 (电视剧 / 番剧 / 普通视频)
+      candidate ??= await _findNextSeasonGeneral(
+        baseTitle: baseTitle,
+        currentVideoInfo: currentVideoInfo,
+        nextSeason: nextSeason,
+        nextSeasonCn: nextSeasonCn,
+      );
+
+      _cache[cacheKey] = candidate;
+      return candidate;
+    } catch (e) {
+      if (kDebugMode) {
+        print('[NextSeasonService] 查找下一季发生异常: $e');
+      }
+      _cache[cacheKey] = null;
+      return null;
+    }
+  }
+
+  /// 短剧专属通道查找下一季
+  static Future<NextSeasonCandidate?> _findNextSeasonShortDrama({
+    required String baseTitle,
+    required VideoInfo currentVideoInfo,
+    required int nextSeason,
+    required String nextSeasonCn,
+  }) async {
+    final searchQueries = [
+      '$baseTitle：第$nextSeasonCn季',
+      '$baseTitle 第$nextSeasonCn季',
+      '$baseTitle 第$nextSeason季',
+      '$baseTitle：第$nextSeason季',
+      '$baseTitle Season $nextSeason',
+    ];
+
+    for (final q in searchQueries) {
+      try {
+        final dramas = await DuanjuCoreBridge.instance.searchDramas(q);
+        if (dramas.isNotEmpty) {
+          for (final d in dramas) {
+            final dTitle = (d['title'] ?? '').toString().trim();
+            final dParsed = parseSeason(dTitle);
+
+            // 严格验证：核心剧名一致，且季数精确匹配下一季
+            final baseMatch = dParsed.baseTitle.contains(baseTitle) || baseTitle.contains(dParsed.baseTitle);
+            final seasonMatch = dParsed.currentSeason == nextSeason;
+
+            if (baseMatch && seasonMatch) {
+              final dramaId = (d['id'] ?? '').toString().trim();
+              final poster = (d['cover'] ?? '').toString().trim();
+              final desc = (d['desc'] ?? '').toString().trim();
+              final total = int.tryParse(d['total']?.toString() ?? '') ?? 0;
+
+              final nextInfo = VideoInfo(
+                id: dramaId,
+                source: 'hongguo',
+                title: dTitle,
+                sourceName: '短剧专区',
+                year: (d['year'] ?? '').toString(),
+                cover: poster.isNotEmpty ? poster : currentVideoInfo.cover,
+                index: 1,
+                totalEpisodes: total,
+                playTime: 0,
+                totalTime: 0,
+                saveTime: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+                searchTitle: dTitle,
+                doubanId: null,
+              );
+
+              return NextSeasonCandidate(
+                title: dTitle,
+                seasonNumber: nextSeason,
+                seasonLabel: '第$nextSeasonCn季',
+                poster: poster.isNotEmpty ? poster : currentVideoInfo.cover,
+                year: nextInfo.year.isNotEmpty ? nextInfo.year : currentVideoInfo.year,
+                desc: desc.isNotEmpty ? desc : '精彩好剧抢先连播，5秒后自动开启下一季',
+                totalEpisodes: total,
+                source: 'hongguo',
+                sourceName: '短剧专区',
+                nextVideoInfo: nextInfo,
+              );
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  /// 通用全网聚合搜索查找下一季
+  static Future<NextSeasonCandidate?> _findNextSeasonGeneral({
+    required String baseTitle,
+    required VideoInfo currentVideoInfo,
+    required int nextSeason,
+    required String nextSeasonCn,
+  }) async {
+    final searchQueries = [
+      '$baseTitle 第$nextSeasonCn季',
+      '$baseTitle 第$nextSeason季',
+      '$baseTitle Season $nextSeason',
+      '$baseTitle S$nextSeason',
+    ];
+
+    for (final q in searchQueries) {
+      try {
+        final results = await SearchService.searchSync(q);
+        if (results.isNotEmpty) {
+          // 过滤并寻找最佳匹配
+          for (final res in results) {
+            final resTitle = res.title.trim();
+            // 排除预告、花絮、解说等干扰项
+            if (resTitle.contains('预告') ||
+                resTitle.contains('花絮') ||
+                resTitle.contains('解说') ||
+                resTitle.contains('看点') ||
+                resTitle.contains('特辑')) {
+              continue;
+            }
+
+            final resParsed = parseSeason(resTitle);
+            final baseMatch = resParsed.baseTitle == baseTitle ||
+                resParsed.baseTitle.contains(baseTitle) ||
+                baseTitle.contains(resParsed.baseTitle);
+
+            // 必须严格等于目标季数，绝不等于当前季
+            final seasonMatch = resParsed.currentSeason == nextSeason;
+
+            if (baseMatch && seasonMatch && res.episodes.isNotEmpty) {
+              final poster = res.poster.isNotEmpty ? res.poster : currentVideoInfo.cover;
+              final nextInfo = res.toVideoInfo();
+
+              return NextSeasonCandidate(
+                title: resTitle,
+                seasonNumber: nextSeason,
+                seasonLabel: '第$nextSeasonCn季',
+                poster: poster,
+                year: res.year.isNotEmpty ? res.year : currentVideoInfo.year,
+                desc: (res.desc?.trim().isNotEmpty == true)
+                    ? res.desc!.trim()
+                    : '即将无缝连播《$resTitle》，精彩剧情连绵不断。',
+                totalEpisodes: res.episodes.length,
+                source: res.source,
+                sourceName: res.sourceName,
+                nextVideoInfo: nextInfo,
+              );
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+}
