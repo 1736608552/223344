@@ -12,6 +12,8 @@ class HeroBannerItem {
   final String title;
   final String subtitle;
   final String imageUrl;
+  final String? posterUrl; // 2:3 竖版封面海报
+  final String? backdropUrl; // 16:9 横版背景剧照
   final String type; // movie/tv/anime/show
   final String source;
   final String id_; // 用于跳转播放
@@ -24,6 +26,8 @@ class HeroBannerItem {
     required this.title,
     required this.subtitle,
     required this.imageUrl,
+    this.posterUrl,
+    this.backdropUrl,
     required this.type,
     required this.source,
     required this.id_,

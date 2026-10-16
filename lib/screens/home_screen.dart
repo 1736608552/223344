@@ -147,6 +147,7 @@ class _HomeScreenState extends State<HomeScreen> {
             title: m.title,
             subtitle: '热门电影',
             imageUrl: m.poster,
+            posterUrl: m.poster,
             type: 'movie',
             source: 'douban',
             id_: m.id,
@@ -163,6 +164,7 @@ class _HomeScreenState extends State<HomeScreen> {
             title: t.title,
             subtitle: '热播剧集',
             imageUrl: t.poster,
+            posterUrl: t.poster,
             type: 'tv',
             source: 'douban',
             id_: t.id,
@@ -179,6 +181,7 @@ class _HomeScreenState extends State<HomeScreen> {
             title: s.title,
             subtitle: '热门综艺',
             imageUrl: s.poster,
+            posterUrl: s.poster,
             type: 'show',
             source: 'douban',
             id_: s.id,
@@ -203,6 +206,7 @@ class _HomeScreenState extends State<HomeScreen> {
             title: name,
             subtitle: '新番放送',
             imageUrl: imageUrl,
+            posterUrl: imageUrl,
             type: 'anime',
             source: 'bangumi',
             id_: a.id.toString(),
@@ -267,15 +271,16 @@ class _HomeScreenState extends State<HomeScreen> {
         if (backdropUrl == null || !mounted) continue;
         if (mounted) {
           setState(() {
-            // v2.1.19: 直接替换 imageUrl 字段, 其它字段 (id/title/...)
-            //   全部保持. HeroBannerItem 是不可变数据类, 重新构造一次.
+            // 保留原始 source 与竖版海报 posterUrl，仅用 backdropUrl 升级横屏背景图
             _bannerItems[i] = HeroBannerItem(
               id: item.id,
               title: item.title,
               subtitle: item.subtitle,
               imageUrl: backdropUrl,
+              posterUrl: item.posterUrl ?? item.imageUrl,
+              backdropUrl: backdropUrl,
               type: item.type,
-              source: 'tmdb', // 标记来源, 走 worker 加速 (跟详情页大头部一致)
+              source: item.source, // 保持原数据源（如 'douban' 或 'bangumi'），绝不修改为 'tmdb'
               id_: item.id_,
               year: item.year,
               rate: item.rate,
@@ -399,24 +404,28 @@ class _HomeScreenState extends State<HomeScreen> {
               HeroBanner(
                 items: _bannerItems,
                 onTap: (item) {
+                final displayCover = (item.posterUrl != null && item.posterUrl!.isNotEmpty)
+                    ? item.posterUrl!
+                    : item.imageUrl;
+                final displaySourceName = item.source == 'douban'
+                    ? '豆瓣'
+                    : (item.source == 'bangumi' ? 'Bangumi' : item.source);
                 _navigateToPlayer(
                   PlayerScreen(
                     videoInfo: VideoInfo(
                       id: item.id_,
                       source: item.source,
                       title: item.title,
-                      sourceName: item.source,
+                      sourceName: displaySourceName,
                       year: item.year ?? '',
-                      cover: item.imageUrl,
+                      cover: displayCover,
                       index: 0,
                       totalEpisodes: 0,
                       playTime: 0,
                       totalTime: 0,
                       saveTime: 0,
                       searchTitle: item.title,
-                      doubanId: item.type == 'movie' || item.type == 'tv'
-                          ? item.id
-                          : null,
+                      doubanId: item.source == 'douban' ? item.id : null,
                       rate: item.rate,
                     ),
                   ),
