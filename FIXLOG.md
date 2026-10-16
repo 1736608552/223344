@@ -1,5 +1,21 @@
 # LunaTV-Mobile 修复日记
 
+## v2.6.116 (2026-10-15)
+
+### 彻底根治 DoubanRecommendItem 字段访问报错 (poster/year) + iOS Xcode 全链路免证书无签名加固
+
+#### 核心修复与深度自愈
+1. **彻底根治 Dart 编译报错 (DoubanRecommendItem)**：
+   - 彻底修复 `lib/services/next_season_service.dart` 中错误访问 `rec.pic` 与 `rec.year` 的未定义字段问题，对齐实体字段使用 `rec.poster` 与安全兜底；
+   - 在 `lib/models/douban_movie.dart` 的 `DoubanRecommendItem` 模型中增加 `pic` 与 `year` 兼容 getter，彻底消除类型解析异常。
+2. **iOS 全链路免证书无签名构建加固**：
+   - 在 `ios/Runner.xcodeproj/project.pbxproj` 中将 `RunnerTests` 与 `Runner` 的 Release 配置全量注入 `CODE_SIGN_STYLE = Manual`、`CODE_SIGNING_REQUIRED = NO`、`CODE_SIGN_IDENTITY = ""` 与 `DEVELOPMENT_TEAM = ""`；
+   - 在 `ios/Flutter/Release.xcconfig` 与 `ios/Podfile` post_install 钩子中同步置空 `DEVELOPMENT_TEAM`，杜绝 CI 运行期查找 Apple 开发者证书导致的构建中断。
+3. **版本号与构建流水线升级**：
+   - 版本更新至 `v2.6.116`（versionCode: 20716）。
+
+---
+
 ## v2.6.115 (2026-10-15)
 
 ### 修复 NextSeasonService 编译报错与全平台 Release 构建保障

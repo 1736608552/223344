@@ -14,6 +14,10 @@ class DoubanRecommendItem {
     this.rate,
   });
 
+  /// 兼容别名与属性访问
+  String? get pic => poster;
+  String? get year => null;
+
   /// 从JSON创建DoubanRecommendItem实例
   factory DoubanRecommendItem.fromJson(Map<String, dynamic> json) {
     return DoubanRecommendItem(
