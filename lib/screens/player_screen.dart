@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:cached_network_image/cached_network_image.dart';
@@ -7435,14 +7436,10 @@ class _PlayerScreenState extends State<PlayerScreen>
             precacheImage(CachedNetworkImageProvider(cand.poster), context);
           } catch (_) {}
         }
-        if (kDebugMode) {
-          print('[PlayerScreen] 成功预拉取到下一季信息: ${cand.title}, 共${cand.totalEpisodes}集');
-        }
+        debugPrint('[PlayerScreen] 成功预拉取到连播/推荐信息: ${cand.title}, 共${cand.totalEpisodes}集');
       }
     } catch (e) {
-      if (kDebugMode) {
-        print('[PlayerScreen] 预拉取下一季异常: $e');
-      }
+      debugPrint('[PlayerScreen] 预拉取连播/推荐异常: $e');
     } finally {
       _isPreloadingNextSeason = false;
     }
