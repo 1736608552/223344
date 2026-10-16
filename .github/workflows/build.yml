@@ -268,7 +268,8 @@ jobs:
 
       - name: Create or Update GitHub Release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          PUBLIC_REPO: "djsevenx1/LunaTV-Mobile"
         run: |
           set -euo pipefail
 
@@ -282,7 +283,7 @@ jobs:
             TAG="v${BASE_VERSION}"
           fi
 
-          echo "准备发布版本: $TAG (pubspec: $VERSION)"
+          echo "准备发布版本: $TAG (pubspec: $VERSION) 至公开仓库: $PUBLIC_REPO"
 
           # 准备发布产物目录
           mkdir -p release_dist
@@ -307,22 +308,22 @@ jobs:
 
           TITLE="LunaTV Mobile ${TAG}"
 
-          # 重试循环确保网络波动下稳定发布
+          # 重试循环确保网络波动下稳定发布至公开仓库
           for i in 1 2 3 4 5; do
             echo "::group::Release attempt $i"
-            if gh release view "$TAG" >/dev/null 2>&1; then
-              echo "Release $TAG 已存在，更新产物附件与发布说明..."
-              if gh release upload "$TAG" release_dist/* --clobber && \
-                 gh release edit "$TAG" --title "$TITLE" --notes-file release_notes.md; then
+            if gh release view "$TAG" --repo "$PUBLIC_REPO" >/dev/null 2>&1; then
+              echo "公开仓库 Release $TAG 已存在，更新产物附件与发布说明..."
+              if gh release upload "$TAG" release_dist/* --clobber --repo "$PUBLIC_REPO" && \
+                 gh release edit "$TAG" --title "$TITLE" --notes-file release_notes.md --repo "$PUBLIC_REPO"; then
                 echo "Release 资源更新成功 (attempt $i)"
                 break
               fi
             else
-              echo "创建全新 Release $TAG..."
+              echo "向公开仓库创建全新 Release $TAG..."
               if gh release create "$TAG" release_dist/* \
+                --repo "$PUBLIC_REPO" \
                 --title "$TITLE" \
-                --notes-file release_notes.md \
-                --target "${{ github.sha }}"; then
+                --notes-file release_notes.md; then
                 echo "Release 创建成功 (attempt $i)"
                 break
               fi
