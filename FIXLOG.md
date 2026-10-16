@@ -1,5 +1,22 @@
 # LunaTV-Mobile 修复日记
 
+## v2.6.118 (2026-10-16)
+
+### 正式支持 Windows PC 桌面端独立构建与发布 + 跨平台播放器内核无缝适配 (media_kit libmpv) + CI/CD 自动化多端并行流水线
+
+#### 核心突破与多端跨越
+1. **正式支持 Windows PC 桌面端自动化构建与发布**：
+   - **GitHub Actions Windows CI 流水线**：在 `.github/workflows/build.yml` 中新增 `build-windows` 专属 Job，运行于 `windows-latest` 环境；自动启用 Windows Desktop 并执行 `flutter build windows --release` 编译原生可执行程序；
+   - **自动化绿色免安装 Zip 归档**：构建脚本动态定位 `Release` 目录，通过 7z 高压缩比打包输出 `LunaTV-PC-${TAG}-windows-x64.zip` 与 `LunaTV-PC-windows-x64.zip`，并与 Android APK、iOS IPA 统一汇聚到 GitHub Release，自动生成 SHA-256 完整性校验清单；
+   - **Win32 窗口原生化与编译加固**：彻底清理 `windows/runner/main.cpp` 中遗留的第三方无头窗口头文件（`bitsdojo_window`）依赖，规范化原生窗口标题为 `LunaTV`，确保 MSVC 编译器零报错通过。
+2. **PC 桌面端播放器引擎无缝自适应**：
+   - **全平台播放内核分发**：移动端（Android）维持 AndroidX Media3 ExoPlayer 高效解码，桌面端（Windows / macOS / Linux）自动切换为全平台通用、基于 libmpv 的 `DuanjuMediaKitBackend`，全面支持硬件解码加速与流畅起播；
+   - **切集与切源状态机自适应**：在 `_initPlayerAsync`、`_switchPlayerBackend` 以及换集自适应逻辑中全面注入桌面端判断，保障短剧、m3u8 及各类长视频直链在 Windows PC 上秒开起播。
+3. **版本号与版本码单调递增**：
+   - 版本更新至 `v2.6.118`（versionCode: 20718）。
+
+---
+
 ## v2.6.117 (2026-10-15)
 
 ### 彻底修复从首页幻灯片点击进入选集页面小海报获取错误 + 竖版封面与横版大背景彻底解耦 + 规范化豆瓣与Bangumi数据源映射

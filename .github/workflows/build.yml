@@ -1,4 +1,4 @@
-name: Build Android APK & iOS IPA
+name: Build Android APK, iOS IPA & Windows PC
 
 on:
   push:
@@ -174,10 +174,86 @@ jobs:
           path: ipa_dist/*.ipa
           retention-days: 7
 
+  build-windows:
+    name: windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          channel: 'stable'
+          cache: true
+
+      - name: Enable Windows desktop support
+        run: flutter config --enable-windows-desktop
+
+      - run: flutter pub get
+
+      - name: Sync version from git tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG=${GITHUB_REF#refs/tags/v}
+          if [[ "$TAG" == *"+"* ]]; then
+            VERSION=${TAG%+*}
+            BUILD=${TAG#*+}
+            perl -i -pe "s/^version: .*/version: $VERSION+$BUILD/" pubspec.yaml
+          else
+            CURRENT_CODE=$(grep -E '^version:' pubspec.yaml | sed -n 's/.*+//p' | tr -d '\r\n')
+            if [ -n "$CURRENT_CODE" ]; then
+              perl -i -pe "s/^version: .*/version: $TAG+$CURRENT_CODE/" pubspec.yaml
+            else
+              perl -i -pe "s/^version: .*/version: $TAG+1/" pubspec.yaml
+            fi
+          fi
+          head -5 pubspec.yaml
+
+      - name: Build Windows App (release)
+        uses: nick-fields/retry@v3
+        with:
+          max_attempts: 3
+          retry_on: error
+          retry_wait_seconds: 30
+          timeout_minutes: 45
+          command: flutter build windows --release
+
+      - name: Package Windows Zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1 | tr -d '\r\n')
+          BASE_VERSION="${VERSION%+*}"
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v${BASE_VERSION}"
+          fi
+
+          RELEASE_DIR=$(find build/windows -type d -name "Release" | head -n 1)
+          if [ -z "$RELEASE_DIR" ]; then
+            echo "::error::未找到编译生成的 Windows Release 目录"
+            exit 1
+          fi
+          echo "找到 Windows Release 目录: $RELEASE_DIR"
+
+          mkdir -p win_dist
+          7z a -tzip -mx=9 "win_dist/LunaTV-PC-${TAG}-windows-x64.zip" "./$RELEASE_DIR/*"
+          cp "win_dist/LunaTV-PC-${TAG}-windows-x64.zip" "win_dist/LunaTV-PC-windows-x64.zip"
+
+      - name: Upload Windows artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-pc
+          path: win_dist/*.zip
+          retention-days: 7
+
   release:
     name: release
-    needs: [build-android, build-ios]
-    if: always() && (needs.build-android.result == 'success' || needs.build-ios.result == 'success')
+    needs: [build-android, build-ios, build-windows]
+    if: always() && (needs.build-android.result == 'success' || needs.build-ios.result == 'success' || needs.build-windows.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -207,13 +283,13 @@ jobs:
 
           # 准备发布产物目录
           mkdir -p release_dist
-          find downloaded_artifacts -type f \( -name "*.apk" -o -name "*.ipa" \) -exec cp {} release_dist/ \;
+          find downloaded_artifacts -type f \( -name "*.apk" -o -name "*.ipa" -o -name "*.zip" \) -exec cp {} release_dist/ \;
 
           echo "收集到的发布产物列表:"
           ls -lh release_dist/
 
           if [ -z "$(ls -A release_dist 2>/dev/null)" ]; then
-            echo "::error::未收集到任何 APK 或 IPA 产物，发布终止"
+            echo "::error::未收集到任何 APK、IPA 或 ZIP 产物，发布终止"
             exit 1
           fi
 

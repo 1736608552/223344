@@ -537,15 +537,16 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
-  /// 异步初始化播放器 (短剧采用 DuanjuMediaKitBackend，非短剧维持原有 ExoPlayerBackend)
+  /// 异步初始化播放器 (短剧或桌面端采用 DuanjuMediaKitBackend，移动端非短剧维持原有 ExoPlayerBackend)
   Future<void> _initPlayerAsync() async {
     final isShortDrama = widget.videoInfo.source == 'hongguo' ||
         widget.videoInfo.source == 'shortdrama' ||
         widget.preferredSource == 'hongguo' ||
         widget.preferredSource == 'shortdrama';
+    final isDesktop = !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
     try {
-      if (isShortDrama) {
+      if (isShortDrama || isDesktop) {
         _player = await DuanjuMediaKitBackend.create();
       } else {
         _player = await ExoPlayerBackend.create();
@@ -679,8 +680,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       await _player?.dispose();
     } catch (_) {}
 
+    final isDesktop = !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
     try {
-      if (toShortDrama) {
+      if (toShortDrama || isDesktop) {
         _player = await DuanjuMediaKitBackend.create();
       } else {
         _player = await ExoPlayerBackend.create();
@@ -4011,10 +4013,11 @@ class _PlayerScreenState extends State<PlayerScreen>
       await _initPlayerFuture;
     }
 
-    // 播放器后端类型自适应：短剧使用 DuanjuMediaKitBackend，非短剧维持原有 ExoPlayerBackend
-    if (isShortDrama && _player is! DuanjuMediaKitBackend) {
+    // 播放器后端类型自适应：桌面端或短剧使用 DuanjuMediaKitBackend，移动端非短剧维持 ExoPlayerBackend
+    final isDesktop = !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+    if ((isShortDrama || isDesktop) && _player is! DuanjuMediaKitBackend) {
       await _switchPlayerBackend(true);
-    } else if (!isShortDrama && _player is! ExoPlayerBackend) {
+    } else if (!isShortDrama && !isDesktop && _player is! ExoPlayerBackend) {
       await _switchPlayerBackend(false);
     }
 
