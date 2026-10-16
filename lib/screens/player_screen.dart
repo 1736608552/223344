@@ -1589,38 +1589,37 @@ class _PlayerScreenState extends State<PlayerScreen>
     _volumeHideTimer = Timer(const Duration(seconds: 2), () {
       if (mounted) setState(() => _showVolumeIndicator = false);
     });
-    _showControlTemporarily();
+    _showControls();
     _onUserActivity();
   }
 
   /// 键盘快捷键调节进度 (向左/向右键)
   void _seekRelative(Duration delta) {
     if (_isDisposing || _player == null) return;
-    final dur = _totalDuration;
+    final dur = _currentDuration;
     if (dur <= Duration.zero) return;
     final newPos = _currentPosition + delta;
-    final clampedMs = newPos.inMilliseconds.clamp(0, dur.inMilliseconds);
+    final clampedMs = newPos.inMilliseconds.clamp(0, dur.inMilliseconds).toInt();
     final finalPos = Duration(milliseconds: clampedMs);
     setState(() {
       _currentPosition = finalPos;
       _seekHintText = '${_formatDuration(finalPos)} / ${_formatDuration(dur)}';
-      _showSeekHint = true;
     });
     unawaited(_player!.seek(finalPos));
     _onDanmakuSeek(clampedMs);
     _updateSkipButtonVisibility();
     _seekHintTimer?.cancel();
     _seekHintTimer = Timer(const Duration(seconds: 2), () {
-      if (mounted) setState(() => _showSeekHint = false);
+      if (mounted) setState(() => _seekHintText = null);
     });
-    _showControlTemporarily();
+    _showControls();
     _onUserActivity();
   }
 
   /// 键盘空格键播放/暂停
   void _handleSpaceKey() {
     _togglePlayPause();
-    _showControlTemporarily();
+    _showControls();
     _onUserActivity();
   }
 
