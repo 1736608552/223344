@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/gestures.dart';
 import 'package:http/http.dart' as http;
 import 'package:cached_network_image/cached_network_image.dart';
 // v2.2.0: 卸 libmpv (media_kit) 改 ExoPlayer (AndroidX Media3).
@@ -367,6 +368,9 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   // 全屏状态
   bool _isFullscreen = false;
+  // 全屏鼠标光标自动隐藏状态与定时器
+  bool _hideMouseCursor = false;
+  Timer? _mouseHideTimer;
 
   // 下一季/推荐自动连播状态 (类似 YouTube / Netflix 居中海报弹窗与5秒自动播放)
   NextSeasonCandidate? _nextSeasonCandidate;
@@ -1502,6 +1506,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   /// 进入全屏：隐藏系统UI + 根据视频宽高比设置屏幕方向
   Future<void> _onEnterFullscreen() async {
     setState(() => _isFullscreen = true);
+    _resetMouseHideTimer();
     if (DeviceUtils.isWindows()) {
       await WindowUtils.setFullScreen(true);
       return;
@@ -1526,7 +1531,11 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   /// 退出全屏：恢复系统UI + 解锁方向 (让系统自由旋转)
   Future<void> _onExitFullscreen() async {
-    setState(() => _isFullscreen = false);
+    _mouseHideTimer?.cancel();
+    setState(() {
+      _isFullscreen = false;
+      _hideMouseCursor = false;
+    });
     if (DeviceUtils.isWindows()) {
       await WindowUtils.setFullScreen(false);
       return;
@@ -1543,6 +1552,76 @@ class _PlayerScreenState extends State<PlayerScreen>
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
     ]);
+  }
+
+  /// 全屏下用户活动（移动鼠标/点击）唤醒光标并重置隐藏倒计时
+  void _onUserActivity() {
+    if (_hideMouseCursor) {
+      setState(() => _hideMouseCursor = false);
+    }
+    _resetMouseHideTimer();
+  }
+
+  /// 重置鼠标光标3秒自动隐藏定时器
+  void _resetMouseHideTimer() {
+    _mouseHideTimer?.cancel();
+    if (_isFullscreen) {
+      _mouseHideTimer = Timer(const Duration(seconds: 3), () {
+        if (mounted && _isFullscreen) {
+          setState(() => _hideMouseCursor = true);
+        }
+      });
+    }
+  }
+
+  /// 键盘快捷键调节音量 (向上/向下键)
+  void _adjustVolumeByStep(double delta) {
+    if (_isDisposing) return;
+    final newVol = (_currentVolume + delta).clamp(0.0, 1.0);
+    setState(() {
+      _currentVolume = newVol;
+      _showVolumeIndicator = true;
+    });
+    try {
+      VolumeController.instance.setVolume(newVol);
+    } catch (_) {}
+    _volumeHideTimer?.cancel();
+    _volumeHideTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _showVolumeIndicator = false);
+    });
+    _showControlTemporarily();
+    _onUserActivity();
+  }
+
+  /// 键盘快捷键调节进度 (向左/向右键)
+  void _seekRelative(Duration delta) {
+    if (_isDisposing || _player == null) return;
+    final dur = _totalDuration;
+    if (dur <= Duration.zero) return;
+    final newPos = _currentPosition + delta;
+    final clampedMs = newPos.inMilliseconds.clamp(0, dur.inMilliseconds);
+    final finalPos = Duration(milliseconds: clampedMs);
+    setState(() {
+      _currentPosition = finalPos;
+      _seekHintText = '${_formatDuration(finalPos)} / ${_formatDuration(dur)}';
+      _showSeekHint = true;
+    });
+    unawaited(_player!.seek(finalPos));
+    _onDanmakuSeek(clampedMs);
+    _updateSkipButtonVisibility();
+    _seekHintTimer?.cancel();
+    _seekHintTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _showSeekHint = false);
+    });
+    _showControlTemporarily();
+    _onUserActivity();
+  }
+
+  /// 键盘空格键播放/暂停
+  void _handleSpaceKey() {
+    _togglePlayPause();
+    _showControlTemporarily();
+    _onUserActivity();
   }
 
   // ================= UI 控制 =================
@@ -4484,6 +4563,28 @@ class _PlayerScreenState extends State<PlayerScreen>
                 _onExitFullscreen();
                 return KeyEventResult.handled;
               }
+              if (_phase == 'playing') {
+                if (event.logicalKey == LogicalKeyboardKey.space) {
+                  _handleSpaceKey();
+                  return KeyEventResult.handled;
+                }
+                if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+                  _seekRelative(const Duration(seconds: -10));
+                  return KeyEventResult.handled;
+                }
+                if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+                  _seekRelative(const Duration(seconds: 10));
+                  return KeyEventResult.handled;
+                }
+                if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                  _adjustVolumeByStep(0.05);
+                  return KeyEventResult.handled;
+                }
+                if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                  _adjustVolumeByStep(-0.05);
+                  return KeyEventResult.handled;
+                }
+              }
             }
             return KeyEventResult.ignored;
           },
@@ -5444,36 +5545,84 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
-  /// v2.0.51: 翻页 badge "1/2", 显示在 "选集" 标题右侧
+  /// v2.0.51: 翻页 badge "1/2", 显示在 "选集" 标题右侧，带上一页/下一页鼠标点击按钮
   Widget _buildEpisodePageBadge(int totalEpisodes, bool isDark) {
     final pageCount =
         (totalEpisodes + _episodesPerPage - 1) ~/ _episodesPerPage;
     final currentPage =
         (_currentEpisodeIndex ~/ _episodesPerPage).clamp(0, pageCount - 1);
     if (pageCount <= 1) return const SizedBox.shrink();
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: isDark ? Colors.white.withOpacity(0.08) : Colors.black.withOpacity(0.06),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: ValueListenableBuilder<PageController>(
-        // v2.0.51: PageController 变化时 badge "1/2" 数字跟着变
-        valueListenable: _pageControllerNotifier,
-        builder: (context, controller, _) {
-          final page = controller.hasClients
-              ? (controller.page?.round() ?? currentPage)
-              : currentPage;
-          return Text(
-            '${page + 1} / $pageCount',
-            style: TextStyle(
-              fontSize: 11,
-              color: isDark ? Colors.white60 : Colors.black54,
-              fontWeight: FontWeight.w600,
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () {
+            if (_episodesPageController.hasClients) {
+              final cur = _episodesPageController.page?.round() ?? currentPage;
+              if (cur > 0) {
+                _episodesPageController.previousPage(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut,
+                );
+              }
+            }
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            child: Icon(
+              Icons.chevron_left_rounded,
+              size: 20,
+              color: isDark ? Colors.white70 : Colors.black87,
             ),
-          );
-        },
-      ),
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: isDark ? Colors.white.withOpacity(0.08) : Colors.black.withOpacity(0.06),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: ValueListenableBuilder<PageController>(
+            valueListenable: _pageControllerNotifier,
+            builder: (context, controller, _) {
+              final page = controller.hasClients
+                  ? (controller.page?.round() ?? currentPage)
+                  : currentPage;
+              return Text(
+                '${page + 1} / $pageCount',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: isDark ? Colors.white70 : Colors.black87,
+                  fontWeight: FontWeight.w600,
+                ),
+              );
+            },
+          ),
+        ),
+        InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () {
+            if (_episodesPageController.hasClients) {
+              final cur = _episodesPageController.page?.round() ?? currentPage;
+              if (cur < pageCount - 1) {
+                _episodesPageController.nextPage(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut,
+                );
+              }
+            }
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            child: Icon(
+              Icons.chevron_right_rounded,
+              size: 20,
+              color: isDark ? Colors.white70 : Colors.black87,
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -5534,50 +5683,105 @@ class _PlayerScreenState extends State<PlayerScreen>
             children: [
               SizedBox(
                 height: gridHeight,
-                child: PageView.builder(
-                  controller: _episodesPageController,
-                  onPageChanged: (page) {
-                    _pageControllerNotifier.value = _episodesPageController;
-                  },
-                  itemCount: pageCount,
-                  itemBuilder: (context, pageIndex) {
-                    final start = pageIndex * _episodesPerPage;
-                    final end = (start + _episodesPerPage).clamp(0, totalEpisodes);
-                    return _buildEpisodesGridPage(
-                      source,
-                      start,
-                      end,
-                      isDark,
-                      crossAxisCount,
-                      childAspectRatio,
-                      spacing,
-                      cardW,
-                      fontSize,
-                    );
-                  },
+                child: ScrollConfiguration(
+                  behavior: ScrollConfiguration.of(context).copyWith(
+                    dragDevices: {
+                      PointerDeviceKind.touch,
+                      PointerDeviceKind.mouse,
+                      PointerDeviceKind.trackpad,
+                      PointerDeviceKind.stylus,
+                    },
+                  ),
+                  child: Listener(
+                    onPointerSignal: (pointerSignal) {
+                      if (pointerSignal is PointerScrollEvent) {
+                        if (pointerSignal.scrollDelta.dy > 0 || pointerSignal.scrollDelta.dx > 0) {
+                          if (_episodesPageController.hasClients) {
+                            final cur = _episodesPageController.page?.round() ?? 0;
+                            if (cur < pageCount - 1) {
+                              _episodesPageController.nextPage(
+                                duration: const Duration(milliseconds: 250),
+                                curve: Curves.easeOut,
+                              );
+                            }
+                          }
+                        } else if (pointerSignal.scrollDelta.dy < 0 || pointerSignal.scrollDelta.dx < 0) {
+                          if (_episodesPageController.hasClients) {
+                            final cur = _episodesPageController.page?.round() ?? 0;
+                            if (cur > 0) {
+                              _episodesPageController.previousPage(
+                                duration: const Duration(milliseconds: 250),
+                                curve: Curves.easeOut,
+                              );
+                            }
+                          }
+                        }
+                      }
+                    },
+                    child: PageView.builder(
+                      controller: _episodesPageController,
+                      physics: const PageScrollPhysics(),
+                      onPageChanged: (page) {
+                        _pageControllerNotifier.value = _episodesPageController;
+                      },
+                      itemCount: pageCount,
+                      itemBuilder: (context, pageIndex) {
+                        final start = pageIndex * _episodesPerPage;
+                        final end = (start + _episodesPerPage).clamp(0, totalEpisodes);
+                        return _buildEpisodesGridPage(
+                          source,
+                          start,
+                          end,
+                          isDark,
+                          crossAxisCount,
+                          childAspectRatio,
+                          spacing,
+                          cardW,
+                          fontSize,
+                        );
+                      },
+                    ),
+                  ),
                 ),
               ),
               Padding(
                 padding: const EdgeInsets.only(top: 6),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: List.generate(pageCount, (i) {
-                    final isActive = i == initialPage;
-                    return AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      margin: const EdgeInsets.symmetric(horizontal: 3),
-                      width: isActive ? 16 : 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                        color: isActive
-                            ? const Color(0xFF10B981)
-                            : (isDark
-                                ? Colors.white24
-                                : Colors.black26),
-                        borderRadius: BorderRadius.circular(3),
-                      ),
+                child: ValueListenableBuilder<PageController>(
+                  valueListenable: _pageControllerNotifier,
+                  builder: (context, controller, _) {
+                    final curPage = controller.hasClients
+                        ? (controller.page?.round() ?? initialPage)
+                        : initialPage;
+                    return Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: List.generate(pageCount, (i) {
+                        final isActive = i == curPage;
+                        return GestureDetector(
+                          onTap: () {
+                            if (_episodesPageController.hasClients) {
+                              _episodesPageController.animateToPage(
+                                i,
+                                duration: const Duration(milliseconds: 300),
+                                curve: Curves.easeInOut,
+                              );
+                            }
+                          },
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                            width: isActive ? 18 : 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              color: isActive
+                                  ? const Color(0xFF10B981)
+                                  : (isDark ? Colors.white24 : Colors.black26),
+                              borderRadius: BorderRadius.circular(3),
+                            ),
+                          ),
+                        );
+                      }),
                     );
-                  }),
+                  },
                 ),
               ),
             ],
@@ -7245,9 +7449,15 @@ class _PlayerScreenState extends State<PlayerScreen>
   /// 主播放视图 (12ce29d 简单 Stack 结构 + LunaTV Web 风格控件)
   /// 不用 LayoutBuilder / GestureDetector, 避免 video 纹理被重建导致白屏
   Widget _buildPlayingView(bool isDark) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
+    return MouseRegion(
+      cursor: (_isFullscreen && _hideMouseCursor)
+          ? SystemMouseCursors.none
+          : SystemMouseCursors.basic,
+      onHover: (_) => _onUserActivity(),
+      onEnter: (_) => _onUserActivity(),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
         // 视频 (12ce29d 结构: Container+AspectRatio+Stack+Video(NoVideoControls))
         // v2.6.41: 加 Transform.scale 支持双指缩放, 小尺寸影片能放大填满.
         Positioned.fill(
@@ -7382,8 +7592,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         // v2.6.113: 下一季居中卡片自动连播浮层 (类似 YouTube / Netflix 风格)
         if (_showNextSeasonOverlay) _buildNextSeasonCenterOverlay(),
       ],
-    );
-  }
+    ),
+  );
+}
 
   /// v2.6.93: 全新智能跳过胶囊浮层 (对齐 SeleneTV, 支持倒计时自动跳过与手动点击)
   Widget _buildSmartSkipCapsule() {
