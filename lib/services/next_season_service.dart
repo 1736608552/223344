@@ -4,8 +4,9 @@ import 'package:luna_tv/models/search_result.dart';
 import 'package:luna_tv/models/video_info.dart';
 import 'package:luna_tv/services/duanju_core_bridge.dart';
 import 'package:luna_tv/services/search_service.dart';
+import 'package:luna_tv/services/douban_service.dart';
 
-/// 下一季剧集候选模型 (用于播放器居中弹窗展示与自动连播)
+/// 连播/推荐剧集候选模型 (用于播放器居中弹窗展示与自动连播)
 class NextSeasonCandidate {
   final String title;
   final int seasonNumber;
@@ -17,6 +18,9 @@ class NextSeasonCandidate {
   final String source;
   final String sourceName;
   final VideoInfo nextVideoInfo;
+  final bool isNextSeason;
+  final String bannerTitle;
+  final String bannerSubtitle;
 
   const NextSeasonCandidate({
     required this.title,
@@ -29,6 +33,9 @@ class NextSeasonCandidate {
     required this.source,
     required this.sourceName,
     required this.nextVideoInfo,
+    this.isNextSeason = true,
+    this.bannerTitle = '即将播放下一季',
+    this.bannerSubtitle = '即将为您连播下一季第一集',
   });
 }
 
@@ -91,7 +98,7 @@ class NextSeasonService {
     );
   }
 
-  /// 异步寻找并解析下一季候选信息
+  /// 异步寻找并解析下一季候选信息（若无下一季自动寻找推荐内容）
   static Future<NextSeasonCandidate?> findNextSeason({
     required VideoInfo currentVideoInfo,
     String? currentSource,
@@ -117,7 +124,7 @@ class NextSeasonService {
 
       NextSeasonCandidate? candidate;
 
-      // 1. 短剧专属通道推导
+      // 1. 短剧专属通道推导下一季
       if (isShortDrama) {
         candidate = await _findNextSeasonShortDrama(
           baseTitle: baseTitle,
@@ -127,12 +134,18 @@ class NextSeasonService {
         );
       }
 
-      // 2. 通用全网聚合搜索推导 (电视剧 / 番剧 / 普通视频)
+      // 2. 通用全网聚合搜索推导下一季 (电视剧 / 番剧 / 普通视频)
       candidate ??= await _findNextSeasonGeneral(
         baseTitle: baseTitle,
         currentVideoInfo: currentVideoInfo,
         nextSeason: nextSeason,
         nextSeasonCn: nextSeasonCn,
+      );
+
+      // 3. ★ 若无下一季内容，智能寻找相关/爆款推荐剧集
+      candidate ??= await _findRecommendation(
+        currentVideoInfo: currentVideoInfo,
+        isShortDrama: isShortDrama,
       );
 
       _cache[cacheKey] = candidate;
@@ -270,6 +283,127 @@ class NextSeasonService {
                 source: res.source,
                 sourceName: res.sourceName,
                 nextVideoInfo: nextInfo,
+              );
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  /// 若无下一季，寻找相关或热门推荐内容
+  static Future<NextSeasonCandidate?> _findRecommendation({
+    required VideoInfo currentVideoInfo,
+    required bool isShortDrama,
+  }) async {
+    final curTitle = currentVideoInfo.title.trim();
+    if (isShortDrama) {
+      try {
+        final dramas = await DuanjuCoreBridge.instance.fetchDramas(category: '全部', sort: 'hot');
+        if (dramas.isNotEmpty) {
+          for (final d in dramas) {
+            final title = (d['title'] ?? '').toString().trim();
+            final id = (d['id'] ?? '').toString().trim();
+            if (title.isNotEmpty && id.isNotEmpty && !title.contains(curTitle) && !curTitle.contains(title)) {
+              final poster = (d['cover'] ?? '').toString().trim();
+              final desc = (d['desc'] ?? '').toString().trim();
+              final total = int.tryParse(d['total']?.toString() ?? '') ?? 0;
+              final nextInfo = VideoInfo(
+                id: id,
+                source: 'hongguo',
+                title: title,
+                sourceName: '短剧专区',
+                year: (d['year'] ?? '').toString(),
+                cover: poster.isNotEmpty ? poster : currentVideoInfo.cover,
+                index: 1,
+                totalEpisodes: total,
+                playTime: 0,
+                totalTime: 0,
+                saveTime: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+                searchTitle: title,
+                doubanId: null,
+              );
+              return NextSeasonCandidate(
+                title: title,
+                seasonNumber: 1,
+                seasonLabel: '为你推荐',
+                poster: poster.isNotEmpty ? poster : currentVideoInfo.cover,
+                year: nextInfo.year.isNotEmpty ? nextInfo.year : currentVideoInfo.year,
+                desc: desc.isNotEmpty ? desc : '本剧已完结，为您精选热播好剧，5秒后自动连播',
+                totalEpisodes: total,
+                source: 'hongguo',
+                sourceName: '短剧专区',
+                nextVideoInfo: nextInfo,
+                isNextSeason: false,
+                bannerTitle: '本剧已完结 · 为你推荐精彩好剧',
+                bannerSubtitle: '为您精选热播爆款好剧，5秒后自动开播',
+              );
+            }
+          }
+        }
+      } catch (_) {}
+    } else {
+      // 长剧/电影/动漫场景: 优先通过豆瓣电影推荐
+      try {
+        final doubanId = currentVideoInfo.doubanId;
+        if (doubanId != null && doubanId.isNotEmpty) {
+          final resDetails = await DoubanService.getDoubanDetails(doubanId);
+          final detail = resDetails.data;
+          if (detail != null && detail.recommends.isNotEmpty) {
+            for (final rec in detail.recommends) {
+              final recTitle = rec.title.trim();
+              if (recTitle.isNotEmpty && recTitle != curTitle) {
+                final results = await SearchService.searchSync(recTitle);
+                if (results.isNotEmpty) {
+                  final best = results.firstWhere((r) => r.episodes.isNotEmpty, orElse: () => results.first);
+                  if (best.episodes.isNotEmpty) {
+                    final nextInfo = best.toVideoInfo();
+                    return NextSeasonCandidate(
+                      title: best.title,
+                      seasonNumber: 1,
+                      seasonLabel: '为你推荐',
+                      poster: best.poster.isNotEmpty ? best.poster : (rec.pic ?? currentVideoInfo.cover),
+                      year: best.year.isNotEmpty ? best.year : (rec.year ?? ''),
+                      desc: (best.desc?.isNotEmpty == true) ? best.desc! : '本剧已完结，为您精选同类高分好剧，5秒后自动开播',
+                      totalEpisodes: best.episodes.length,
+                      source: best.source,
+                      sourceName: best.sourceName,
+                      nextVideoInfo: nextInfo,
+                      isNextSeason: false,
+                      bannerTitle: '本剧已完结 · 为你推荐精彩好剧',
+                      bannerSubtitle: '为您精选同类高分好剧，5秒后自动连播',
+                    );
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (_) {}
+
+      // 兜底通用热门检索
+      try {
+        final results = await SearchService.searchSync('热播');
+        if (results.isNotEmpty) {
+          for (final res in results) {
+            final resTitle = res.title.trim();
+            if (resTitle.isNotEmpty && !resTitle.contains(curTitle) && !curTitle.contains(resTitle) && res.episodes.isNotEmpty) {
+              final nextInfo = res.toVideoInfo();
+              return NextSeasonCandidate(
+                title: res.title,
+                seasonNumber: 1,
+                seasonLabel: '热门推荐',
+                poster: res.poster.isNotEmpty ? res.poster : currentVideoInfo.cover,
+                year: res.year.isNotEmpty ? res.year : currentVideoInfo.year,
+                desc: (res.desc?.isNotEmpty == true) ? res.desc! : '本剧已完结，为您推荐全网高分力作，5秒后自动开播',
+                totalEpisodes: res.episodes.length,
+                source: res.source,
+                sourceName: res.sourceName,
+                nextVideoInfo: nextInfo,
+                isNextSeason: false,
+                bannerTitle: '本剧已完结 · 为你推荐精彩好剧',
+                bannerSubtitle: '为您精选全网高分力作，5秒后自动开播',
               );
             }
           }

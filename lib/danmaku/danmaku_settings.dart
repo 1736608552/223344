@@ -158,8 +158,10 @@ class DanmakuSettings {
   static const _kLastArea = 'danmaku_last_area';
   static const _kMode = 'danmaku_mode';
   static const _kSources = 'danmaku_sources';
+  static const _kDanmakuEnabled = 'danmaku_user_enabled';
 
   SharedPreferences? _prefs;
+  bool _isDanmakuEnabled = false; // 用户全局/会话开关，默认关闭
   DanmakuRenderSettings _render = const DanmakuRenderSettings();
   DanmakuAreaOption _area = DanmakuAreaOption.full;
   DanmakuAreaOption _lastArea = DanmakuAreaOption.full;
@@ -169,6 +171,7 @@ class DanmakuSettings {
       .map((s) => s.key)
       .toSet();
 
+  bool get isDanmakuEnabled => _isDanmakuEnabled;
   DanmakuRenderSettings get render => _render;
   DanmakuAreaOption get area => _area;
   DanmakuAreaOption get lastArea => _lastArea;
@@ -187,6 +190,7 @@ class DanmakuSettings {
   /// 对应 SeleneTV Llj; 初始化逻辑
   Future<void> load() async {
     _prefs = await SharedPreferences.getInstance();
+    _isDanmakuEnabled = _prefs!.getBool(_kDanmakuEnabled) ?? false;
     _render = DanmakuRenderSettings(
       opacity: _prefs!.getDouble(_kOpacity) ?? 1.0,
       speed: _prefs!.getDouble(_kSpeed) ?? 1.0,
@@ -203,6 +207,13 @@ class DanmakuSettings {
     if (raw != null && raw.isNotEmpty) {
       _enabledSourceKeys = raw.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toSet();
     }
+  }
+
+  /// 保存用户弹幕总开关
+  Future<void> setDanmakuEnabled(bool enabled) async {
+    _isDanmakuEnabled = enabled;
+    _prefs ??= await SharedPreferences.getInstance();
+    await _prefs!.setBool(_kDanmakuEnabled, enabled);
   }
 
   /// 切换某源的启用状态 — 对应 SeleneTV Lkj;->invokeSuspend

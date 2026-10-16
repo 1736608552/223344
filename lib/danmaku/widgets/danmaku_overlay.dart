@@ -124,7 +124,11 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.comments, widget.comments)) {
       _commentsChanged = true;
-      reset();
+      // 彻底根治卡顿：增量拉取或更新弹幕时绝不销毁已有飞行弹幕与重置轨道！
+      // 只有在列表彻底被清空（例如切集换源）时才重置
+      if (widget.comments.isEmpty) {
+        reset();
+      }
     } else if (oldWidget.opacity != widget.opacity ||
         oldWidget.fontSize != widget.fontSize ||
         oldWidget.speed != widget.speed) {
@@ -390,9 +394,12 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
       }
     }
 
+    int spawnedThisFrame = 0;
     for (var i = lo; i < _sorted.length; i++) {
       final c = _sorted[i];
       if (c.timeMs > windowEnd) break;
+      // 单帧最多装填 2 条弹幕，将 TextPainter.layout 耗时平摊至多帧，杜绝 CPU/UI 线程峰值掉帧
+      if (spawnedThisFrame >= 2) break;
 
       final hash = identityHashCode(c);
       if (_spawnedHashes.contains(hash)) continue;
@@ -421,6 +428,7 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
       );
       _live.add(bullet);
       _spawnedHashes.add(hash);
+      spawnedThisFrame++;
 
       if (renderMode == 1) {
         _scrollTracks[track].lastBullet = bullet;

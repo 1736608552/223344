@@ -364,13 +364,17 @@ class _PlayerScreenState extends State<PlayerScreen>
   // 全屏状态
   bool _isFullscreen = false;
 
-  // 下一季自动连播状态 (类似 YouTube / Netflix 居中海报弹窗与5秒自动播放)
+  // 下一季/推荐自动连播状态 (类似 YouTube / Netflix 居中海报弹窗与5秒自动播放)
   NextSeasonCandidate? _nextSeasonCandidate;
   bool _isPreloadingNextSeason = false;
   bool _showNextSeasonOverlay = false;
   bool _nextSeasonDismissedThisEp = false;
   int _nextSeasonCountdownSec = 5;
   Timer? _nextSeasonTimer;
+
+  // 防连跳状态锁与时间戳 (彻底根治播放第一集跳转第二集时连跳两集)
+  bool _isEpisodeSwitching = false;
+  int _lastEpisodeSwitchTimeMs = 0;
 
   // 快进/快退提示文字 (点击后短暂显示, 如 "快进6s")
   String? _seekHintText;
@@ -459,7 +463,13 @@ class _PlayerScreenState extends State<PlayerScreen>
     // 加载倍速持久化
     _loadPlaybackRate();
     // v2.5.36: 加载弹幕设置 (移植自 SeleneTV SharedPreferences)
-    unawaited(DanmakuSettings.instance.load());
+    unawaited(DanmakuSettings.instance.load().then((_) {
+      if (mounted) {
+        setState(() {
+          _danmakuEnabled = DanmakuSettings.instance.isDanmakuEnabled;
+        });
+      }
+    }));
     // v2.5.51: 弹幕预搜索 — 进播放页时后台并发搜索 6 源
     //   移植 SeleneTV: "进播放页并发搜索, 命中源进「弹幕源」切换"
     //   用户点弹幕按钮时直接使用预搜索结果, 实现秒开
@@ -956,8 +966,12 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     if (seg.type == SkipSegmentType.outro || seg.type == SkipSegmentType.credits || seg.type == SkipSegmentType.preview) {
       _hasAutoSkippedOutroThisEp = true;
-      if (_isTransitioningEpisode) return;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (_isTransitioningEpisode || _isEpisodeSwitching) return;
+      if (now - _lastEpisodeSwitchTimeMs < 2500) return; // 2.5s 硬防抖拦截
       _isTransitioningEpisode = true;
+      _isEpisodeSwitching = true;
+      _lastEpisodeSwitchTimeMs = now;
 
       final source = _selectedSource;
       final nextIndex = _currentEpisodeIndex + 1;
@@ -1594,6 +1608,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           _danmakuComments = comments;
           _danmakuEnabled = true;
         });
+        DanmakuSettings.instance.setDanmakuEnabled(true);
         _danmakuKey.currentState?.reset();
       },
       onDanmakuDisabled: () {
@@ -1602,6 +1617,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           _danmakuComments = const [];
           _danmakuCount = 0;
         });
+        DanmakuSettings.instance.setDanmakuEnabled(false);
         _danmakuKey.currentState?.reset();
       },
       onOpenSettings: () {
@@ -1704,7 +1720,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       setState(() {
         _danmakuComments = merged;
         _danmakuCount = merged.length;
-        _danmakuEnabled = true;
+        _danmakuEnabled = DanmakuSettings.instance.isDanmakuEnabled;
         _danmakuSource = 'hongguo';
         _danmakuSourceTitle = '短剧 · $title · 第$epNum集';
         _danmakuSelSource = DanmakuSource.hongguo;
@@ -1712,7 +1728,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         _danmakuSelMediaTitle = title;
       });
 
-      if (!auto && startMs == 0) {
+      if (!auto && startMs == 0 && _danmakuEnabled) {
         _toast('弹幕 · 红果短剧 · 第$epNum集 · ${merged.length}条');
       }
       await DiaryService.add('[短剧弹幕] 成功载入第$epNum集官方真实弹幕: ${comments.length}条 (当前总计${merged.length}条, 首条: "${merged.firstOrNull?.content}")');
@@ -1789,15 +1805,11 @@ class _PlayerScreenState extends State<PlayerScreen>
         title: title,
         type: 'tv',
       );
-      // 刚打开短剧播放时，除非用户在设置中设为 off，否则默认开启弹幕并自启动加载
-      final shouldEnable = DanmakuSettings.instance.area != DanmakuAreaOption.off;
       setState(() {
         _danmakuPreSearchResults = [hongguoMedia];
         _danmakuPreSearching = false;
         _danmakuPreSearchDone = true;
-        if (shouldEnable) {
-          _danmakuEnabled = true;
-        }
+        _danmakuEnabled = DanmakuSettings.instance.isDanmakuEnabled;
       });
       if (_phase == 'playing') {
         unawaited(_loadShortDramaDanmaku(auto: true));
@@ -1997,10 +2009,12 @@ class _PlayerScreenState extends State<PlayerScreen>
             '${selSource.displayName} · $selTitle · ${ep.title}';
         _danmakuCount = result.comments.length;
         _danmakuComments = result.comments;
-        _danmakuEnabled = true;
+        _danmakuEnabled = DanmakuSettings.instance.isDanmakuEnabled;
       });
       _danmakuKey.currentState?.reset();
-      _toast('弹幕 · ${selSource.displayName} · ${result.comments.length}条');
+      if (_danmakuEnabled) {
+        _toast('弹幕 · ${selSource.displayName} · ${result.comments.length}条');
+      }
       await DiaryService.add('[弹幕] 加载成功: ${selSource.displayName} '
           '${result.comments.length}条');
     } catch (e) {
@@ -3712,13 +3726,15 @@ class _PlayerScreenState extends State<PlayerScreen>
   /// 修法: pos 必须 ≥ dur - 1.5s 才允许切 (跟 _maybeAutoPlayNext 同阈值),
   ///       dur < 30s 也跳过 (直播流 / 异常源)
   void _autoPlayNextEpisode() {
-    if (_autoPlayedThisEpisode) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_isEpisodeSwitching || _isTransitioningEpisode || _autoPlayedThisEpisode) return;
+    if (now - _lastEpisodeSwitchTimeMs < 2500) return; // 2.5s 硬防抖拦截
     if (_phase != 'playing') return;
     final source = _selectedSource;
     if (source == null) return;
     final nextIndex = _currentEpisodeIndex + 1;
     if (nextIndex >= source.episodes.length) {
-      // 本季最后一集播完！触发下一季自动连播居中弹层
+      // 本季最后一集播完！触发居中连播/推荐弹层
       _handleLastEpisodeCompletion();
       return;
     }
@@ -3741,15 +3757,17 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
 
     _autoPlayedThisEpisode = true; // 立刻上锁, 防止 position/completed 双触发
+    _isEpisodeSwitching = true;
+    _isTransitioningEpisode = true;
+    _lastEpisodeSwitchTimeMs = now;
     _playEpisode(nextIndex);
   }
 
   /// v2.0.33: 手动「下一集」— 用户主动点播控上的 skip_next 按钮.
-  /// 跟 _autoPlayNextEpisode 区别: 不要 pos / dur 守门, 用户点的时候
-  /// 不管看到哪里都直接切. 也用 _autoPlayedThisEpisode 锁防止后续
-  /// streams.completed 误触.
   void _playNextEpisode() {
-    if (_autoPlayedThisEpisode) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_isEpisodeSwitching || _isTransitioningEpisode || _autoPlayedThisEpisode) return;
+    if (now - _lastEpisodeSwitchTimeMs < 2500) return;
     if (_phase != 'playing') return;
     final source = _selectedSource;
     if (source == null) return;
@@ -3763,6 +3781,9 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     if (!isShortDrama && source.episodes[nextIndex].isEmpty) return; // 下一集没 url
     _autoPlayedThisEpisode = true;
+    _isEpisodeSwitching = true;
+    _isTransitioningEpisode = true;
+    _lastEpisodeSwitchTimeMs = now;
     _playEpisode(nextIndex);
     // 给个轻提示 (主路是控制栏图标变了, 提示只是兜底)
     if (mounted) {
@@ -3942,6 +3963,18 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   /// 播放指定集数
   Future<void> _playEpisode(int index) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _isEpisodeSwitching = true;
+    _autoPlayedThisEpisode = true;
+    _lastEpisodeSwitchTimeMs = now;
+    _smartSkipCountdownTimer?.cancel();
+    _smartSkipCountdownTimer = null;
+    try {
+      _player?.pause();
+    } catch (_) {}
+    _currentPosition = Duration.zero;
+    _lastKnownPosition = Duration.zero;
+
     final source = _selectedSource;
     if (source == null) return;
     if (index < 0 || index >= source.episodes.length) return;
@@ -4111,8 +4144,6 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
     _currentPlayUrl = url;
 
-    // 切集时先把自动切下一集标志重置, 让新一集播完时能再次触发
-    _autoPlayedThisEpisode = false;
     // 切集时清零 _lastKnownPosition, 避免上一集的"主片位置"被新一集沿用
     // 导致进度同步兜底用错位置 (v2.1.13 起 _lastKnownPosition 只用于进度
     // 同步兜底, 广告跳过逻辑已移除, 不需要清其他字段).
@@ -4124,7 +4155,6 @@ class _PlayerScreenState extends State<PlayerScreen>
     _dismissedOutroThisEp = false;
     _hasAutoSkippedIntroThisEp = false;
     _hasAutoSkippedOutroThisEp = false;
-    _isTransitioningEpisode = false;
     // v2.6.41: 切集时重置缩放 — 上一集放大了, 新一集不该沿用.
     _videoScale = 1.0;
     _pinchPointers.clear();
@@ -4268,6 +4298,15 @@ class _PlayerScreenState extends State<PlayerScreen>
       }
       if (!mounted) return;
       setState(() => _isBuffering = false);
+
+      // 新流成功起播，延迟 1.5 秒平滑解开切集防重入锁，确保旧流所有残余事件彻底耗尽
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        if (mounted) {
+          _isEpisodeSwitching = false;
+          _isTransitioningEpisode = false;
+          _autoPlayedThisEpisode = false;
+        }
+      });
 
       // 短剧后台静默预取下一集播放计划，实现连播与连续切集零等待 (对齐红果鉴)
       if (isShortDrama && index + 2 <= source.episodes.length) {
@@ -7186,12 +7225,14 @@ class _PlayerScreenState extends State<PlayerScreen>
                       else
                         const ColoredBox(color: Colors.black),
                       if (_danmakuEnabled)
-                        DanmakuOverlay(
-                          key: _danmakuKey,
-                          comments: _danmakuComments,
-                          enabled: _danmakuEnabled,
-                          positionProvider: () => _currentPosition,
-                          pausedProvider: () => !_isPlaying,
+                        RepaintBoundary(
+                          child: DanmakuOverlay(
+                            key: _danmakuKey,
+                            comments: _danmakuComments,
+                            enabled: _danmakuEnabled,
+                            positionProvider: () => _currentPosition,
+                            pausedProvider: () => !_isPlaying,
+                          ),
                         ),
                       if (_isBuffering)
                         const SizedBox(
@@ -7568,10 +7609,10 @@ class _PlayerScreenState extends State<PlayerScreen>
                             ),
                           ),
                           const SizedBox(width: 8),
-                          const Expanded(
+                          Expanded(
                             child: Text(
-                              '即将播放下一季',
-                              style: TextStyle(
+                              candidate.bannerTitle,
+                              style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 15,
                                 fontWeight: FontWeight.bold,
@@ -7680,6 +7721,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                                       _buildNextSeasonBadge(candidate.year),
                                     if (candidate.totalEpisodes > 0)
                                       _buildNextSeasonBadge('共${candidate.totalEpisodes}集'),
+                                    _buildNextSeasonBadge(candidate.seasonLabel),
                                     _buildNextSeasonBadge(candidate.sourceName.isNotEmpty ? candidate.sourceName : '全网聚合'),
                                   ],
                                 ),
