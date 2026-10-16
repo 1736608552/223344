@@ -1,5 +1,23 @@
 # LunaTV-Mobile 修复日记
 
+## v2.6.120 (2026-10-16)
+
+### Windows PC 端与 iOS 端应用图标全面对齐安卓端官方图标 + 彻底修复 Win 端全屏播放问题（Win32原生无边框沉浸式全屏 + 任务栏覆盖 + 键盘ESC退出支持）
+
+#### 核心突破与深度自愈
+1. **Windows PC 端与 iOS 端应用图标全面对齐安卓月亮电视机官方高清图标**：
+   - **Windows 桌面端图标**：替换为多尺寸分级高清 `.ico` 文件（内嵌 16, 24, 32, 48, 64, 128, 256 多尺寸），彻底告别 Flutter 默认蓝白图标；
+   - **iOS 客户端应用图标**：`ios/Runner/Assets.xcassets/AppIcon.appiconset/` 下全部 21 个对应尺寸 PNG 图标完整更新覆盖；
+   - **根目录与 macOS 图标**：`logo.png`、`logo.ico` 以及 macOS AppIcon 亦同步对齐更新。
+2. **彻底解决 Windows PC 桌面端全屏播放问题**：
+   - **深层根因定位**：Flutter 的 `SystemChrome.setEnabledSystemUIMode` 仅对移动端状态栏有效，在 Windows 桌面端无法修改 Win32 宿主窗口样式，导致播放器全屏时顶部仍残留白色带标题栏边框、底部 Windows 任务栏常驻未遮盖；
+   - **Win32 原生沉浸式真无边框全屏引擎**：在 `windows/runner/flutter_window.cpp` 中引入 Win32 原生沉浸式全屏切换机制，保存原始窗口几何与样式，切换全屏时移除 `WS_OVERLAPPEDWINDOW` 装饰并切换为 `WS_POPUP`，通过 `GetMonitorInfo` 计算物理显示器全屏坐标并置顶，100% 覆盖 Windows 系统任务栏；
+   - **双向 MethodChannel 桥接与键盘快捷键交互**：注册原生通道 `org.moontechlab.lunatv/window`；在 `player_screen.dart` 中深度接入，支持全屏按钮无缝切换、按 `ESC` 键即时退出全屏、按返回键先退全屏再退页面、退出播放器页面自动兜底还原全屏状态。
+3. **版本号与版本码单调递增**：
+   - 版本更新至 `v2.6.120`（versionCode: 20720）。
+
+---
+
 ## v2.6.119 (2026-10-16)
 
 ### 彻底修复 player_screen.dart 缺少 Platform 导入引发的 Windows/iOS 编译报错 + 使用 defaultTargetPlatform 全平台安全适配 + Windows Release 产物定位加固

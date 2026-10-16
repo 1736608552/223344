@@ -62,6 +62,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:luna_tv/models/skip_segment.dart';
 import 'package:luna_tv/services/skip_segment_service.dart';
 import 'package:luna_tv/services/next_season_service.dart';
+import 'package:luna_tv/utils/device_utils.dart';
+import 'package:luna_tv/utils/window_utils.dart';
 
 /// LunaTV Web 风格播放详情页
 ///
@@ -751,6 +753,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       SystemUiMode.manual,
       overlays: SystemUiOverlay.values,
     );
+    if (DeviceUtils.isWindows()) {
+      unawaited(WindowUtils.setFullScreen(false));
+    }
     // ★ 解锁方向: 退出播放器后不再强制竖屏, 让系统传感器决定
     unawaited(SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
@@ -1497,6 +1502,10 @@ class _PlayerScreenState extends State<PlayerScreen>
   /// 进入全屏：隐藏系统UI + 根据视频宽高比设置屏幕方向
   Future<void> _onEnterFullscreen() async {
     setState(() => _isFullscreen = true);
+    if (DeviceUtils.isWindows()) {
+      await WindowUtils.setFullScreen(true);
+      return;
+    }
     // 隐藏系统UI（状态栏、导航栏）
     await SystemChrome.setEnabledSystemUIMode(
       SystemUiMode.immersiveSticky,
@@ -1518,6 +1527,10 @@ class _PlayerScreenState extends State<PlayerScreen>
   /// 退出全屏：恢复系统UI + 解锁方向 (让系统自由旋转)
   Future<void> _onExitFullscreen() async {
     setState(() => _isFullscreen = false);
+    if (DeviceUtils.isWindows()) {
+      await WindowUtils.setFullScreen(false);
+      return;
+    }
     // 恢复系统UI
     await SystemChrome.setEnabledSystemUIMode(
       SystemUiMode.manual,
@@ -4463,27 +4476,46 @@ class _PlayerScreenState extends State<PlayerScreen>
     return Consumer<ThemeService>(
       builder: (context, theme, _) {
         final isDark = theme.isDarkMode;
-        return PopScope(
-          canPop: _phase == 'detail',
-          onPopInvoked: (didPop) async {
-            if (!didPop && _phase == 'playing') {
-              // ★ v2.6.45: 立即切换 UI 响应返回键, 后台异步清理
-              setState(() => _phase = 'detail');
-              _setKeepScreenOn(false);
-              _disableVolumeInterception();
-              // 后台异步保存进度 + 停止播放器 (不阻塞返回)
-              unawaited(_cleanupOnBack());
+        return Focus(
+          autofocus: true,
+          onKeyEvent: (node, event) {
+            if (event is KeyDownEvent) {
+              if (event.logicalKey == LogicalKeyboardKey.escape && _isFullscreen) {
+                _onExitFullscreen();
+                return KeyEventResult.handled;
+              }
             }
-            // didPop && _phase == 'detail' → 真正退出页面, 无需处理
+            return KeyEventResult.ignored;
           },
-          child: Scaffold(
-            backgroundColor:
-                isDark ? const Color(0xFF0F1117) : const Color(0xFFF5F7F5),
-            body: _phase == 'playing'
-                // 播放视图不套 SafeArea，让视频铺满整屏
-                // 避免横屏时被 iOS 状态栏/HomeIndicator 推挤产生侧边黑/白条
-                ? _buildPlayingView(isDark)
-                : SafeArea(child: _buildDetailView(isDark)),
+          child: PopScope(
+            canPop: _phase == 'detail' && !_isFullscreen,
+            onPopInvoked: (didPop) async {
+              if (!didPop && _isFullscreen) {
+                await _onExitFullscreen();
+                return;
+              }
+              if (!didPop && _phase == 'playing') {
+                // ★ v2.6.45: 立即切换 UI 响应返回键, 后台异步清理
+                setState(() => _phase = 'detail');
+                _setKeepScreenOn(false);
+                _disableVolumeInterception();
+                if (DeviceUtils.isWindows()) {
+                  unawaited(WindowUtils.setFullScreen(false));
+                }
+                // 后台异步保存进度 + 停止播放器 (不阻塞返回)
+                unawaited(_cleanupOnBack());
+              }
+              // didPop && _phase == 'detail' → 真正退出页面, 无需处理
+            },
+            child: Scaffold(
+              backgroundColor:
+                  isDark ? const Color(0xFF0F1117) : const Color(0xFFF5F7F5),
+              body: _phase == 'playing'
+                  // 播放视图不套 SafeArea，让视频铺满整屏
+                  // 避免横屏时被 iOS 状态栏/HomeIndicator 推挤产生侧边黑/白条
+                  ? _buildPlayingView(isDark)
+                  : SafeArea(child: _buildDetailView(isDark)),
+            ),
           ),
         );
       },
