@@ -33,6 +33,7 @@ import org.moontechlab.selenetv.service.ApiService
 import org.moontechlab.selenetv.service.AppDataService
 import org.moontechlab.selenetv.service.BangumiService
 import org.moontechlab.selenetv.service.DoubanService
+import org.moontechlab.selenetv.service.DoubanCacheService
 import org.moontechlab.selenetv.service.ShortDramaService
 import org.moontechlab.selenetv.service.TmdbService
 import org.moontechlab.selenetv.ui.TvHeroBanner
@@ -52,6 +53,7 @@ fun HomeTab(
     homeRefreshKey: Int = 0,
 ) {
     val context = LocalContext.current
+    val doubanCacheService = remember { DoubanCacheService.getInstance(context) }
     val coroutineScope = rememberCoroutineScope()
     
     // 播放历史数据状态
@@ -321,7 +323,7 @@ fun HomeTab(
             isLoadingShortDramas = true
             errorShortDramas = null
             try {
-                val list = ShortDramaService.getHotShortDramas(limit = 20)
+                val list = ShortDramaService.getUnifiedList(genre = "hot", page = 1, size = 20)
                 hotShortDramas = list
             } catch (e: Exception) {
                 errorShortDramas = e.message ?: "加载失败"

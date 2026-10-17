@@ -566,6 +566,9 @@ object AppDataService {
         prefs.getString(KEY_TMDB_API_KEY, "") ?: ""
     }
 
+    fun getTmdbKeySync(): String = prefs.getString(KEY_TMDB_API_KEY, "") ?: ""
+    fun getTmdbApiKeySync(): String = prefs.getString(KEY_TMDB_API_KEY, "") ?: ""
+
     // ==================== Cookie 解析 ====================
 
     /**
