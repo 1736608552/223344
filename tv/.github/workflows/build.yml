@@ -1,0 +1,73 @@
+name: Build & Release lunaTV (TV Edition)
+
+on:
+  push:
+    branches: [ master, main ]
+    tags: [ 'v*.*.*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Build lunaTV APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Accept Android SDK Licenses & Install Platform 36
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0" || true
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Prepare APK Artifacts
+        id: prepare_artifacts
+        run: |
+          mkdir -p artifacts
+          echo "Listing all generated APKs in outputs:"
+          find app/build/outputs/apk/ -name "*.apk" -exec ls -la {} +
+          
+          # 1. 提取 standard 渠道的 arm64-v8a 包
+          find app/build/outputs/apk/ -path "*/standard/release/*arm64-v8a*.apk" -exec cp {} artifacts/LunaTV-TV-v2.6.120-arm64-v8a.apk \;
+          
+          # 2. 提取 standard 渠道的 armeabi-v7a 包
+          find app/build/outputs/apk/ -path "*/standard/release/*armeabi-v7a*.apk" -exec cp {} artifacts/LunaTV-TV-v2.6.120-armeabi-v7a.apk \;
+          
+          # 3. 提取 hisense 渠道的海信专用包 (armeabi-v7a 架构)
+          find app/build/outputs/apk/ -path "*/hisense/release/*armeabi-v7a*.apk" -exec cp {} artifacts/LunaTV-TV-v2.6.120-hisense.apk \;
+          
+          echo "Final prepared artifacts:"
+          ls -la artifacts/
+
+      - name: Upload APKs to Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunaTV-TV-APKs
+          path: artifacts/*.apk
+
+      - name: Create Release on Selene-TV-source
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master'
+        with:
+          tag_name: ${{ github.ref_name == 'master' && 'v1.0.0' || github.ref_name }}
+          name: "lunaTV TV Edition ${{ github.ref_name == 'master' && 'v1.0.0' || github.ref_name }}"
+          draft: false
+          prerelease: false
+          files: artifacts/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

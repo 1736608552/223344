@@ -253,10 +253,70 @@ jobs:
           path: win_dist/*.zip
           retention-days: 1
 
+  build-tv:
+    name: tv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Accept Android SDK Licenses & Install Platform 36
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0" || true
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x tv/gradlew
+
+      - name: Build Release APKs
+        run: |
+          cd tv
+          ./gradlew assembleRelease --stacktrace
+
+      - name: Prepare TV artifacts
+        run: |
+          VERSION=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1 | tr -d '\r\n')
+          BASE_VERSION="${VERSION%+*}"
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v${BASE_VERSION}"
+          fi
+
+          mkdir -p tv_dist
+          echo "Listing all generated APKs in outputs:"
+          find tv/app/build/outputs/apk/ -name "*.apk" -exec ls -la {} +
+
+          # 1. 提取 standard 渠道的 arm64-v8a 包
+          find tv/app/build/outputs/apk/ -path "*/standard/release/*arm64-v8a*.apk" -exec cp {} "tv_dist/LunaTV-TV-${TAG}-arm64-v8a.apk" \;
+
+          # 2. 提取 standard 渠道的 armeabi-v7a 包
+          find tv/app/build/outputs/apk/ -path "*/standard/release/*armeabi-v7a*.apk" -exec cp {} "tv_dist/LunaTV-TV-${TAG}-armeabi-v7a.apk" \;
+
+          # 3. 提取 hisense 渠道的海信专用包 (armeabi-v7a 架构)
+          find tv/app/build/outputs/apk/ -path "*/hisense/release/*armeabi-v7a*.apk" -exec cp {} "tv_dist/LunaTV-TV-${TAG}-hisense.apk" \;
+
+          echo "Final prepared TV artifacts:"
+          ls -la tv_dist/
+
+      - name: Upload TV APK artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: tv-apk
+          path: tv_dist/*.apk
+          retention-days: 1
+
   release:
     name: release
-    needs: [build-android, build-ios, build-windows]
-    if: always() && (needs.build-android.result == 'success' || needs.build-ios.result == 'success' || needs.build-windows.result == 'success')
+    needs: [build-android, build-ios, build-windows, build-tv]
+    if: always() && (needs.build-android.result == 'success' || needs.build-ios.result == 'success' || needs.build-windows.result == 'success' || needs.build-tv.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

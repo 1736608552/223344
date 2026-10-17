@@ -1,0 +1,775 @@
+package org.moontechlab.selenetv.service
+
+import android.content.Context
+import android.content.SharedPreferences
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+
+/**
+ * 应用数据服务
+ * 管理用户登录信息、设置等持久化数据
+ */
+object AppDataService {
+    private const val TAG = "AppDataService"
+    private const val PREFS_NAME = "lunatv_prefs"
+
+    // SharedPreferences Keys
+    private const val KEY_SERVER_URL = "server_url"
+    private const val KEY_USERNAME = "username"
+    private const val KEY_PASSWORD = "password"
+    private const val KEY_COOKIES = "cookies"
+    private const val KEY_HAS_LOGIN = "has_login"
+    private const val KEY_DOUBAN_DATA_SOURCE = "douban_data_source"
+    private const val KEY_DOUBAN_IMAGE_SOURCE = "douban_image_source"
+    private const val KEY_BANGUMI_DATA_SOURCE = "bangumi_data_source"
+    private const val KEY_BANGUMI_IMAGE_SOURCE = "bangumi_image_source"
+    private const val KEY_M3U8_PROXY_URL = "m3u8_proxy_url"
+    private const val KEY_TMDB_API_KEY = "tmdb_api_key"
+    private const val KEY_SESSION_TOKEN = "session_token"
+    private const val KEY_PLAYER_TYPE = "player_type"
+    private const val KEY_DECODE_MODE = "decode_mode"
+    private const val KEY_SEARCH_ORIGIN = "search_origin"
+    private const val KEY_IS_LOCAL_MODE = "is_local_mode"
+    private const val KEY_SKIPPED_VERSION = "skipped_version"
+    private const val KEY_UPDATE_POSTPONED_UNTIL = "update_postponed_until"
+    private const val KEY_DANMAKU_ENABLED = "danmaku_enabled"   // 旧开关（仅迁移读）
+    private const val KEY_DANMAKU_AREA = "danmaku_area"         // 显示区域：off/third/half/full（off=播放页暂时关闭）
+    private const val KEY_DANMAKU_LAST_AREA = "danmaku_last_area" // 上次非 off 区域：弹幕「开关」一键开启时恢复到此
+    private const val KEY_DANMAKU_MODE = "danmaku_mode"         // 默认模式：off/manual(默认不开启)/auto(默认开启)
+    private const val KEY_DANMAKU_SOURCES = "danmaku_sources"   // 启用源 key 的 CSV
+    private const val KEY_DANMAKU_OPACITY = "danmaku_opacity"        // 不透明度 Float
+    private const val KEY_DANMAKU_SPEED = "danmaku_speed"            // 滚动速度倍率 Float
+    private const val KEY_DANMAKU_FONT = "danmaku_font_scale"        // 字号倍率 Float
+    private const val KEY_DANMAKU_DENSITY = "danmaku_density_pct"    // 显示密度 % Int
+    private const val KEY_DANMAKU_ANTIOVERLAP = "danmaku_anti_overlap" // 防重叠 Boolean
+
+    private lateinit var prefs: SharedPreferences
+
+    // 当前会话的 token（每次启动重新生成）
+    private var sessionToken: String = ""
+
+    // 本地模式缓存（同步读，零阻塞）
+    @Volatile
+    private var isLocalModeCache: Boolean = false
+
+    // 弹幕显示区域缓存（third/half/full；同步读，供播放页初始化用）。决定弹幕层占屏高度。
+    @Volatile
+    private var danmakuAreaCache: String = "third"
+
+    // 上次非 off 显示区域缓存：弹幕「开关」一键开启时恢复到此（记忆用户偏好）。
+    @Volatile
+    private var danmakuLastAreaCache: String = "third"
+
+    // 弹幕默认模式缓存（off=完全关闭/manual=默认不开启/auto=默认开启）。决定播放页是否 probe/选源/显示弹幕键。
+    @Volatile
+    private var danmakuModeCache: String = "off"
+
+    // 启用的弹幕源 key 集合缓存（同步读，供播放页并发拉取用）
+    @Volatile
+    private var danmakuSourcesCache: Set<String> = org.moontechlab.selenetv.service.danmaku.DanmakuSources.defaultEnabledKeys
+
+    // 弹幕渲染设置缓存（同步读，供播放页/弹幕层用）
+    @Volatile
+    private var danmakuRenderCache = org.moontechlab.selenetv.service.danmaku.DanmakuRenderSettings()
+
+    // 低内存设备（约 ≤2GB 或系统 low-ram 标记）缓存：用于下调弹幕缓存上限/默认密度，缓解低端机卡顿与内存压力。
+    @Volatile
+    private var lowRamCache: Boolean = false
+
+    /**
+     * 初始化服务，需要在 Application 中调用
+     */
+    fun init(context: Context) {
+        prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        lowRamCache = computeLowRam(context)
+        isLocalModeCache = prefs.getBoolean(KEY_IS_LOCAL_MODE, false)
+        // 区域 off 仍保留（播放页可暂时关闭）。
+        val rawArea = prefs.getString(KEY_DANMAKU_AREA, null)
+            ?: if (prefs.getBoolean(KEY_DANMAKU_ENABLED, false)) "full" else "off"
+        val savedMode = prefs.getString(KEY_DANMAKU_MODE, null)
+        when {
+            // 已有 mode 记录：直接采用
+            savedMode != null -> {
+                danmakuModeCache = savedMode
+                danmakuAreaCache = rawArea
+            }
+            // 全新安装（无任何旧弹幕状态）：默认「手动」——探测弹幕源但不自动选中/加载；区域默认 1/3 屏。
+            !prefs.contains(KEY_DANMAKU_AREA) && !prefs.contains(KEY_DANMAKU_ENABLED) -> {
+                danmakuModeCache = "manual"
+                danmakuAreaCache = "third"
+            }
+            // 旧版本升级一次性迁移：旧 area=off → mode=off；否则 auto。
+            else -> {
+                danmakuModeCache = if (rawArea == "off") "off" else "auto"
+                danmakuAreaCache = if (rawArea == "off") "full" else rawArea
+            }
+        }
+        // 上次非 off 区域：优先取已存值，否则回落到当前区域（非 off）或 full。
+        danmakuLastAreaCache = prefs.getString(KEY_DANMAKU_LAST_AREA, null)
+            ?: danmakuAreaCache.takeIf { it != "off" } ?: "third"
+        danmakuSourcesCache = prefs.getString(KEY_DANMAKU_SOURCES, null)
+            ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet()
+            ?: org.moontechlab.selenetv.service.danmaku.DanmakuSources.defaultEnabledKeys
+        val d = org.moontechlab.selenetv.service.danmaku.DanmakuRenderSettings()
+        danmakuRenderCache = d.copy(
+            opacity = prefs.getFloat(KEY_DANMAKU_OPACITY, d.opacity),
+            speed = prefs.getFloat(KEY_DANMAKU_SPEED, d.speed),
+            fontScale = prefs.getFloat(KEY_DANMAKU_FONT, d.fontScale),
+            // 低端机默认密度降到 50%（减半每帧上屏弹幕数→主线程绘制开销/缓存位图同步减半）；用户显式设过则尊重其选择。
+            densityPct = prefs.getInt(KEY_DANMAKU_DENSITY, if (lowRamCache) 50 else d.densityPct),
+            antiOverlap = prefs.getBoolean(KEY_DANMAKU_ANTIOVERLAP, d.antiOverlap),
+        )
+        // 每次启动生成新的 session token
+        generateSessionToken()
+    }
+    
+    /**
+     * 生成随机 session token
+     */
+    private fun generateSessionToken() {
+        sessionToken = java.util.UUID.randomUUID().toString().replace("-", "")
+        Log.d(TAG, "Generated session token: $sessionToken")
+    }
+    
+    /**
+     * 获取当前会话 token
+     */
+    fun getSessionToken(): String = sessionToken
+
+    /** 低内存设备（约 ≤2GB 或系统 low-ram 标记）。供弹幕缓存上限/默认密度等低端机优化使用。 */
+    fun isLowRamDeviceSync(): Boolean = lowRamCache
+
+    // 设备内存判定：系统 low-ram 标记，或物理内存 ≤ ~2.2GiB（2GB 机实测 totalMem 约 1.9GiB，3GB 机约 2.8GiB，阈值可清晰区分）。
+    private fun computeLowRam(context: Context): Boolean {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager ?: return false
+        if (am.isLowRamDevice) return true
+        val mi = android.app.ActivityManager.MemoryInfo()
+        am.getMemoryInfo(mi)
+        return mi.totalMem in 1..2_400_000_000L
+    }
+
+    // ==================== 用户数据相关 ====================
+
+    /**
+     * 保存用户登录信息
+     */
+    suspend fun saveUserData(
+        serverUrl: String,
+        username: String,
+        password: String,
+        cookies: String
+    ) = withContext(Dispatchers.IO) {
+        prefs.edit()
+            .putString(KEY_SERVER_URL, serverUrl)
+            .putString(KEY_USERNAME, username)
+            .putString(KEY_PASSWORD, password)
+            .putString(KEY_COOKIES, cookies)
+            .putBoolean(KEY_HAS_LOGIN, true)
+            .apply()
+    }
+
+
+    /**
+     * 获取服务器地址
+     */
+    suspend fun getServerUrl(): String? = withContext(Dispatchers.IO) {
+        prefs.getString(KEY_SERVER_URL, null)
+    }
+
+    /**
+     * 获取用户名
+     */
+    suspend fun getUsername(): String? = withContext(Dispatchers.IO) {
+        prefs.getString(KEY_USERNAME, null)
+    }
+
+    /**
+     * 获取密码
+     */
+    suspend fun getPassword(): String? = withContext(Dispatchers.IO) {
+        prefs.getString(KEY_PASSWORD, null)
+    }
+
+    /**
+     * 获取 Cookies
+     */
+    suspend fun getCookies(): String? = withContext(Dispatchers.IO) {
+        prefs.getString(KEY_COOKIES, null)
+    }
+
+    /**
+     * 检查是否已登录
+     */
+    suspend fun isLoggedIn(): Boolean = withContext(Dispatchers.IO) {
+        prefs.getBoolean(KEY_HAS_LOGIN, false)
+    }
+
+    /**
+     * 设置登录状态
+     */
+    suspend fun setHasLogin(hasLogin: Boolean) = withContext(Dispatchers.IO) {
+        prefs.edit().putBoolean(KEY_HAS_LOGIN, hasLogin).apply()
+    }
+
+    /**
+     * 清除所有用户数据
+     */
+    suspend fun clearUserData() = withContext(Dispatchers.IO) {
+        prefs.edit()
+            .remove(KEY_SERVER_URL)
+            .remove(KEY_USERNAME)
+            .remove(KEY_PASSWORD)
+            .remove(KEY_COOKIES)
+            .remove(KEY_HAS_LOGIN)
+            .apply()
+    }
+
+    /**
+     * 只清除密码和 Cookies，保留服务器地址和用户名
+     */
+    suspend fun clearPasswordAndCookies() = withContext(Dispatchers.IO) {
+        prefs.edit()
+            .remove(KEY_PASSWORD)
+            .remove(KEY_COOKIES)
+            .putBoolean(KEY_HAS_LOGIN, false)
+            .apply()
+    }
+
+    /**
+     * 用户数据模型
+     */
+    data class UserData(
+        val serverUrl: String?,
+        val username: String?,
+        val password: String?,
+        val cookies: String?,
+        val hasLogin: Boolean
+    )
+
+    /**
+     * 获取所有用户数据
+     */
+    suspend fun getAllUserData(): UserData = withContext(Dispatchers.IO) {
+        UserData(
+            serverUrl = prefs.getString(KEY_SERVER_URL, null),
+            username = prefs.getString(KEY_USERNAME, null),
+            password = prefs.getString(KEY_PASSWORD, null),
+            cookies = prefs.getString(KEY_COOKIES, null),
+            hasLogin = prefs.getBoolean(KEY_HAS_LOGIN, false)
+        )
+    }
+
+    /**
+     * 检查是否具有自动登录所需的所有字段
+     */
+    suspend fun hasAutoLoginData(): Boolean = withContext(Dispatchers.IO) {
+        val serverUrl = prefs.getString(KEY_SERVER_URL, null)
+        val username = prefs.getString(KEY_USERNAME, null)
+        val password = prefs.getString(KEY_PASSWORD, null)
+        !serverUrl.isNullOrBlank() && !username.isNullOrBlank() && !password.isNullOrBlank()
+    }
+
+    // ==================== 本地模式 ====================
+
+    /**
+     * 保存本地模式开关；同步更新内存缓存。
+     */
+    suspend fun saveIsLocalMode(isLocalMode: Boolean) = withContext(Dispatchers.IO) {
+        prefs.edit().putBoolean(KEY_IS_LOCAL_MODE, isLocalMode).apply()
+        isLocalModeCache = isLocalMode
+    }
+
+    suspend fun isLocalMode(): Boolean = withContext(Dispatchers.IO) {
+        prefs.getBoolean(KEY_IS_LOCAL_MODE, false)
+    }
+
+    /** 同步读，零阻塞；`init()` 时预热缓存。 */
+    fun isLocalModeSync(): Boolean = isLocalModeCache
+
+    // ==================== 弹幕设置 ====================
+
+    /** 保存弹幕默认模式（off/manual/auto）；同步更新内存缓存。 */
+    suspend fun setDanmakuMode(mode: String) = withContext(Dispatchers.IO) {
+        prefs.edit().putString(KEY_DANMAKU_MODE, mode).apply()
+        danmakuModeCache = mode
+    }
+
+    /** 同步读弹幕默认模式（off/manual/auto）。 */
+    fun getDanmakuModeSync(): String = danmakuModeCache
+
+    /** 保存弹幕显示区域（third/half/full，仅区域）；同步更新内存缓存。 */
+    suspend fun setDanmakuArea(area: String) = withContext(Dispatchers.IO) {
+        prefs.edit().putString(KEY_DANMAKU_AREA, area).apply()
+        danmakuAreaCache = area
+    }
+
+    /** 同步读弹幕显示区域（off/third/half/full）。 */
+    fun getDanmakuAreaSync(): String = danmakuAreaCache
+
+    /** 保存上次非 off 显示区域（供弹幕「开关」一键开启时恢复）；同步更新内存缓存。 */
+    suspend fun setDanmakuLastArea(area: String) = withContext(Dispatchers.IO) {
+        prefs.edit().putString(KEY_DANMAKU_LAST_AREA, area).apply()
+        danmakuLastAreaCache = area
+    }
+
+    /** 同步读上次非 off 显示区域（默认 full）。 */
+    fun getDanmakuLastAreaSync(): String = danmakuLastAreaCache
+
+    /** 同步读，零阻塞；供播放页初始化弹幕开关用（模式非 off 即开）。 */
+    fun isDanmakuEnabledSync(): Boolean = danmakuModeCache != "off"
+
+    /** 同步读启用的弹幕源 key 集合（供播放页并发拉取用）。 */
+    fun getEnabledDanmakuSourcesSync(): Set<String> = danmakuSourcesCache
+
+    /** 启用/禁用某弹幕源；同步更新内存缓存，按注册表顺序持久化。 */
+    suspend fun setDanmakuSourceEnabled(key: String, enabled: Boolean) = withContext(Dispatchers.IO) {
+        val next = danmakuSourcesCache.toMutableSet().apply { if (enabled) add(key) else remove(key) }
+        // 按注册表顺序写出，便于阅读
+        val ordered = org.moontechlab.selenetv.service.danmaku.DanmakuSources.ALL
+            .map { it.key }.filter { it in next }
+        prefs.edit().putString(KEY_DANMAKU_SOURCES, ordered.joinToString(",")).apply()
+        danmakuSourcesCache = ordered.toSet()
+    }
+
+    /** 同步读弹幕渲染设置（不透明度/速度/字号/密度/防重叠）。 */
+    fun getDanmakuRenderSettingsSync(): org.moontechlab.selenetv.service.danmaku.DanmakuRenderSettings = danmakuRenderCache
+
+    /** 保存弹幕渲染设置；同步更新内存缓存。 */
+    suspend fun setDanmakuRenderSettings(s: org.moontechlab.selenetv.service.danmaku.DanmakuRenderSettings) = withContext(Dispatchers.IO) {
+        prefs.edit()
+            .putFloat(KEY_DANMAKU_OPACITY, s.opacity)
+            .putFloat(KEY_DANMAKU_SPEED, s.speed)
+            .putFloat(KEY_DANMAKU_FONT, s.fontScale)
+            .putInt(KEY_DANMAKU_DENSITY, s.densityPct)
+            .putBoolean(KEY_DANMAKU_ANTIOVERLAP, s.antiOverlap)
+            .apply()
+        danmakuRenderCache = s
+    }
+
+    // ==================== 豆瓣数据源设置 ====================
+
+    /**
+     * 豆瓣数据源枚举
+     */
+    enum class DoubanDataSource(val key: String, val displayName: String) {
+        DIRECT("direct", "直连"),
+        CORS_PROXY("cors_proxy", "Cors Proxy By Zwei"),
+        CDN_TENCENT("cdn_tencent", "豆瓣 CDN By CMLiussss（腾讯云）"),
+        CDN_ALIYUN("cdn_aliyun", "豆瓣 CDN By CMLiussss（阿里云）");
+
+        companion object {
+            fun fromKey(key: String): DoubanDataSource =
+                entries.find { it.key == key } ?: DIRECT
+
+            fun fromDisplayName(displayName: String): DoubanDataSource =
+                entries.find { it.displayName == displayName } ?: DIRECT
+        }
+    }
+
+    /**
+     * 豆瓣图片源枚举
+     */
+    enum class DoubanImageSource(val key: String, val displayName: String) {
+        DIRECT("direct", "直连"),
+        SERVER_PROXY("server_proxy", "服务器代理"),
+        OFFICIAL_CDN("official_cdn", "豆瓣官方精品 CDN"),
+        CDN_TENCENT("cdn_tencent", "豆瓣 CDN By CMLiussss（腾讯云）"),
+        CDN_ALIYUN("cdn_aliyun", "豆瓣 CDN By CMLiussss（阿里云）");
+
+        companion object {
+            fun fromKey(key: String): DoubanImageSource =
+                entries.find { it.key == key } ?: DIRECT
+
+            fun fromDisplayName(displayName: String): DoubanImageSource =
+                entries.find { it.displayName == displayName } ?: DIRECT
+        }
+    }
+
+    /**
+     * Bangumi 数据源枚举：除 DIRECT 外，其余在请求 bgm API 时将 host 整体替换。
+     */
+    enum class BangumiDataSource(val key: String, val displayName: String) {
+        DIRECT("direct", "直连"),
+        CDN_TENCENT("cdn_tencent", "Bangumi CDN By CMLiussss（腾讯云）"),
+        CDN_ALIYUN("cdn_aliyun", "Bangumi CDN By CMLiussss（阿里云）"),
+        CDN_SHINYA("cdn_shinya", "Bangumi CDN By Shinya（CF 优选）");
+
+        companion object {
+            fun fromKey(key: String): BangumiDataSource =
+                entries.find { it.key == key } ?: DIRECT
+
+            fun fromDisplayName(displayName: String): BangumiDataSource =
+                entries.find { it.displayName == displayName } ?: DIRECT
+        }
+    }
+
+    /**
+     * Bangumi 图片源枚举。SERVER_PROXY 走自托管 /api/image-proxy，本地模式不可用。
+     */
+    enum class BangumiImageSource(val key: String, val displayName: String) {
+        DIRECT("direct", "直连"),
+        SERVER_PROXY("server_proxy", "服务器代理");
+
+        companion object {
+            fun fromKey(key: String): BangumiImageSource =
+                entries.find { it.key == key } ?: DIRECT
+
+            fun fromDisplayName(displayName: String): BangumiImageSource =
+                entries.find { it.displayName == displayName } ?: DIRECT
+        }
+    }
+
+    /** 播放器后端 */
+    enum class PlayerType(val key: String, val displayName: String) {
+        EXOPLAYER("exoplayer", "ExoPlayer"),
+        MPV("mpv", "MPV");
+
+        companion object {
+            fun fromKey(key: String): PlayerType = entries.find { it.key == key } ?: EXOPLAYER
+            fun fromDisplayName(displayName: String): PlayerType =
+                entries.find { it.displayName == displayName } ?: EXOPLAYER
+        }
+    }
+
+    /** 解码方式 */
+    enum class DecodeMode(val key: String, val displayName: String) {
+        HARDWARE("hardware", "硬解"),
+        SOFTWARE("software", "软解");
+
+        companion object {
+            fun fromKey(key: String): DecodeMode = entries.find { it.key == key } ?: HARDWARE
+            fun fromDisplayName(displayName: String): DecodeMode =
+                entries.find { it.displayName == displayName } ?: HARDWARE
+        }
+    }
+
+    /** 搜索发起方 */
+    enum class SearchOrigin(val key: String, val displayName: String) {
+        TV_DIRECT("tv_direct", "TV 直连源站"),
+        SERVER_AGGREGATED("server", "服务端聚合搜索");
+
+        companion object {
+            fun fromKey(key: String): SearchOrigin = entries.find { it.key == key } ?: TV_DIRECT
+            fun fromDisplayName(displayName: String): SearchOrigin =
+                entries.find { it.displayName == displayName } ?: TV_DIRECT
+        }
+    }
+
+    /**
+     * 保存豆瓣数据源设置（通过显示名称）
+     */
+    suspend fun saveDoubanDataSource(displayName: String) = withContext(Dispatchers.IO) {
+        val source = DoubanDataSource.fromDisplayName(displayName)
+        prefs.edit().putString(KEY_DOUBAN_DATA_SOURCE, source.key).apply()
+    }
+
+    /**
+     * 获取豆瓣数据源 Key
+     */
+    suspend fun getDoubanDataSourceKey(): String = withContext(Dispatchers.IO) {
+        prefs.getString(KEY_DOUBAN_DATA_SOURCE, DoubanDataSource.DIRECT.key)
+            ?: DoubanDataSource.DIRECT.key
+    }
+
+    /**
+     * 获取豆瓣数据源显示名称
+     */
+    suspend fun getDoubanDataSourceDisplayName(): String = withContext(Dispatchers.IO) {
+        val key = prefs.getString(KEY_DOUBAN_DATA_SOURCE, DoubanDataSource.DIRECT.key)
+            ?: DoubanDataSource.DIRECT.key
+        DoubanDataSource.fromKey(key).displayName
+    }
+
+    /**
+     * 保存豆瓣图片源设置（通过显示名称）
+     */
+    suspend fun saveDoubanImageSource(displayName: String) = withContext(Dispatchers.IO) {
+        val source = DoubanImageSource.fromDisplayName(displayName)
+        prefs.edit().putString(KEY_DOUBAN_IMAGE_SOURCE, source.key).apply()
+    }
+
+    /**
+     * 获取豆瓣图片源 Key
+     */
+    suspend fun getDoubanImageSourceKey(): String = withContext(Dispatchers.IO) {
+        prefs.getString(KEY_DOUBAN_IMAGE_SOURCE, DoubanImageSource.DIRECT.key)
+            ?: DoubanImageSource.DIRECT.key
+    }
+
+    /**
+     * 获取豆瓣图片源显示名称
+     */
+    suspend fun getDoubanImageSourceDisplayName(): String = withContext(Dispatchers.IO) {
+        val key = prefs.getString(KEY_DOUBAN_IMAGE_SOURCE, DoubanImageSource.DIRECT.key)
+            ?: DoubanImageSource.DIRECT.key
+        DoubanImageSource.fromKey(key).displayName
+    }
+
+    /**
+     * 保存 Bangumi 数据源（通过显示名称）
+     */
+    suspend fun saveBangumiDataSource(displayName: String) = withContext(Dispatchers.IO) {
+        val source = BangumiDataSource.fromDisplayName(displayName)
+        prefs.edit().putString(KEY_BANGUMI_DATA_SOURCE, source.key).apply()
+    }
+
+    suspend fun getBangumiDataSourceDisplayName(): String = withContext(Dispatchers.IO) {
+        val key = prefs.getString(KEY_BANGUMI_DATA_SOURCE, BangumiDataSource.DIRECT.key)
+            ?: BangumiDataSource.DIRECT.key
+        BangumiDataSource.fromKey(key).displayName
+    }
+
+    /**
+     * 保存 Bangumi 图片源（通过显示名称）
+     */
+    suspend fun saveBangumiImageSource(displayName: String) = withContext(Dispatchers.IO) {
+        val source = BangumiImageSource.fromDisplayName(displayName)
+        prefs.edit().putString(KEY_BANGUMI_IMAGE_SOURCE, source.key).apply()
+    }
+
+    suspend fun getBangumiImageSourceDisplayName(): String = withContext(Dispatchers.IO) {
+        val key = prefs.getString(KEY_BANGUMI_IMAGE_SOURCE, BangumiImageSource.DIRECT.key)
+            ?: BangumiImageSource.DIRECT.key
+        BangumiImageSource.fromKey(key).displayName
+    }
+
+
+    // ==================== 其他设置 ====================
+
+    /**
+     * 保存 M3U8 代理 URL
+     */
+    suspend fun saveM3u8ProxyUrl(url: String) = withContext(Dispatchers.IO) {
+        prefs.edit().putString(KEY_M3U8_PROXY_URL, url).apply()
+    }
+
+    /**
+     * 获取 M3U8 代理 URL
+     */
+    suspend fun getM3u8ProxyUrl(): String = withContext(Dispatchers.IO) {
+        prefs.getString(KEY_M3U8_PROXY_URL, "") ?: ""
+    }
+
+    /**
+     * 保存 TMDB API Key
+     */
+    suspend fun saveTmdbApiKey(apiKey: String) = withContext(Dispatchers.IO) {
+        prefs.edit().putString(KEY_TMDB_API_KEY, apiKey).apply()
+    }
+
+    /**
+     * 获取 TMDB API Key
+     */
+    suspend fun getTmdbApiKey(): String = withContext(Dispatchers.IO) {
+        prefs.getString(KEY_TMDB_API_KEY, "") ?: ""
+    }
+
+    // ==================== Cookie 解析 ====================
+
+    /**
+     * 从 Cookies 中解析用户角色
+     */
+    fun parseRoleFromCookies(cookies: String?): String {
+        if (cookies.isNullOrBlank()) {
+            return "user"
+        }
+
+        return try {
+            // 解析 cookies 字符串
+            val cookieMap = mutableMapOf<String, String>()
+            cookies.split(";").forEach { cookie ->
+                val trimmed = cookie.trim()
+                val firstEqualIndex = trimmed.indexOf('=')
+                if (firstEqualIndex > 0) {
+                    val key = trimmed.substring(0, firstEqualIndex)
+                    val value = trimmed.substring(firstEqualIndex + 1)
+                    if (key.isNotEmpty() && value.isNotEmpty()) {
+                        cookieMap[key] = value
+                    }
+                }
+            }
+
+            val authCookie = cookieMap["auth"]
+            if (authCookie == null) {
+                return "user"
+            }
+
+            // 处理可能的双重编码
+            var decoded = java.net.URLDecoder.decode(authCookie, "UTF-8")
+            
+            // 如果解码后仍然包含 %，说明是双重编码，需要再次解码
+            if (decoded.contains("%")) {
+                decoded = java.net.URLDecoder.decode(decoded, "UTF-8")
+            }
+
+            val authData = JSONObject(decoded)
+            val role = authData.optString("role", "user")
+            role
+        } catch (e: Exception) {
+            "user"
+        }
+    }
+
+    // ==================== 同步方法（用于非协程环境） ====================
+
+    /**
+     * 同步获取服务器地址
+     */
+    fun getServerUrlSync(): String? = prefs.getString(KEY_SERVER_URL, null)
+
+    /**
+     * 同步获取 Cookies
+     */
+    fun getCookiesSync(): String? = prefs.getString(KEY_COOKIES, null)
+
+    /**
+     * 同步检查是否已登录
+     */
+    fun isLoggedInSync(): Boolean = prefs.getBoolean(KEY_HAS_LOGIN, false)
+
+    /**
+     * 同步获取豆瓣数据源 Key
+     */
+    fun getDoubanDataSourceKeySync(): String =
+        prefs.getString(KEY_DOUBAN_DATA_SOURCE, DoubanDataSource.DIRECT.key)
+            ?: DoubanDataSource.DIRECT.key
+
+    /**
+     * 同步获取豆瓣图片源 Key。
+     * 本地模式无服务端，若用户先前选过 SERVER_PROXY，运行时兜底回落为 DIRECT。
+     */
+    fun getDoubanImageSourceKeySync(): String {
+        val raw = prefs.getString(KEY_DOUBAN_IMAGE_SOURCE, DoubanImageSource.DIRECT.key)
+            ?: DoubanImageSource.DIRECT.key
+        return if (isLocalModeCache && raw == DoubanImageSource.SERVER_PROXY.key)
+            DoubanImageSource.DIRECT.key
+        else raw
+    }
+
+    /**
+     * 同步获取 Bangumi 数据源 Key
+     */
+    fun getBangumiDataSourceKeySync(): String =
+        prefs.getString(KEY_BANGUMI_DATA_SOURCE, BangumiDataSource.DIRECT.key)
+            ?: BangumiDataSource.DIRECT.key
+
+    /**
+     * 同步获取 Bangumi 图片源 Key。本地模式兜底同 douban。
+     */
+    fun getBangumiImageSourceKeySync(): String {
+        val raw = prefs.getString(KEY_BANGUMI_IMAGE_SOURCE, BangumiImageSource.DIRECT.key)
+            ?: BangumiImageSource.DIRECT.key
+        return if (isLocalModeCache && raw == BangumiImageSource.SERVER_PROXY.key)
+            BangumiImageSource.DIRECT.key
+        else raw
+    }
+
+    // ---- 播放器 ----
+    suspend fun savePlayerType(displayName: String) = withContext(Dispatchers.IO) {
+        prefs.edit().putString(KEY_PLAYER_TYPE, PlayerType.fromDisplayName(displayName).key).apply()
+    }
+    suspend fun getPlayerTypeDisplayName(): String = withContext(Dispatchers.IO) {
+        PlayerType.fromKey(prefs.getString(KEY_PLAYER_TYPE, PlayerType.EXOPLAYER.key) ?: PlayerType.EXOPLAYER.key).displayName
+    }
+    fun getPlayerTypeSync(): PlayerType =
+        PlayerType.fromKey(prefs.getString(KEY_PLAYER_TYPE, PlayerType.EXOPLAYER.key) ?: PlayerType.EXOPLAYER.key)
+
+    // ---- 解码 ----
+    suspend fun saveDecodeMode(displayName: String) = withContext(Dispatchers.IO) {
+        prefs.edit().putString(KEY_DECODE_MODE, DecodeMode.fromDisplayName(displayName).key).apply()
+    }
+    suspend fun getDecodeModeDisplayName(): String = withContext(Dispatchers.IO) {
+        DecodeMode.fromKey(prefs.getString(KEY_DECODE_MODE, DecodeMode.HARDWARE.key) ?: DecodeMode.HARDWARE.key).displayName
+    }
+    fun getDecodeModeSync(): DecodeMode =
+        DecodeMode.fromKey(prefs.getString(KEY_DECODE_MODE, DecodeMode.HARDWARE.key) ?: DecodeMode.HARDWARE.key)
+
+    // ---- 搜索发起方 ----
+    suspend fun saveSearchOrigin(displayName: String) = withContext(Dispatchers.IO) {
+        prefs.edit().putString(KEY_SEARCH_ORIGIN, SearchOrigin.fromDisplayName(displayName).key).apply()
+    }
+    suspend fun getSearchOriginDisplayName(): String = withContext(Dispatchers.IO) {
+        SearchOrigin.fromKey(prefs.getString(KEY_SEARCH_ORIGIN, SearchOrigin.TV_DIRECT.key) ?: SearchOrigin.TV_DIRECT.key).displayName
+    }
+    fun getSearchOriginSync(): SearchOrigin {
+        if (isLocalModeCache) return SearchOrigin.TV_DIRECT
+        return SearchOrigin.fromKey(prefs.getString(KEY_SEARCH_ORIGIN, SearchOrigin.TV_DIRECT.key) ?: SearchOrigin.TV_DIRECT.key)
+    }
+
+    // ==================== 应用更新偏好 ====================
+
+    /** 用户「跳过此版本」记下的版本号（去 v，如 "1.3.0"）。 */
+    fun getSkippedVersionSync(): String? = prefs.getString(KEY_SKIPPED_VERSION, null)
+
+    fun setSkippedVersionSync(version: String) {
+        prefs.edit().putString(KEY_SKIPPED_VERSION, version).apply()
+    }
+
+    /** 「稍后」写入的冷却截止时间戳（毫秒）；0 表示无冷却。 */
+    fun getUpdatePostponedUntilSync(): Long = prefs.getLong(KEY_UPDATE_POSTPONED_UNTIL, 0L)
+
+    fun setUpdatePostponedUntilSync(until: Long) {
+        prefs.edit().putLong(KEY_UPDATE_POSTPONED_UNTIL, until).apply()
+    }
+
+    // ==================== 统一加速与代理 Worker 配置 ====================
+    private const val KEY_WORKER_PROXY_URL = "worker_proxy_url"
+    private const val KEY_TMDB_PROXY_ENABLED = "tmdb_proxy_enabled"
+    private const val KEY_BANGUMI_PROXY_ENABLED = "bangumi_proxy_enabled"
+    private const val KEY_GITHUB_PROXY_ENABLED = "github_proxy_enabled"
+
+    @Volatile
+    private var workerProxyUrlCache: String? = null
+
+    /** 清理并标准化 Worker 代理域名，确保 https:// 开头并去除末尾斜杠与空白 */
+    fun normalizeWorkerUrl(input: String?): String {
+        if (input.isNullOrBlank()) return ""
+        val s = input.trim().replace("\\s+".toRegex(), "")
+        if (s.isEmpty()) return ""
+        var withScheme = s
+        if (!withScheme.startsWith("http://", ignoreCase = true) && !withScheme.startsWith("https://", ignoreCase = true)) {
+            withScheme = "https://$withScheme"
+        }
+        if (withScheme.startsWith("http://", ignoreCase = true)) {
+            withScheme = "https://" + withScheme.substring(7)
+        }
+        return withScheme.trimEnd('/')
+    }
+
+    fun getWorkerProxyUrlSync(): String {
+        workerProxyUrlCache?.let { return it }
+        val v = prefs.getString(KEY_WORKER_PROXY_URL, "") ?: ""
+        val normalized = normalizeWorkerUrl(v)
+        workerProxyUrlCache = normalized
+        return normalized
+    }
+
+    suspend fun saveWorkerProxyUrl(url: String) = withContext(Dispatchers.IO) {
+        val cleaned = normalizeWorkerUrl(url)
+        prefs.edit().putString(KEY_WORKER_PROXY_URL, cleaned).apply()
+        workerProxyUrlCache = cleaned
+    }
+
+    fun isTmdbProxyEnabledSync(): Boolean =
+        prefs.getBoolean(KEY_TMDB_PROXY_ENABLED, true)
+
+    suspend fun setTmdbProxyEnabled(enabled: Boolean) = withContext(Dispatchers.IO) {
+        prefs.edit().putBoolean(KEY_TMDB_PROXY_ENABLED, enabled).apply()
+    }
+
+    fun isBangumiProxyEnabledSync(): Boolean =
+        prefs.getBoolean(KEY_BANGUMI_PROXY_ENABLED, true)
+
+    suspend fun setBangumiProxyEnabled(enabled: Boolean) = withContext(Dispatchers.IO) {
+        prefs.edit().putBoolean(KEY_BANGUMI_PROXY_ENABLED, enabled).apply()
+    }
+
+    fun isGithubProxyEnabledSync(): Boolean =
+        prefs.getBoolean(KEY_GITHUB_PROXY_ENABLED, true)
+
+    suspend fun setGithubProxyEnabled(enabled: Boolean) = withContext(Dispatchers.IO) {
+        prefs.edit().putBoolean(KEY_GITHUB_PROXY_ENABLED, enabled).apply()
+    }
+}
