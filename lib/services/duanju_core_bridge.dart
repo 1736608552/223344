@@ -396,7 +396,7 @@ class DuanjuCoreBridge {
       final resp = await http.post(
         uri,
         headers: {
-          'User-Agent': 'com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)',
+          'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250305.002; Cronet/TTNetVersion:07a97ae8 2026-03-05 QuicVersion:f2324900 2026-02-05)',
           'Content-Type': 'application/json; charset=utf-8',
           'Accept': 'application/json',
           'X-XS-From-Web': '0',

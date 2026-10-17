@@ -2,17 +2,17 @@
 package org.moontechlab.lunatv.hongguo
 
 internal object VendorConstants {
-    const val VIDEO_UA = "com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
-    const val APP_UA = "com.phoenix.read/72232 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)"
+    const val VIDEO_UA = "com.dragon.read/7.3.5.32 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250305.002; Cronet/TTNetVersion:07a97ae8 2026-03-05 QuicVersion:f2324900 2026-02-05)"
+    const val APP_UA = "com.dragon.read/7.3.5.32 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250305.002)"
     val device = linkedMapOf(
-        "iid" to "1905892595382586",
-        "device_id" to "1905892595378490",
+        "iid" to "1928374650192837465",
+        "device_id" to "3748291048294829104",
         "ac" to "wifi",
         "channel" to "update_64",
         "aid" to "8662",
         "app_name" to "novelread",
-        "version_code" to "71332",
-        "version_name" to "7.1.3.32",
+        "version_code" to "73532",
+        "version_name" to "7.3.5.32",
         "device_platform" to "android",
         "os" to "android",
         "ssmix" to "a",
@@ -21,13 +21,13 @@ internal object VendorConstants {
         "language" to "zh",
         "os_api" to "36",
         "os_version" to "16",
-        "manifest_version_code" to "71332",
+        "manifest_version_code" to "73532",
         "resolution" to "1280*2772",
         "dpi" to "520",
-        "update_version_code" to "71332",
+        "update_version_code" to "73532",
         "host_abi" to "arm64-v8a",
         "dragon_device_type" to "phone",
-        "pv_player" to "71332",
+        "pv_player" to "73532",
         "compliance_status" to "0",
         "need_personal_recommend" to "1",
         "player_so_load" to "1",

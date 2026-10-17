@@ -440,34 +440,6 @@ object HongguoStreamResolver {
             }
         }
 
-        // 终极安全降级: 官方公开直链 (仅在官方预加载超清端点不可用时兜底，杜绝死机与黑屏)
-        val directUrl = "https://hongguoduanju.com/video/public/$cleanVid/360p.mp4"
-        try {
-            val headReq = Request.Builder()
-                .url(directUrl)
-                .header("Referer", "https://hongguoduanju.com/")
-                .header("User-Agent", VendorConstants.VIDEO_UA)
-                .head()
-                .build()
-            val headResp = client.newCall(headReq).execute()
-            if (headResp.isSuccessful) {
-                val multiMap = mapOf(
-                    "360P" to directUrl,
-                    "标清" to directUrl,
-                    "自动" to directUrl
-                )
-                return mapOf(
-                    "url" to directUrl,
-                    "decryptionKey" to "",
-                    "keys" to emptyMap<String, String>(),
-                    "quality" to "360P",
-                    "qualities" to listOf(360),
-                    "actualQuality" to 360,
-                    "multiMap" to multiMap
-                )
-            }
-        } catch (_: Exception) {}
-
         throw lastErr ?: IOException("Failed to resolve stream for vid $cleanVid")
     }
 }
