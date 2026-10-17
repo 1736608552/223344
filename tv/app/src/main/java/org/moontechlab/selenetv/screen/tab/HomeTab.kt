@@ -33,6 +33,9 @@ import org.moontechlab.selenetv.service.ApiService
 import org.moontechlab.selenetv.service.AppDataService
 import org.moontechlab.selenetv.service.BangumiService
 import org.moontechlab.selenetv.service.DoubanService
+import org.moontechlab.selenetv.service.ShortDramaService
+import org.moontechlab.selenetv.ui.TvHeroBanner
+import org.moontechlab.selenetv.ui.TvHeroItem
 import org.moontechlab.selenetv.ui.CardContextMenu
 import org.moontechlab.selenetv.ui.CardMenuItem
 import org.moontechlab.selenetv.ui.ConfirmDialog
@@ -64,6 +67,11 @@ fun HomeTab(
     var hotMovies by remember { mutableStateOf<List<VideoInfo>>(emptyList()) }
     var isLoadingMovies by remember { mutableStateOf(true) }
     var errorMovies by remember { mutableStateOf<String?>(null) }
+
+    // 热门短剧数据状态
+    var hotShortDramas by remember { mutableStateOf<List<VideoInfo>>(emptyList()) }
+    var isLoadingShortDramas by remember { mutableStateOf(true) }
+    var errorShortDramas by remember { mutableStateOf<String?>(null) }
 
     // 热门剧集数据状态
     var hotTvShows by remember { mutableStateOf<List<VideoInfo>>(emptyList()) }
@@ -307,11 +315,27 @@ fun HomeTab(
         }
     }
 
+    fun loadHotShortDramas() {
+        coroutineScope.launch {
+            isLoadingShortDramas = true
+            errorShortDramas = null
+            try {
+                val list = ShortDramaService.getHotShortDramas(limit = 20)
+                hotShortDramas = list
+            } catch (e: Exception) {
+                errorShortDramas = e.message ?: "加载失败"
+            } finally {
+                isLoadingShortDramas = false
+            }
+        }
+    }
+
     // 初始加载
     LaunchedEffect(Unit) {
         loadPlayRecordsAndFavorites()
         loadHotMovies()
         loadHotTvShows()
+        loadHotShortDramas()
         loadBangumi()
         loadHotShows()
     }
@@ -320,6 +344,57 @@ fun HomeTab(
         if (homeRefreshKey > 0) {  // 跳过首次（已由 LaunchedEffect(Unit) 触发）
             loadPlayRecordsAndFavorites()
         }
+    }
+
+    // 聚合电影、剧集、短剧生成大屏沉浸幻灯片数据 (精选 6 部大作)
+    val heroBannerItems = remember(hotMovies, hotTvShows, hotShortDramas) {
+        val list = mutableListOf<TvHeroItem>()
+        hotMovies.take(2).forEach { v ->
+            list.add(
+                TvHeroItem(
+                    id = v.id,
+                    title = v.title,
+                    overview = "豆瓣高分佳作 · ${v.year} 华语精选 · 超清大屏视界",
+                    backdropUrl = v.cover,
+                    posterUrl = v.cover,
+                    typeLabel = "院线电影",
+                    rate = v.rate ?: "9.5",
+                    year = v.year,
+                    videoInfo = v
+                )
+            )
+        }
+        hotShortDramas.take(2).forEach { v ->
+            list.add(
+                TvHeroItem(
+                    id = v.id,
+                    title = v.title,
+                    overview = "爆款独家短剧 · 全${v.totalEpisodes}集爽剧连播 · 精彩反转",
+                    backdropUrl = v.cover,
+                    posterUrl = v.cover,
+                    typeLabel = "热门短剧",
+                    rate = v.rate ?: "9.8",
+                    year = v.year,
+                    videoInfo = v
+                )
+            )
+        }
+        hotTvShows.take(2).forEach { v ->
+            list.add(
+                TvHeroItem(
+                    id = v.id,
+                    title = v.title,
+                    overview = "全网热播黄金档 · 沉浸连播 · ${v.year} 必看佳作",
+                    backdropUrl = v.cover,
+                    posterUrl = v.cover,
+                    typeLabel = "热门剧集",
+                    rate = v.rate ?: "9.6",
+                    year = v.year,
+                    videoInfo = v
+                )
+            )
+        }
+        list
     }
 
     // 追踪是否是垂直方向的按键
@@ -361,8 +436,18 @@ fun HomeTab(
                     false // 不消费事件
                 }
         ) {
-            // 顶部留出 TabSwitcher 的空间 + 额外间距
-            Spacer(modifier = Modifier.height(64.dp))
+            // 顶部留出 TabSwitcher 的空间
+            Spacer(modifier = Modifier.height(58.dp))
+
+            // 全新设计的 TV 专属现代化沉浸视界幻灯片
+            if (heroBannerItems.isNotEmpty()) {
+                TvHeroBanner(
+                    items = heroBannerItems,
+                    onPlayClick = onVideoSelected,
+                    onDetailClick = onVideoSelected,
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+            }
             
             // 播放历史 - 仅登录后、且有数据/加载中/有错误时显示（#4 未登录隐藏）
             if (isLoggedIn && (playRecords.isNotEmpty() || isLoadingPlayRecords || errorPlayRecords != null)) {
@@ -407,6 +492,17 @@ fun HomeTab(
                 isLoading = isLoadingMovies,
                 errorMessage = errorMovies,
                 onRetry = { loadHotMovies() },
+                onVideoClick = onVideoSelected
+            )
+
+            // 热门短剧推荐横轴
+            RecommendSection(
+                title = "热门短剧",
+                videos = hotShortDramas,
+                from = VideoCardSource.SHORTDRAMA,
+                isLoading = isLoadingShortDramas,
+                errorMessage = errorShortDramas,
+                onRetry = { loadHotShortDramas() },
                 onVideoClick = onVideoSelected
             )
 

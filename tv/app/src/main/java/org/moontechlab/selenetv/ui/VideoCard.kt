@@ -83,7 +83,8 @@ enum class VideoCardSource {
     SEARCH,      // 搜索
     BANGUMI,     // 番剧
     DOUBAN,      // 豆瓣
-    SOURCE       // 播放源
+    SOURCE,      // 播放源
+    SHORTDRAMA   // 短剧
 }
 
 /**
@@ -296,11 +297,64 @@ fun VideoCard(
                     CoverImage(
                         rawUrl = videoInfo.cover,
                         contentDescription = videoInfo.title,
+                        alignment = if (from == VideoCardSource.SHORTDRAMA) Alignment.TopCenter else Alignment.Center,
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(if (isFocused) 2.dp else 0.dp)
                             .clip(RoundedCornerShape(if (isFocused) innerCornerRadius else cornerRadius)),
                     )
+                }
+
+                // 短剧专属角标（右上角流光全集徽章）
+                if (from == VideoCardSource.SHORTDRAMA) {
+                    val epText = if (videoInfo.totalEpisodes > 0) "全${videoInfo.totalEpisodes}集" else "短剧"
+                    Box(
+                        modifier = Modifier
+                            .padding(4.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(
+                                androidx.compose.ui.graphics.Brush.horizontalGradient(
+                                    listOf(Color(0xFFE91E63), Color(0xFFFF5722))
+                                )
+                            )
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                            .align(Alignment.TopEnd)
+                    ) {
+                        Text(
+                            text = epText,
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+
+                    // 短剧评分（左上角微透星标）
+                    if (!videoInfo.rate.isNullOrEmpty() && videoInfo.rate != "0.0") {
+                        Box(
+                            modifier = Modifier
+                                .padding(4.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(Color.Black.copy(alpha = 0.65f))
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                                .align(Alignment.TopStart)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "★",
+                                    color = Color(0xFFFFB300),
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text(
+                                    text = videoInfo.rate,
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // 选中状态指示器

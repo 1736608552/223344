@@ -83,6 +83,7 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
     val tvCategoryFocusRequester = remember { FocusRequester() }
     val animeCategoryFocusRequester = remember { FocusRequester() }
     val showCategoryFocusRequester = remember { FocusRequester() }
+    val shortDramaFocusRequester = remember { FocusRequester() }
     val liveFocusRequester = remember { FocusRequester() }
     val settingsFocusRequester = remember { FocusRequester() }
     
@@ -227,6 +228,7 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
                             "series" -> tvCategoryFocusRequester.requestFocus()
                             "anime" -> animeCategoryFocusRequester.requestFocus()
                             "show" -> showCategoryFocusRequester.requestFocus()
+                            "short_drama" -> shortDramaFocusRequester.requestFocus()
                             "live" -> liveFocusRequester.requestFocus()
                             "settings" -> settingsFocusRequester.requestFocus()
                         }
@@ -278,6 +280,11 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
                 )
                 "show" -> ShowTab(
                     categoryFocusRequester = showCategoryFocusRequester,
+                    scrollState = scrollState,
+                    onVideoSelected = openDetail,
+                )
+                "short_drama" -> ShortDramaTab(
+                    focusRequester = shortDramaFocusRequester,
                     scrollState = scrollState,
                     onVideoSelected = openDetail,
                 )
