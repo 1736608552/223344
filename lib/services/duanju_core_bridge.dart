@@ -1014,6 +1014,12 @@ class DuanjuCoreBridge {
       }
     }
 
+    // 通道 0.5: 跨平台官方 App 接口 (全平台通用，彻底杜绝 Web 404 与非 Android 缺失)
+    final appVids = await _fetchHongguoAppEpisodeVids(cleanId);
+    if (appVids.isNotEmpty) {
+      return appVids;
+    }
+
     // 通道 1: 原生 Go 核心 detail 接口 (对齐鱼佬 guoapp，双通道 App + Web 提取全部分集 chapters)
     if (_isNativeAvailable) {
       try {
@@ -1434,22 +1440,24 @@ class DuanjuCoreBridge {
     }
 
     // 通道 5 (终极降级兜底): 官方公开直链 (仅在上述高清/App/Go核心/Web全部失败时降级兜底，杜绝黑屏死机)
-    if (vid.isNotEmpty) {
+    if (vid.isNotEmpty && vid != cleanId) {
       final directUrl = 'https://hongguoduanju.com/video/public/$vid/360p.mp4';
-      bool isDirectAvailable = (episode <= 3);
-      if (!isDirectAvailable) {
-        try {
-          final headRes = await http.head(
-            Uri.parse(directUrl),
-            headers: {
-              'Referer': 'https://hongguoduanju.com/',
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
-            },
-          ).timeout(const Duration(milliseconds: 1500));
-          if (headRes.statusCode == 200) {
-            isDirectAvailable = true;
-          }
-        } catch (_) {}
+      bool isDirectAvailable = false;
+      try {
+        final headRes = await http.head(
+          Uri.parse(directUrl),
+          headers: {
+            'Referer': 'https://hongguoduanju.com/',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+          },
+        ).timeout(const Duration(milliseconds: 1500));
+        if (headRes.statusCode == 200) {
+          isDirectAvailable = true;
+        }
+      } catch (_) {
+        if (episode <= 3) {
+          isDirectAvailable = true;
+        }
       }
 
       if (isDirectAvailable) {
@@ -1491,178 +1499,274 @@ class DuanjuCoreBridge {
   }
 
   /// 官方 App 接口请求与 CENC 解密密钥提取
+  /// 跨平台官方 App 端点全剧分集提取 (全平台通用，彻底杜绝 Web 404 与非 Android 缺失)
+  Future<List<String>> _fetchHongguoAppEpisodeVids(String seriesId) async {
+    final cleanId = cleanSeriesId(seriesId);
+    if (!RegExp(r'^\d{1,32}$').hasMatch(cleanId)) return [];
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+      try {
+        final now = DateTime.now().add(Duration(milliseconds: attempt * 200));
+        const devId = '3748291048294829104';
+        const iid = '1928374650192837465';
+        final q = <String, String>{
+          'aid': '8662',
+          'app_name': 'novelread',
+          'version_code': '73532',
+          'version_name': '7.3.5.32',
+          'manifest_version_code': '73532',
+          'update_version_code': '73532',
+          'channel': 'update_64',
+          'device_platform': 'android',
+          'os': 'android',
+          'ssmix': 'a',
+          'device_type': '25053RT47C',
+          'device_brand': 'Redmi',
+          'language': 'zh',
+          'os_api': '36',
+          'os_version': '16',
+          'resolution': '1280*2772',
+          'dpi': '520',
+          'ac': 'wifi',
+          'device_id': devId,
+          'iid': iid,
+          '_rticket': '${now.millisecondsSinceEpoch}',
+        };
+
+        final queryStr = q.entries.map((e) => '${e.key}=${e.value}').join('&');
+        final payloadMap = {'series_id': cleanId};
+        final bodyBytes = Uint8List.fromList(utf8.encode(jsonEncode(payloadMap)));
+        final signHeaders = _signHongguo(queryStr, bodyBytes, now);
+
+        final uri = Uri.parse('https://api5-normal-sinfonlineb.fqnovel.com/novel/player/video_detail/v1/?$queryStr');
+        final resp = await http.post(
+          uri,
+          headers: {
+            'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250305.002; Cronet/TTNetVersion:07a97ae8 2026-03-05 QuicVersion:f2324900 2026-02-05)',
+            'Accept': 'application/json',
+            'Content-Type': 'application/json; charset=utf-8',
+            'X-XS-From-Web': '0',
+            'Sdk-Version': '2',
+            ...signHeaders,
+          },
+          body: bodyBytes,
+        ).timeout(const Duration(seconds: 12));
+
+        if (resp.statusCode == 200) {
+          final resJson = jsonDecode(resp.body);
+          if (resJson is Map && (resJson['code'] == 0 || resJson['Code'] == 0)) {
+            final data = resJson['data'];
+            if (data is Map) {
+              final videoData = data['video_data'];
+              if (videoData is Map) {
+                final videoList = videoData['video_list'];
+                if (videoList is List && videoList.isNotEmpty) {
+                  final pairs = <MapEntry<int, String>>[];
+                  for (int i = 0; i < videoList.length; i++) {
+                    final item = videoList[i];
+                    if (item is! Map) continue;
+                    final vid = (item['vid'] ?? item['video_id'])?.toString().trim() ?? '';
+                    final index = int.tryParse(item['vid_index']?.toString() ?? '') ?? (i + 1);
+                    if (RegExp(r'^\d{1,32}$').hasMatch(vid)) {
+                      pairs.add(MapEntry(index, vid));
+                    }
+                  }
+                  pairs.sort((a, b) => a.key.compareTo(b.key));
+                  final vids = pairs.map((e) => e.value).toSet().toList();
+                  if (vids.isNotEmpty) {
+                    if (kDebugMode) {
+                      print('[DuanjuBridge] 跨平台官方App接口获取分集成功: 剧集=$cleanId, 共${vids.length}集');
+                    }
+                    return vids;
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('[DuanjuBridge] 跨平台官方App分集提取尝试 $attempt 异常: $e');
+        }
+      }
+    }
+    return [];
+  }
+
   Future<DuanjuPlaybackPlan?> _fetchHongguoAppPlaybackPlan(
     String seriesId,
     String videoId,
     int episode, {
     int quality = 0,
   }) async {
-    try {
-      final now = DateTime.now();
-      const devId = '3748291048294829104';
-      const iid = '1928374650192837465';
-      final q = <String, String>{
-        'aid': '8662',
-        'app_name': 'novelread',
-        'version_code': '73532',
-        'version_name': '7.3.5.32',
-        'manifest_version_code': '73532',
-        'update_version_code': '73532',
-        'channel': 'update_64',
-        'device_platform': 'android',
-        'os': 'android',
-        'ssmix': 'a',
-        'device_type': '25053RT47C',
-        'device_brand': 'Redmi',
-        'language': 'zh',
-        'os_api': '36',
-        'os_version': '16',
-        'resolution': '1280*2772',
-        'dpi': '520',
-        'ac': 'wifi',
-        'device_id': devId,
-        'iid': iid,
-        '_rticket': '${now.millisecondsSinceEpoch}',
-      };
+    for (int attempt = 0; attempt < 2; attempt++) {
+      try {
+        final now = DateTime.now().add(Duration(milliseconds: attempt * 200));
+        const devId = '3748291048294829104';
+        const iid = '1928374650192837465';
+        final q = <String, String>{
+          'aid': '8662',
+          'app_name': 'novelread',
+          'version_code': '73532',
+          'version_name': '7.3.5.32',
+          'manifest_version_code': '73532',
+          'update_version_code': '73532',
+          'channel': 'update_64',
+          'device_platform': 'android',
+          'os': 'android',
+          'ssmix': 'a',
+          'device_type': '25053RT47C',
+          'device_brand': 'Redmi',
+          'language': 'zh',
+          'os_api': '36',
+          'os_version': '16',
+          'resolution': '1280*2772',
+          'dpi': '520',
+          'ac': 'wifi',
+          'device_id': devId,
+          'iid': iid,
+          '_rticket': '${now.millisecondsSinceEpoch}',
+        };
 
-      final queryStr = q.entries.map((e) => '${e.key}=${e.value}').join('&');
-      final payloadMap = {
-        'biz_param': {
-          'detail_page_version': 0,
-          'device_level': 3,
-          'disable_digg_stat': false,
-          'need_all_video_definition': true,
-          'need_mp4_align': false,
-          'use_os_player': false,
-          'use_server_dns': false,
-          'video_platform': 1024,
-        },
-        'mixed_video_id_map': {
-          '1004': [videoId],
-        },
-      };
-      final bodyBytes = Uint8List.fromList(utf8.encode(jsonEncode(payloadMap)));
-      final signHeaders = _signHongguo(queryStr, bodyBytes, now);
+        final queryStr = q.entries.map((e) => '${e.key}=${e.value}').join('&');
+        final payloadMap = {
+          'biz_param': {
+            'detail_page_version': 0,
+            'device_level': 3,
+            'disable_digg_stat': false,
+            'need_all_video_definition': true,
+            'need_mp4_align': false,
+            'use_os_player': false,
+            'use_server_dns': false,
+            'video_platform': 1024,
+          },
+          'mixed_video_id_map': {
+            '1004': [videoId],
+          },
+        };
+        final bodyBytes = Uint8List.fromList(utf8.encode(jsonEncode(payloadMap)));
+        final signHeaders = _signHongguo(queryStr, bodyBytes, now);
 
-      final uri = Uri.parse('https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/?$queryStr');
-      final resp = await http.post(
-        uri,
-        headers: {
-          'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250305.002; Cronet/TTNetVersion:07a97ae8 2026-03-05 QuicVersion:f2324900 2026-02-05)',
-          'Accept': 'application/json',
-          'Content-Type': 'application/json; charset=utf-8',
-          'X-XS-From-Web': '0',
-          'Sdk-Version': '2',
-          ...signHeaders,
-        },
-        body: bodyBytes,
-      ).timeout(const Duration(seconds: 8));
+        final uri = Uri.parse('https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/?$queryStr');
+        final resp = await http.post(
+          uri,
+          headers: {
+            'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250305.002; Cronet/TTNetVersion:07a97ae8 2026-03-05 QuicVersion:f2324900 2026-02-05)',
+            'Accept': 'application/json',
+            'Content-Type': 'application/json; charset=utf-8',
+            'X-XS-From-Web': '0',
+            'Sdk-Version': '2',
+            ...signHeaders,
+          },
+          body: bodyBytes,
+        ).timeout(const Duration(seconds: 12));
 
-      if (resp.statusCode == 200) {
-        final resJson = jsonDecode(resp.body);
-        if (resJson is Map && (resJson['code'] == 0 || resJson['Code'] == 0)) {
-          final data = resJson['data'];
-          if (data is Map) {
-            final entry = data[videoId] ?? (data.isNotEmpty ? data.values.first : null);
-            dynamic vm = (entry is Map) ? entry['video_model'] : (data['video_model'] ?? data);
-            if (vm is String) {
-              try {
-                vm = jsonDecode(vm);
-              } catch (_) {}
-            }
-            if (vm is Map) {
-              final vl = vm['video_list'];
-              final List<dynamic> options = (vl is List) ? vl : (vl is Map ? vl.values.toList() : []);
-              final multiMap = <String, String>{};
-              final keysMap = <String, String>{};
-              final qualityToUrl = <int, String>{};
-              final qualitiesSet = <int>{};
-              String primaryCencKey = '';
+        if (resp.statusCode == 200) {
+          final resJson = jsonDecode(resp.body);
+          if (resJson is Map && (resJson['code'] == 0 || resJson['Code'] == 0)) {
+            final data = resJson['data'];
+            if (data is Map) {
+              final entry = data[videoId] ?? (data.isNotEmpty ? data.values.first : null);
+              dynamic vm = (entry is Map) ? entry['video_model'] : (data['video_model'] ?? data);
+              if (vm is String) {
+                try {
+                  vm = jsonDecode(vm);
+                } catch (_) {}
+              }
+              if (vm is Map) {
+                final vl = vm['video_list'];
+                final List<dynamic> options = (vl is List) ? vl : (vl is Map ? vl.values.toList() : []);
+                final multiMap = <String, String>{};
+                final keysMap = <String, String>{};
+                final qualityToUrl = <int, String>{};
+                final qualitiesSet = <int>{};
+                String primaryCencKey = '';
 
-              for (final opt in options) {
-                if (opt is! Map) continue;
-                final meta = opt['video_meta'] is Map ? opt['video_meta'] as Map : {};
-                final codec = (meta['codec_type'] ?? opt['codec_type'])?.toString().toLowerCase() ?? '';
-                if (codec == 'bytevc2' || codec == 'bvc2') continue; // 跳过不支持的 H.266
+                for (final opt in options) {
+                  if (opt is! Map) continue;
+                  final meta = opt['video_meta'] is Map ? opt['video_meta'] as Map : {};
+                  final codec = (meta['codec_type'] ?? opt['codec_type'])?.toString().toLowerCase() ?? '';
+                  if (codec == 'bytevc2' || codec == 'bvc2') continue; // 跳过不支持的 H.266
 
-                final defName = (meta['definition'] ?? meta['quality_desc'] ?? opt['quality_desc'])?.toString().toLowerCase() ?? '';
-                final enc = opt['encrypt_info'] is Map ? opt['encrypt_info'] as Map : {};
-                final spade = enc['spade_a']?.toString() ?? opt['spade_a']?.toString() ?? '';
+                  final defName = (meta['definition'] ?? meta['quality_desc'] ?? opt['quality_desc'])?.toString().toLowerCase() ?? '';
+                  final enc = opt['encrypt_info'] is Map ? opt['encrypt_info'] as Map : {};
+                  final spade = enc['spade_a']?.toString() ?? opt['spade_a']?.toString() ?? '';
 
-                String itemKey = '';
-                if (spade.isNotEmpty) {
-                  itemKey = _hongguoContentKey(spade);
-                  if (primaryCencKey.isEmpty && itemKey.isNotEmpty) {
-                    primaryCencKey = itemKey;
+                  String itemKey = '';
+                  if (spade.isNotEmpty) {
+                    itemKey = _hongguoContentKey(spade);
+                    if (primaryCencKey.isEmpty && itemKey.isNotEmpty) {
+                      primaryCencKey = itemKey;
+                    }
                   }
-                }
 
-                // 从 definition 或 vheight/vwidth 提取真实清晰度数值 (对齐红果鉴)
-                int qNum = 0;
-                final defMatch = RegExp(r'(\d+)').firstMatch(defName);
-                if (defMatch != null) {
-                  qNum = int.tryParse(defMatch.group(1)!) ?? 0;
-                }
-                if (qNum == 0) {
-                  final h = int.tryParse(meta['vheight']?.toString() ?? '') ?? 0;
-                  final w = int.tryParse(meta['vwidth']?.toString() ?? '') ?? 0;
-                  qNum = (w > 0 && (h == 0 || w < h)) ? w : h;
-                }
-                if (qNum == 0) qNum = 720;
-
-                String rawUrl = opt['main_url']?.toString() ?? opt['backup_url_1']?.toString() ?? opt['backup_url']?.toString() ?? '';
-                if (rawUrl.isNotEmpty) {
-                  if (!rawUrl.startsWith('http')) {
-                    try {
-                      rawUrl = utf8.decode(base64.decode(rawUrl));
-                    } catch (_) {}
+                  // 从 definition 或 vheight/vwidth 提取真实清晰度数值 (对齐红果鉴)
+                  int qNum = 0;
+                  final defMatch = RegExp(r'(\d+)').firstMatch(defName);
+                  if (defMatch != null) {
+                    qNum = int.tryParse(defMatch.group(1)!) ?? 0;
                   }
-                  if (rawUrl.startsWith('http')) {
-                    final qLabel = '${qNum}P';
-                    qualitiesSet.add(qNum);
-                    qualityToUrl[qNum] = rawUrl;
-                    multiMap[qLabel] = rawUrl;
-                    if (itemKey.isNotEmpty) {
-                      keysMap[qLabel] = itemKey;
+                  if (qNum == 0) {
+                    final h = int.tryParse(meta['vheight']?.toString() ?? '') ?? 0;
+                    final w = int.tryParse(meta['vwidth']?.toString() ?? '') ?? 0;
+                    qNum = (w > 0 && (h == 0 || w < h)) ? w : h;
+                  }
+                  if (qNum == 0) qNum = 720;
+
+                  String rawUrl = opt['main_url']?.toString() ?? opt['backup_url_1']?.toString() ?? opt['backup_url']?.toString() ?? '';
+                  if (rawUrl.isNotEmpty) {
+                    if (!rawUrl.startsWith('http')) {
+                      try {
+                        rawUrl = utf8.decode(base64.decode(rawUrl));
+                      } catch (_) {}
+                    }
+                    if (rawUrl.startsWith('http')) {
+                      final qLabel = '${qNum}P';
+                      qualitiesSet.add(qNum);
+                      qualityToUrl[qNum] = rawUrl;
+                      multiMap[qLabel] = rawUrl;
+                      if (itemKey.isNotEmpty) {
+                        keysMap[qLabel] = itemKey;
+                      }
                     }
                   }
                 }
-              }
 
-              // 对可用清晰度列表进行降序排列 (例如 [1080, 720, 540, 480, 360])
-              final sortedQualities = qualitiesSet.toList()..sort((a, b) => b.compareTo(a));
-              if (sortedQualities.isNotEmpty && multiMap.isNotEmpty) {
-                final targetQuality = (quality > 0 && qualityToUrl.containsKey(quality))
-                    ? quality
-                    : sortedQualities.first;
-                final targetLabel = '${targetQuality}P';
-                final primaryUrl = qualityToUrl[targetQuality] ?? multiMap.values.first;
-                final activeKey = keysMap[targetLabel] ?? primaryCencKey;
+                // 对可用清晰度列表进行降序排列 (例如 [1080, 720, 540, 480, 360])
+                final sortedQualities = qualitiesSet.toList()..sort((a, b) => b.compareTo(a));
+                if (sortedQualities.isNotEmpty && multiMap.isNotEmpty) {
+                  final targetQuality = (quality > 0 && qualityToUrl.containsKey(quality))
+                      ? quality
+                      : sortedQualities.first;
+                  final targetLabel = '${targetQuality}P';
+                  final primaryUrl = qualityToUrl[targetQuality] ?? multiMap.values.first;
+                  final activeKey = keysMap[targetLabel] ?? primaryCencKey;
 
-                multiMap['自动'] = primaryUrl;
+                  multiMap['自动'] = primaryUrl;
 
-                return DuanjuPlaybackPlan(
-                  url: primaryUrl,
-                  decryptionKey: activeKey,
-                  keys: keysMap,
-                  headers: {
-                    'User-Agent': 'Mozilla/5.0 (Linux; Android 16; 25053RT47C) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36',
-                    'Referer': 'https://novel.snssdk.com/',
-                  },
-                  multiMap: multiMap,
-                  resolution: targetLabel,
-                  quality: quality,
-                  actualQuality: targetQuality,
-                  qualities: sortedQualities,
-                );
+                  return DuanjuPlaybackPlan(
+                    url: primaryUrl,
+                    decryptionKey: activeKey,
+                    keys: keysMap,
+                    headers: {
+                      'User-Agent': 'Mozilla/5.0 (Linux; Android 16; 25053RT47C) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36',
+                      'Referer': 'https://novel.snssdk.com/',
+                    },
+                    multiMap: multiMap,
+                    resolution: targetLabel,
+                    quality: quality,
+                    actualQuality: targetQuality,
+                    qualities: sortedQualities,
+                  );
+                }
               }
             }
           }
         }
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        print('[DuanjuBridge] 官方App接口取流异常: $e');
+      } catch (e) {
+        if (kDebugMode) {
+          print('[DuanjuBridge] 官方App接口取流异常 (attempt $attempt): $e');
+        }
       }
     }
     return null;
@@ -1848,17 +1952,7 @@ class DuanjuCoreBridge {
             if (pageData is Map) {
               final returnedVid = pageData['vid']?.toString() ?? '';
               if (returnedVid.isEmpty || returnedVid == vid) {
-                // 1. 优先提取公开 SEO 静态直链 (针对开放试看集)
-                final seo = pageData['publicVideoSeo'];
-                if (seo is Map && seo['available'] == true) {
-                  final targetVid = seo['itemId']?.toString() ?? vid;
-                  final directUrl = 'https://hongguoduanju.com/video/public/$targetVid/360p.mp4';
-                  _playbackResolutionCache[cacheKey] = '360P';
-                  _playbackUrlCache[cacheKey] = directUrl;
-                  return directUrl;
-                }
-
-                // 2. 兼容提取传统 video_player_info 直链
+                // 1. 优先提取火山 CDN 官方高清/原画流 (1080P/720P)
                 final playInfo = pageData['video_player_info'];
                 if (playInfo is Map) {
                   final mainUrl = (playInfo['main_url'] ??
@@ -1870,6 +1964,16 @@ class DuanjuCoreBridge {
                     _playbackUrlCache[cacheKey] = mainUrl;
                     return mainUrl;
                   }
+                }
+
+                // 2. 仅在官方高清流缺失时，降级提取公开 SEO 静态试看直链
+                final seo = pageData['publicVideoSeo'];
+                if (seo is Map && seo['available'] == true) {
+                  final targetVid = seo['itemId']?.toString() ?? vid;
+                  final directUrl = 'https://hongguoduanju.com/video/public/$targetVid/360p.mp4';
+                  _playbackResolutionCache[cacheKey] = '360P';
+                  _playbackUrlCache[cacheKey] = directUrl;
+                  return directUrl;
                 }
               }
             }
@@ -1916,16 +2020,6 @@ class DuanjuCoreBridge {
                 return; // 拦截冒充，不预缓存错误的第一集流
               }
 
-              final seo = pageData['publicVideoSeo'];
-              if (seo is Map && seo['available'] == true) {
-                final targetVid = seo['itemId']?.toString() ?? vid;
-                final directUrl = 'https://hongguoduanju.com/video/public/$targetVid/360p.mp4';
-                _playbackResolutionCache[nextCacheKey] = '360P';
-                _playbackUrlCache[nextCacheKey] = directUrl;
-                _playbackMultiResCache[nextCacheKey] = buildMultiResolutionUrls(directUrl);
-                return;
-              }
-
               final playInfo = pageData['video_player_info'];
               if (playInfo is Map) {
                 final mainUrl = playInfo['main_url']?.toString();
@@ -1943,7 +2037,18 @@ class DuanjuCoreBridge {
                   _playbackResolutionCache[nextCacheKey] = resLabel;
                   _playbackUrlCache[nextCacheKey] = mainUrl;
                   _playbackMultiResCache[nextCacheKey] = buildMultiResolutionUrls(mainUrl);
+                  return;
                 }
+              }
+
+              final seo = pageData['publicVideoSeo'];
+              if (seo is Map && seo['available'] == true) {
+                final targetVid = seo['itemId']?.toString() ?? vid;
+                final directUrl = 'https://hongguoduanju.com/video/public/$targetVid/360p.mp4';
+                _playbackResolutionCache[nextCacheKey] = '360P';
+                _playbackUrlCache[nextCacheKey] = directUrl;
+                _playbackMultiResCache[nextCacheKey] = buildMultiResolutionUrls(directUrl);
+                return;
               }
             }
           }
