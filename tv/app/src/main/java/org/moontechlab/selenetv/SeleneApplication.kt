@@ -68,19 +68,38 @@ class SeleneApplication : Application(), ImageLoaderFactory {
         RemoteControlServer.stop()
     }
     
+    private var imageLoaderInstance: ImageLoader? = null
+
     override fun newImageLoader(): ImageLoader {
-        return ImageLoader.Builder(this)
+        val loader = ImageLoader.Builder(this)
             .okHttpClient {
                 createUnsafeOkHttpClient()
             }
+            .memoryCache {
+                coil.memory.MemoryCache.Builder(this)
+                    .maxSizePercent(org.moontechlab.selenetv.util.DeviceMemoryManager.getCoilMemoryCachePercent(this))
+                    .build()
+            }
             .memoryCachePolicy(CachePolicy.ENABLED)
             .diskCachePolicy(CachePolicy.ENABLED)
-            // 低端机（armv7a / 2GB）优化：海报/剧照都是不透明图，用 RGB_565（2 字节/像素）替代
+            // 低端机（armv7a / 2GB / 海信）优化：海报/剧照都是不透明图，用 RGB_565（2 字节/像素）替代
             // 默认 ARGB_8888（4 字节/像素），位图内存腰斩、解码更快、GC 抖动更少；画质几乎无损。
             .allowRgb565(true)
             .crossfade(true)
             .eventListener(ImageEventListener())
             .build()
+        imageLoaderInstance = loader
+        return loader
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        org.moontechlab.selenetv.util.DeviceMemoryManager.handleTrimMemory(imageLoaderInstance, level)
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        org.moontechlab.selenetv.util.DeviceMemoryManager.handleLowMemory(imageLoaderInstance)
     }
     
     /**

@@ -110,12 +110,11 @@ class MpvPlayerController(
         // 对策：① 建一个真正的前向缓冲吸收突发抖动；② 让底层 HTTP 透明重连自愈，避免一次抖动升级
         // 成长卡顿。readahead 是「上限」不是「起播门槛」，首帧到达即起播；直播数据本就只能实时到达，
         // 稳态下不会显著偏离直播边缘，仅在源突发供给时多攒几段做缓冲，延迟代价极小。
+        val mpvCache = org.moontechlab.selenetv.util.DeviceMemoryManager.getMpvCacheConfig(context)
         mpv.setOptionString("cache", "yes")
-        mpv.setOptionString("demuxer-readahead-secs", "30")
-        // 4K 高码率下 30s 前向缓冲需要更大的字节上限（默认 150MiB 可能存不下）；back 缓冲直播用不上，
-        // 压小以省内存（直通解码的 4K 纹理本身已占显存/内存）。
-        mpv.setOptionString("demuxer-max-bytes", "256MiB")
-        mpv.setOptionString("demuxer-max-back-bytes", "32MiB")
+        mpv.setOptionString("demuxer-readahead-secs", mpvCache.readaheadSecs)
+        mpv.setOptionString("demuxer-max-bytes", mpvCache.maxBytes)
+        mpv.setOptionString("demuxer-max-back-bytes", mpvCache.maxBackBytes)
         // FFmpeg(libavformat) 层 HTTP 透明重连：直播连接被服务端/链路掐断时自动重连续读，
         // 把「断流→~10s 黑屏重缓冲」降级为底层无感重连。reconnect_streamed 覆盖不可 seek 的直播流。
         mpv.setOptionString(

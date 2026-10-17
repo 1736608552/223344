@@ -32,6 +32,7 @@ class PlayerController(
 
     private val exo: ExoPlayer = ExoPlayer.Builder(context)
         .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+        .setLoadControl(org.moontechlab.selenetv.util.DeviceMemoryManager.createExoLoadControl(context))
         .apply {
             // 软解：用把系统软件解码器排前的 RenderersFactory；硬解保持默认。
             if (decodeMode == AppDataService.DecodeMode.SOFTWARE) {
@@ -131,6 +132,8 @@ class PlayerController(
     @MainThread
     override fun release() {
         exo.removeListener(listener)
+        exo.stop()
+        exo.clearMediaItems()
         exo.release()
     }
 
@@ -149,7 +152,10 @@ class PlayerController(
                     }
                     .also { playerView = it }
             },
-            onRelease = { playerView = null },
+            onRelease = {
+                playerView?.player = null
+                playerView = null
+            },
             modifier = modifier,
         )
     }
