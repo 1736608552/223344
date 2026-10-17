@@ -323,8 +323,8 @@ fun HomeTab(
             isLoadingShortDramas = true
             errorShortDramas = null
             try {
-                val list = ShortDramaService.getUnifiedList(genre = "hot", page = 1, size = 20)
-                hotShortDramas = list
+                val list = ShortDramaService.getUnifiedList(genreKey = "all", rankKey = "rank_hot", page = 1, size = 20)
+                hotShortDramas = list.map { it.toVideoInfo() }
             } catch (e: Exception) {
                 errorShortDramas = e.message ?: "加载失败"
             } finally {
