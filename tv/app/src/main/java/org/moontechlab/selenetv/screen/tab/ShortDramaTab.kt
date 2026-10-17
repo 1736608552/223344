@@ -7,6 +7,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.moontechlab.selenetv.model.ShortDrama
@@ -16,9 +17,10 @@ import org.moontechlab.selenetv.service.ShortDramaService
 import org.moontechlab.selenetv.ui.FilterOption
 import org.moontechlab.selenetv.ui.FilterSelector
 import org.moontechlab.selenetv.ui.VideoCardSource
+import org.moontechlab.selenetv.ui.grid.GRID_CARD_WIDTH
+import org.moontechlab.selenetv.ui.grid.GRID_COLUMNS
 import org.moontechlab.selenetv.ui.grid.GridFilterRow
 import org.moontechlab.selenetv.ui.grid.MediaGridScaffold
-import org.moontechlab.selenetv.ui.grid.rememberResponsiveGridLayout
 
 private val SHORT_DRAMA_FILTER_OPTIONS = listOf(
     FilterOption("0", "全部短剧"),
@@ -29,6 +31,8 @@ private val SHORT_DRAMA_FILTER_OPTIONS = listOf(
     FilterOption("105", "穿越重生"),
     FilterOption("106", "AI漫剧"),
 )
+
+private const val HORIZONTAL_PADDING_DP = 58
 
 /**
  * TV 端短剧专区页面
@@ -41,7 +45,14 @@ fun ShortDramaTab(
 ) {
     val coroutineScope = rememberCoroutineScope()
     val configuration = LocalConfiguration.current
-    val gridLayout = rememberResponsiveGridLayout(configuration.screenWidthDp.dp)
+    val screenWidthDp = configuration.screenWidthDp.toFloat()
+
+    // 计算网格布局间隙
+    val totalCardWidth = GRID_CARD_WIDTH * GRID_COLUMNS
+    val totalPadding = HORIZONTAL_PADDING_DP * 2
+    val availableForGaps = screenWidthDp - totalCardWidth - totalPadding
+    val cardGap = (availableForGaps / (GRID_COLUMNS - 1)).coerceAtLeast(8f).dp
+    val horizontalPadding = HORIZONTAL_PADDING_DP.dp
 
     var selectedCategoryId by remember { mutableStateOf("0") }
     var dramaList by remember { mutableStateOf<List<ShortDrama>>(emptyList()) }
@@ -87,8 +98,8 @@ fun ShortDramaTab(
             isLoading = isLoading,
             errorMessage = errorMessage,
             scrollState = scrollState,
-            horizontalPadding = gridLayout.horizontalPadding,
-            cardGap = gridLayout.cardGap,
+            horizontalPadding = horizontalPadding,
+            cardGap = cardGap,
             contentFocusRequester = contentFocusRequester,
             resetKey = selectedCategoryId,
             itemToVideoInfo = { it.toVideoInfo() },
@@ -98,14 +109,12 @@ fun ShortDramaTab(
             onLoadMore = { loadData(isInitial = false) },
             onContentNavigateUp = { categoryFocusRequester.requestFocus() },
             filterSection = {
-                GridFilterRow(onNavigateDown = { contentFocusRequester.requestFocus() }) {
+                GridFilterRow(label = "题材") {
                     FilterSelector(
-                        title = "题材",
                         options = SHORT_DRAMA_FILTER_OPTIONS,
-                        selectedValue = selectedCategoryId,
+                        selectedKey = selectedCategoryId,
                         onSelect = { selectedCategoryId = it },
                         focusRequester = categoryFocusRequester,
-                        onNavigateDown = { contentFocusRequester.requestFocus() },
                     )
                 }
             }
