@@ -332,7 +332,7 @@ jobs:
       - name: Create or Update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
-          PUBLIC_REPO: "djsevenx1/LunaTV-Mobile"
+          PUBLIC_REPO: "djseven/LunaTV-Mobile"
         run: |
           set -euo pipefail
 

@@ -97,7 +97,7 @@ class TmdbService {
   }
 
   /// v2.1.41: 构造 API / image URL — 加 'tmdb_proxy' 分支 (用户自部署
-  ///   CF Worker 加速, 部署在 [djsevenx1/tmdb-proxy] fork HuntzzZ).
+  ///   CF Worker 加速, 部署在 [djseven/tmdb-proxy] fork HuntzzZ).
   ///
   /// v2.1.40 改: 删 'cf_worker' (CORSAPI 套娃) 和 'cors_proxy' (ciao-cors
   ///   公共代理) 两个分支. v2.1.40 ~ v2.1.40.x TMDB 数据源只有

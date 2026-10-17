@@ -194,7 +194,7 @@ Map<String, String>? getImageRequestHeaders(String imageUrl, String? source) {
       // lain.bgm.tv 和 api.bgm.tv 都吃 bgm.tv v0 API 同款
       // "App/Version (URL)" UA 格式,Chrome UA 反而会 403
       'User-Agent':
-          'LunaTV-Mobile/1.0 (https://github.com/djsevenx1/LunaTV-Mobile)',
+          'LunaTV-Mobile/1.0 (https://github.com/djseven/LunaTV-Mobile)',
       'Referer': 'https://bgm.tv/',
       'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
     };

@@ -57,7 +57,7 @@ class UserDataService {
   //   https://your-worker.example.com/), 走 path-based 加速. 跟 v2.0.77
   //   _cfWorkerDomainKey 区分: _cfWorkerDomainKey 是视频加速 (CORSAPI
   //   套娃), _tmdbProxyDomainKey 是 TMDB API + 图片 (独立 worker, 部署
-  //   在 [djsevenx1/tmdb-proxy]). 不共用, 互不影响.
+  //   在 [djseven/tmdb-proxy]). 不共用, 互不影响.
   //
   // v2.1.49 改: 改名 + 复用 — 同一个 worker 同时服务 TMDB (/movie/...
   //   /image/...) + Bangumi (/bangumi/... /bgm-img/...) + GitHub
@@ -598,7 +598,7 @@ class UserDataService {
   ///
   /// v2.1.41 改: 'tmdb_proxy' → 'TMDB Worker 加速', 删 'off' → '已关闭'.
   ///   跟视频加速「CF Worker 加速」section 区分 (那是 CORSAPI 套娃,
-  ///   这里是 [djsevenx1/tmdb-proxy] path-based, 部署在 your-worker.example.com).
+  ///   这里是 [djseven/tmdb-proxy] path-based, 部署在 your-worker.example.com).
   static String getTmdbDataSourceDisplayName(String key) {
     switch (key) {
       case 'tmdb_proxy':
@@ -745,7 +745,7 @@ class UserDataService {
 
   // ===== v2.1.41: TMDB 代理 URL (用户自部署 CF Worker 加速) =====
   //
-  // 用户场景: 部署 [djsevenx1/tmdb-proxy] (fork HuntzzZ/tmdb-proxy 加
+  // 用户场景: 部署 [djseven/tmdb-proxy] (fork HuntzzZ/tmdb-proxy 加
   //   Bangumi 路由) 到 Cloudflare Pages, 拿到一个 https://xxx.pages.dev
   //   地址, 粘到这. App 调 TMDB API / 加载 TMDB 图时拼成
   //   `${workerUrl}/movie/xxx?api_key=${userKey}` / `${workerUrl}/image/...`,
@@ -815,7 +815,7 @@ class UserDataService {
 
   // v2.1.46 删, v2.1.49 注释: 不再需要独立的 [saveGithubProxyDomain] /
   //   [getGithubProxyDomain] / [getGithubProxyDomainSync]. GitHub 路由
-  //   直接复用 [_tmdbProxyDomainKey], 因为 [djsevenx1/tmdb-proxy] worker
+  //   直接复用 [_tmdbProxyDomainKey], 因为 [djseven/tmdb-proxy] worker
   //   同时服务 TMDB / Bangumi / GitHub 三套路由, 99% 用户填同一个 URL.
   //   [buildGithubApiUrl] / [buildGithubReleaseAssetUrl] 内部用
   //   [getTmdbProxyDomainSync] 读 [_tmdbProxyDomainCache].
@@ -1005,7 +1005,7 @@ class UserDataService {
   ///     → https://your-worker.example.com/bangumi/calendar
   ///     https://api.bgm.tv/v0/subjects/123
   ///     → https://your-worker.example.com/bangumi/v0/subjects/123
-  ///   worker 端 ([djsevenx1/tmdb-proxy] fork HuntzzZ) 拿 `/bangumi/...`
+  ///   worker 端 ([djseven/tmdb-proxy] fork HuntzzZ) 拿 `/bangumi/...`
   ///   path 转给 api.bgm.tv, Authorization 透传. 跟 v2.0.77 之前
   ///   cf_worker 套娃 (`?url=`) 不一样: path-based worker 不需要
   ///   URL encode, 日志 / 日记 / Cache-Control 都干净.
@@ -1078,7 +1078,7 @@ class UserDataService {
   ///   拼 `${workerUrl}/bgm-img`, 例:
   ///     https://lain.bgm.tv/img/.../abc.jpg
   ///     → https://your-worker.example.com/bgm-img/img/.../abc.jpg
-  ///   worker 端 ([djsevenx1/tmdb-proxy] fork HuntzzZ) 拿 `/bgm-img/...`
+  ///   worker 端 ([djseven/tmdb-proxy] fork HuntzzZ) 拿 `/bgm-img/...`
   ///   path 转给 lain.bgm.tv, 自动加 Referer: https://bgm.tv/ 绕过反盗链.
   ///   国内反盗链偶尔 403, 走 worker 反而成功率高. 跟 v2.0.74 之前
   ///   cf_worker 套娃 (用 `?url=` 转) 不一样: path-based worker 不需要
@@ -1205,7 +1205,7 @@ class UserDataService {
   ///   前缀换成 `${workerUrl}/image`, 例:
   ///     https://image.tmdb.org/t/p/w1280/abc.jpg
   ///     → https://your-worker.example.com/image/t/p/w1280/abc.jpg
-  ///   worker 端 ([djsevenx1/tmdb-proxy] fork HuntzzZ) 拿 `/image/...`
+  ///   worker 端 ([djseven/tmdb-proxy] fork HuntzzZ) 拿 `/image/...`
   ///   path 转给 image.tmdb.org, 顺带做 1 天 Cache-Control. 跟
   ///   v2.0.74 之前 cf_worker 套娃 (用 `?url=` 转) 不一样: path-based
   ///   worker 不需要 URL encode, 日志 / 日记 / Cache-Control 都干净.

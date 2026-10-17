@@ -71,7 +71,7 @@ class _UserMenuState extends State<UserMenu> {
   //   反馈「这个关闭不要」). 默认值看 _tmdbProxyDomain 配没配:
   //   配了默认 'tmdb_proxy', 没配默认 'direct'.
   String _tmdbDataSource = 'direct';
-  // v2.1.41: 代理 URL — 用户自部署 [djsevenx1/tmdb-proxy] 部署到
+  // v2.1.41: 代理 URL — 用户自部署 [djseven/tmdb-proxy] 部署到
   //   Cloudflare Pages 拿到的 https://xxx.pages.dev, 一个 worker 同时
   //   服务三套路由:
   //     - TMDB:   /movie/...   /image/...   (v2.1.41)
@@ -654,7 +654,7 @@ class _UserMenuState extends State<UserMenu> {
   }
 
   // v2.1.41: 弹出 TMDB 代理 URL 输入对话框
-  //   用户从 [djsevenx1/tmdb-proxy] 部署到 Cloudflare Pages 拿到的
+  //   用户从 [djseven/tmdb-proxy] 部署到 Cloudflare Pages 拿到的
   //   https://xxx.pages.dev 粘进来. 自动强转 https://, 去尾斜杠 / 空白.
   //   空 = 清空. 选 'TMDB Worker 加速' 但这 URL 没配 → 弹 SnackBar
   //   警告, 自动回落 '直连' (见上面 selector onChanged).
@@ -691,7 +691,7 @@ class _UserMenuState extends State<UserMenu> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '部署 [djsevenx1/tmdb-proxy] 到 Cloudflare Pages, 拿到 https://xxx.pages.dev 粘到这里. 统一加速服务 TMDB 元数据、TheIntroDB/IntroDB 智能片头打点、Bangumi 番剧、短剧及 GitHub Releases.',
+              '部署 [djseven/tmdb-proxy] 到 Cloudflare Pages, 拿到 https://xxx.pages.dev 粘到这里. 统一加速服务 TMDB 元数据、TheIntroDB/IntroDB 智能片头打点、Bangumi 番剧、短剧及 GitHub Releases.',
               style: FontUtils.poppins(
                 ctx,
                 fontSize: 12,
@@ -781,11 +781,11 @@ class _UserMenuState extends State<UserMenu> {
             onPressed: () {
               Clipboard.setData(ClipboardData(
                 text:
-                    '1. 打开 https://github.com/djsevenx1/tmdb-proxy\n2. Fork 或 Clone 仓库到本地\n3. 在 Cloudflare Dashboard 选 Workers & Pages → Create application → Pages → Upload assets, 把仓库根目录 (含 _worker.js) 上传\n4. 部署完拿到 https://<project>.pages.dev, 粘到这',
+                    '1. 打开 https://github.com/djseven/tmdb-proxy\n2. Fork 或 Clone 仓库到本地\n3. 在 Cloudflare Dashboard 选 Workers & Pages → Create application → Pages → Upload assets, 把仓库根目录 (含 _worker.js) 上传\n4. 部署完拿到 https://<project>.pages.dev, 粘到这',
               ));
               ScaffoldMessenger.of(ctx).showSnackBar(
                 const SnackBar(
-                    content: Text('已复制部署步骤 (Fork djsevenx1/tmdb-proxy 上 CF Pages)')),
+                    content: Text('已复制部署步骤 (Fork djseven/tmdb-proxy 上 CF Pages)')),
               );
             },
             child: Text(
@@ -1719,7 +1719,7 @@ class _UserMenuState extends State<UserMenu> {
               //   '直连' 2 选 1. "已关闭" 重新加回来 — 现在没加速可挑,
               //   反而需要个明确"关闭 TMDB" 的语义, 跟"直连"区分开.
               // v2.1.41 改: 删 '已关闭' (用户反馈「这个关闭不要」),
-              //   加 'TMDB Worker 加速' (用户自部署 [djsevenx1/tmdb-proxy]
+              //   加 'TMDB Worker 加速' (用户自部署 [djseven/tmdb-proxy]
               //   走 path-based 加速). 2 选 1: 'TMDB Worker 加速' / '直连'.
               //   'TMDB Worker 加速' 但 _tmdbProxyDomain 没配 → 弹
               //   SnackBar 警告 + 自动回落到 '直连' (跟 v2.1.40 之前
@@ -1958,7 +1958,7 @@ class _UserMenuState extends State<UserMenu> {
                     : const Color(0xFF22C55E),
               ),
               _buildDivider(),
-              // v2.1.41: 代理 URL 输入行 — 用户自部署 [djsevenx1/tmdb-proxy]
+              // v2.1.41: 代理 URL 输入行 — 用户自部署 [djseven/tmdb-proxy]
               //   到 Cloudflare Pages 拿到的 https://xxx.pages.dev. 配了
               //   「TMDB 数据源」选 'TMDB Worker 加速' 才会用上, 没配选
               //   '直连' 也允许配 (先存着, 切的时候不用再输一次).

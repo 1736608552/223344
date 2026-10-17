@@ -29,7 +29,7 @@ class BangumiService private constructor(private val context: Context) {
             }
         }
         
-        private const val USER_AGENT = "moontechlab/lunatv/1.0.0 (Android) (http://github.com/djsevenx1/LunaTV-Mobile)"
+        private const val USER_AGENT = "moontechlab/lunatv/1.0.0 (Android) (http://github.com/djseven/LunaTV-Mobile)"
         private const val TIMEOUT_MS = 30000
         private const val TAG = "BangumiService"
     }

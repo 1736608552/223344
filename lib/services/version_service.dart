@@ -8,18 +8,18 @@ import 'package:luna_tv/services/diary_service.dart';
 import 'package:luna_tv/services/user_data_service.dart';
 
 class VersionService {
-  static const String githubRepoUrl = 'https://github.com/djsevenx1/LunaTV-Mobile';
-  static const String githubApiUrl = 'https://api.github.com/repos/djsevenx1/LunaTV-Mobile/releases/latest';
+  static const String githubRepoUrl = 'https://github.com/djseven/LunaTV-Mobile';
+  static const String githubApiUrl = 'https://api.github.com/repos/djseven/LunaTV-Mobile/releases/latest';
   static const String _dismissedVersionKey = 'dismissed_version';
 
   // 极速高可用国内直连 CDN 镜像源列表（毫秒级响应，杜绝 GFW 阻断）
   static const List<String> _cdnPubspecMirrors = [
-    'https://fastly.jsdelivr.net/gh/djsevenx1/LunaTV-Mobile@main/pubspec.yaml',
-    'https://testingcf.jsdelivr.net/gh/djsevenx1/LunaTV-Mobile@main/pubspec.yaml',
-    'https://cdn.jsdelivr.net/gh/djsevenx1/LunaTV-Mobile@main/pubspec.yaml',
-    'https://raw.gitmirror.com/djsevenx1/LunaTV-Mobile/main/pubspec.yaml',
-    'https://ghfast.top/https://raw.githubusercontent.com/djsevenx1/LunaTV-Mobile/main/pubspec.yaml',
-    'https://raw.githubusercontent.com/djsevenx1/LunaTV-Mobile/main/pubspec.yaml',
+    'https://fastly.jsdelivr.net/gh/djseven/LunaTV-Mobile@main/pubspec.yaml',
+    'https://testingcf.jsdelivr.net/gh/djseven/LunaTV-Mobile@main/pubspec.yaml',
+    'https://cdn.jsdelivr.net/gh/djseven/LunaTV-Mobile@main/pubspec.yaml',
+    'https://raw.gitmirror.com/djseven/LunaTV-Mobile/main/pubspec.yaml',
+    'https://ghfast.top/https://raw.githubusercontent.com/djseven/LunaTV-Mobile/main/pubspec.yaml',
+    'https://raw.githubusercontent.com/djseven/LunaTV-Mobile/main/pubspec.yaml',
   ];
 
   /// 检查是否有新版本（启动自动调用）

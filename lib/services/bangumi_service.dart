@@ -93,7 +93,7 @@ class BangumiService {
         // 之前 v1.0.25 改成了 Chrome 标准 UA 导致整个
         // CF 代理都拉不到数据,这就是用户反馈"还是不行"的真因
         'User-Agent':
-            'LunaTV-Mobile/1.0 (https://github.com/djsevenx1/LunaTV-Mobile)',
+            'LunaTV-Mobile/1.0 (https://github.com/djseven/LunaTV-Mobile)',
         'Accept': 'application/json',
         'Referer': 'https://bgm.tv/',
       };
@@ -215,7 +215,7 @@ class BangumiService {
         // ⚠️ api.bgm.tv v0 API 强制要求 User-Agent 是
         //    "App/Version (URL)" 格式,否则返 400
         'User-Agent':
-            'LunaTV-Mobile/1.0 (https://github.com/djsevenx1/LunaTV-Mobile)',
+            'LunaTV-Mobile/1.0 (https://github.com/djseven/LunaTV-Mobile)',
         'Accept': 'application/json',
         'Referer': 'https://bgm.tv/',
       };
