@@ -275,6 +275,8 @@ jobs:
         run: chmod +x tv/gradlew
 
       - name: Build Release APKs
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx5120m -XX:+UseG1GC"
         run: |
           cd tv
           ./gradlew assembleRelease --stacktrace
