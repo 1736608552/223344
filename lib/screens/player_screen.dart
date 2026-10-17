@@ -1830,7 +1830,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       });
 
       if (!auto && startMs == 0 && _danmakuEnabled) {
-        _toast('弹幕 · 红果短剧 · 第$epNum集 · ${merged.length}条');
+        _toast('弹幕 · 精品短剧 · 第$epNum集 · ${merged.length}条');
       }
       await DiaryService.add('[短剧弹幕] 成功载入第$epNum集官方真实弹幕: ${comments.length}条 (当前总计${merged.length}条, 首条: "${merged.firstOrNull?.content}")');
     } catch (e) {
@@ -2944,7 +2944,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         episodes: eps,
         episodesTitles: epTitles,
         source: 'hongguo',
-        sourceName: '红果短剧 (官方原画)',
+        sourceName: '精品短剧',
         year: widget.videoInfo.year.isNotEmpty ? widget.videoInfo.year : '2026',
       );
       if (!mounted) return;

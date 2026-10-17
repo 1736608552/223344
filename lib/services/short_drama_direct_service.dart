@@ -12,7 +12,7 @@ class ShortDramaDirectService {
   /// 官方独家源配置 (100% 对齐红果鉴官方权威四大分类体系)
   static const List<_DirectSource> _sources = [
     _DirectSource(
-      name: '红果短剧',
+      name: '精品短剧',
       apiUrl: 'https://hongguoduanju.com',
       srcKey: 'hongguo',
       pages: 3,

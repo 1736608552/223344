@@ -95,7 +95,7 @@ class _HotShortDramaSectionState extends State<HotShortDramaSection> {
         id: realId,
         source: 'hongguo',
         title: drama.name,
-        sourceName: '红果短剧 (官方原画)',
+        sourceName: '精品短剧',
         year: '2026',
         cover: cover,
         index: 0,

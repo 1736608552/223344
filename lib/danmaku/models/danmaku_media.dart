@@ -27,7 +27,7 @@ extension DanmakuSourceName on DanmakuSource {
       case DanmakuSource.tencent:  return '腾讯视频';
       case DanmakuSource.mgtv:     return '芒果TV';
       case DanmakuSource.le:       return '乐视视频';
-      case DanmakuSource.hongguo:  return '红果短剧';
+      case DanmakuSource.hongguo:  return '精品短剧';
     }
   }
 }

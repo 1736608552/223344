@@ -53,6 +53,8 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -283,6 +285,35 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
         val raw = src?.episodes?.getOrNull(index) ?: return
         scope.launch {
+            if (src.source == "hongguo" || src.source == "shortdrama") {
+                // 短剧专属直解：精准调用单集专属直链解析通道 (支持 1080P/720P/480P 超清直出)
+                val seriesId = src.id
+                var resolvedUrl = ""
+                try {
+                    val vid = if (raw.length > 10 && raw.matches(Regex("[0-9]+"))) {
+                        raw
+                    } else {
+                        val vids = withContext(Dispatchers.IO) {
+                            org.moontechlab.selenetv.hongguo.HongguoStreamResolver.fetchEpisodeVids(seriesId)
+                        }
+                        vids.getOrNull(index) ?: ""
+                    }
+                    if (vid.isNotEmpty()) {
+                        val result = withContext(Dispatchers.IO) {
+                            org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid)
+                        }
+                        resolvedUrl = result["url"] as? String ?: ""
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("PlayerScreen", "短剧直链解析异常: ${e.message}")
+                }
+
+                if (resolvedUrl.isNotEmpty()) {
+                    controller.load(resolvedUrl, startMs)
+                    return@launch
+                }
+            }
+
             val proxy = org.moontechlab.selenetv.service.AppDataService.getM3u8ProxyUrl()
             controller.load(PlayProgress.buildPlayUrl(raw, proxy), startMs)
         }

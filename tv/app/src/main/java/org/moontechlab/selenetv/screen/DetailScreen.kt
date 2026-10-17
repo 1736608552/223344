@@ -131,6 +131,49 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
 
     // 1) 源获取：SearchAggregate 直接快照；其余启动搜索累积
     LaunchedEffect(entry) {
+        val isShortDrama = entry is DetailEntry.History && (entry.source == "hongguo" || entry.source == "shortdrama")
+        if (isShortDrama) {
+            val seriesId = (entry as DetailEntry.History).id
+            val defaultEpCount = 80
+            val initialEps = List(defaultEpCount) { (it + 1).toString() }
+            val initialTitles = List(defaultEpCount) { "第${it + 1}集" }
+            val hongguoSource = SearchResult(
+                id = seriesId,
+                title = entry.title,
+                poster = entry.poster,
+                episodes = initialEps,
+                episodesTitles = initialTitles,
+                source = "hongguo",
+                sourceName = "精品短剧",
+                year = entry.year.ifBlank { "2026" },
+                desc = "精品短剧官方原画，多清晰度极速秒开",
+                typeName = "短剧"
+            )
+            rawResults = listOf(hongguoSource)
+            state = state.copy(sourcesComplete = true)
+
+            // 异步后台拉取真实剧集 vid 列表与精确章节数
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val vids = org.moontechlab.selenetv.hongguo.HongguoStreamResolver.fetchEpisodeVids(seriesId)
+                    if (vids.isNotEmpty()) {
+                        val realEpCount = vids.size
+                        val realEpTitles = List(realEpCount) { "第${it + 1}集" }
+                        val updatedSource = hongguoSource.copy(
+                            episodes = vids,
+                            episodesTitles = realEpTitles
+                        )
+                        withContext(Dispatchers.Main) {
+                            rawResults = listOf(updatedSource)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("DetailScreen", "异步拉取短剧章节异常: ${e.message}")
+                }
+            }
+            return@LaunchedEffect
+        }
+
         when (entry) {
             is DetailEntry.SearchAggregate -> {
                 rawResults = entry.agg.originalResults.filter { !ContentFilterService.shouldFilter(it.typeName) }

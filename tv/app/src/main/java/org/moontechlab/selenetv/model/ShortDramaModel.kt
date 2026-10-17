@@ -36,20 +36,21 @@ data class ShortDrama(
 fun ShortDrama.toVideoInfo(): VideoInfo {
     val realId = if (dramaId.isNotEmpty()) dramaId else id
     val scoreStr = if (score > 0) String.format("%.1f", score) else "9.6"
+    val totalEps = if (episodeCount > 0) episodeCount else 80
     return VideoInfo(
         id = realId,
-        source = "shortdrama",
+        source = "hongguo",
         title = name,
-        sourceName = "短剧专区",
+        sourceName = "精品短剧",
         year = if (updateTime.length >= 4) updateTime.substring(0, 4) else "2026",
         cover = cover,
         index = 0,
-        totalEpisodes = if (episodeCount > 0) episodeCount else 80,
+        totalEpisodes = totalEps,
         playTime = 0L,
         totalTime = 0L,
         saveTime = System.currentTimeMillis(),
         searchTitle = name,
         rate = scoreStr,
-        episodesTitles = null,
+        episodesTitles = List(totalEps) { "第${it + 1}集" },
     )
 }

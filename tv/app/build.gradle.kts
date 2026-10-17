@@ -127,6 +127,7 @@ dependencies {
     implementation("androidx.tv:tv-material:1.1.0-alpha01")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.79")
     implementation(libs.androidx.compose.animation.core)
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation(libs.androidx.navigation.compose)
