@@ -10,7 +10,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.LoadControl
 import coil.ImageLoader
-import org.moontechlab.selenetv.BuildConfig
 import org.moontechlab.selenetv.service.AppDataService
 import org.moontechlab.selenetv.service.UpdateService
 
@@ -18,7 +17,7 @@ import org.moontechlab.selenetv.service.UpdateService
  * 设备内存与性能优化管理器
  *
  * 针对海信电视（Hisense TV / VIDAA）及低内存设备（<= 2GB RAM / 32位芯片 / dalvik heap <= 192M）的专项调优：
- * 1. 海信/低内存机型识别：集成 BuildConfig Flavor 渠道、系统品牌型号、系统 isLowRamDevice 及堆上限综合研判。
+ * 1. 海信/低内存机型识别：集成 Application ID 包名后缀（.hisense 渠道专包）、系统品牌型号、系统 isLowRamDevice 及堆上限综合研判。
  * 2. ExoPlayer 缓冲管控：解决长视频播放 20~30 分钟缓冲累加撑爆内存闪退的根本痛点（12MB 严格上限锁死）。
  * 3. MPV 播放内核缓冲压降：从默认 256MB/32MB 压缩至 24MB/4MB，杜绝 32 位机器 Native 堆外地址空间耗尽。
  * 4. Coil 图片加载熔断：内存占比从默认 25% 压至 10~12%，接管系统 onTrimMemory / onLowMemory，毫秒级释放 Bitmap 并主动触发 GC，防止被系统 LMK 强杀。
@@ -35,8 +34,8 @@ object DeviceMemoryManager {
     /**
      * 判断当前是否为海信设备（包括 Hisense 渠道专包，或在 Hisense 品牌/厂商/型号的设备上运行）
      */
-    fun isHisenseDevice(): Boolean {
-        if (BuildConfig.FLAVOR.equals("hisense", ignoreCase = true)) {
+    fun isHisenseDevice(context: Context? = null): Boolean {
+        if (context != null && context.packageName.contains("hisense", ignoreCase = true)) {
             return true
         }
         return UpdateService.isHisenseDevice()
@@ -47,7 +46,7 @@ object DeviceMemoryManager {
      */
     fun isConstrainedMemoryDevice(context: Context): Boolean {
         // 1. 海信电视（由于系统的低内存杀手策略和较低的 heapgrowthlimit，直接归入受限保护级别）
-        if (isHisenseDevice()) {
+        if (isHisenseDevice(context)) {
             return true
         }
 
@@ -83,7 +82,7 @@ object DeviceMemoryManager {
     @OptIn(UnstableApi::class)
     fun createExoLoadControl(context: Context): LoadControl {
         val constrained = isConstrainedMemoryDevice(context)
-        Log.i(TAG, "createExoLoadControl: isConstrainedMemory=$constrained, isHisense=${isHisenseDevice()}")
+        Log.i(TAG, "createExoLoadControl: isConstrainedMemory=$constrained, isHisense=${isHisenseDevice(context)}")
 
         val minBufferMs = if (constrained) 10_000 else 25_000
         val maxBufferMs = if (constrained) 20_000 else 45_000
@@ -110,7 +109,7 @@ object DeviceMemoryManager {
      */
     fun getMpvCacheConfig(context: Context): MpvCacheConfig {
         val constrained = isConstrainedMemoryDevice(context)
-        Log.i(TAG, "getMpvCacheConfig: isConstrainedMemory=$constrained, isHisense=${isHisenseDevice()}")
+        Log.i(TAG, "getMpvCacheConfig: isConstrainedMemory=$constrained, isHisense=${isHisenseDevice(context)}")
 
         return if (constrained) {
             // 海信/受限机型：缓冲控制在 10s、24MiB 以内，防止 32 位机器 Native 堆外内存耗尽被杀
