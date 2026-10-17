@@ -7,7 +7,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.moontechlab.selenetv.model.ShortDrama
@@ -22,20 +21,27 @@ import org.moontechlab.selenetv.ui.grid.GRID_COLUMNS
 import org.moontechlab.selenetv.ui.grid.GridFilterRow
 import org.moontechlab.selenetv.ui.grid.MediaGridScaffold
 
-private val SHORT_DRAMA_FILTER_OPTIONS = listOf(
-    FilterOption("0", "全部短剧"),
-    FilterOption("101", "爆款热播"),
-    FilterOption("102", "战神逆袭"),
-    FilterOption("103", "甜宠言情"),
-    FilterOption("104", "都市职场"),
-    FilterOption("105", "穿越重生"),
-    FilterOption("106", "AI漫剧"),
+// 100% 对标手机端 short_drama_screen.dart 首行主分类 (真人剧、漫剧、AI剧)
+private val GENRE_FILTER_OPTIONS = listOf(
+    FilterOption("all", "全部"),
+    FilterOption("short_play", "真人剧"),
+    FilterOption("comic_series", "漫剧"),
+    FilterOption("ai_series", "AI剧"),
+)
+
+// 100% 对标手机端 short_drama_screen.dart 次行排行榜单 (总热播榜、真人剧榜、漫剧榜、AI剧榜)
+private val RANK_FILTER_OPTIONS = listOf(
+    FilterOption("all", "全部"),
+    FilterOption("rank_hot", "总热播榜"),
+    FilterOption("rank_real", "真人剧榜"),
+    FilterOption("rank_comic", "漫剧榜"),
+    FilterOption("rank_ai", "AI剧榜"),
 )
 
 private const val HORIZONTAL_PADDING_DP = 58
 
 /**
- * TV 端短剧专区页面
+ * TV 端短剧专区页面 (100% 照搬手机端红果短剧双行分类与官方榜单联动体系)
  */
 @Composable
 fun ShortDramaTab(
@@ -47,20 +53,24 @@ fun ShortDramaTab(
     val configuration = LocalConfiguration.current
     val screenWidthDp = configuration.screenWidthDp.toFloat()
 
-    // 计算网格布局间隙
+    // 计算网格布局间隙 (6 列适配电视横屏)
     val totalCardWidth = GRID_CARD_WIDTH * GRID_COLUMNS
     val totalPadding = HORIZONTAL_PADDING_DP * 2
     val availableForGaps = screenWidthDp - totalCardWidth - totalPadding
     val cardGap = (availableForGaps / (GRID_COLUMNS - 1)).coerceAtLeast(8f).dp
     val horizontalPadding = HORIZONTAL_PADDING_DP.dp
 
-    var selectedCategoryId by remember { mutableStateOf("0") }
+    // 首行主分类 & 次行榜单状态
+    var selectedGenreKey by remember { mutableStateOf("all") }
+    var selectedRankKey by remember { mutableStateOf("all") }
+
     var dramaList by remember { mutableStateOf<List<ShortDrama>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var currentPage by remember { mutableIntStateOf(1) }
 
-    val categoryFocusRequester = remember { FocusRequester() }
+    val genreFocusRequester = remember { FocusRequester() }
+    val rankFocusRequester = remember { FocusRequester() }
     val contentFocusRequester = remember { FocusRequester() }
 
     fun loadData(isInitial: Boolean = false) {
@@ -71,9 +81,9 @@ fun ShortDramaTab(
                 errorMessage = null
             }
             try {
-                val catId = selectedCategoryId.toIntOrNull() ?: 0
-                val result = ShortDramaService.getShortDramaList(
-                    categoryId = catId,
+                val result = ShortDramaService.getUnifiedList(
+                    genreKey = selectedGenreKey,
+                    rankKey = selectedRankKey,
                     page = currentPage,
                     size = 24
                 )
@@ -88,7 +98,7 @@ fun ShortDramaTab(
         }
     }
 
-    LaunchedEffect(selectedCategoryId) {
+    LaunchedEffect(selectedGenreKey, selectedRankKey) {
         loadData(isInitial = true)
     }
 
@@ -101,21 +111,44 @@ fun ShortDramaTab(
             horizontalPadding = horizontalPadding,
             cardGap = cardGap,
             contentFocusRequester = contentFocusRequester,
-            resetKey = selectedCategoryId,
+            resetKey = "${selectedGenreKey}_${selectedRankKey}",
             itemToVideoInfo = { it.toVideoInfo() },
             itemToSource = { VideoCardSource.SHORTDRAMA },
             onItemClick = { drama -> onVideoSelected(drama.toVideoInfo()) },
             onRetry = { loadData(isInitial = true) },
             onLoadMore = { loadData(isInitial = false) },
-            onContentNavigateUp = { categoryFocusRequester.requestFocus() },
+            onContentNavigateUp = { rankFocusRequester.requestFocus() },
             filterSection = {
-                GridFilterRow(label = "题材") {
-                    FilterSelector(
-                        options = SHORT_DRAMA_FILTER_OPTIONS,
-                        selectedKey = selectedCategoryId,
-                        onSelect = { selectedCategoryId = it },
-                        focusRequester = categoryFocusRequester,
-                    )
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    // 首行主分类 (全部 / 真人剧 / 漫剧 / AI剧)
+                    GridFilterRow(label = "分类") {
+                        FilterSelector(
+                            options = GENRE_FILTER_OPTIONS,
+                            selectedKey = selectedGenreKey,
+                            onSelect = { 
+                                selectedGenreKey = it
+                                // 切换主分类时若处于榜单模式，重置榜单为全部
+                                if (selectedRankKey != "all") {
+                                    selectedRankKey = "all"
+                                }
+                            },
+                            focusRequester = genreFocusRequester,
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // 次行排行榜单 (全部 / 总热播榜 / 真人剧榜 / 漫剧榜 / AI剧榜)
+                    GridFilterRow(label = "排行") {
+                        FilterSelector(
+                            options = RANK_FILTER_OPTIONS,
+                            selectedKey = selectedRankKey,
+                            onSelect = { 
+                                selectedRankKey = it
+                            },
+                            focusRequester = rankFocusRequester,
+                        )
+                    }
                 }
             }
         )

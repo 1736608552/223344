@@ -34,6 +34,7 @@ import org.moontechlab.selenetv.service.AppDataService
 import org.moontechlab.selenetv.service.BangumiService
 import org.moontechlab.selenetv.service.DoubanService
 import org.moontechlab.selenetv.service.ShortDramaService
+import org.moontechlab.selenetv.service.TmdbService
 import org.moontechlab.selenetv.ui.TvHeroBanner
 import org.moontechlab.selenetv.ui.TvHeroItem
 import org.moontechlab.selenetv.ui.CardContextMenu
@@ -397,6 +398,44 @@ fun HomeTab(
         list
     }
 
+    var enrichedBannerItems by remember { mutableStateOf<List<TvHeroItem>>(emptyList()) }
+
+    // 异步拉取 TMDB 高清大剧照 (w1280) 与高清大海报 (w780)，升级大屏视觉品质
+    LaunchedEffect(heroBannerItems) {
+        if (heroBannerItems.isEmpty()) {
+            enrichedBannerItems = emptyList()
+            return@LaunchedEffect
+        }
+        enrichedBannerItems = heroBannerItems
+
+        withContext(Dispatchers.IO) {
+            val tmdbKey = AppDataService.getTmdbKeySync()
+            val updated = heroBannerItems.map { item ->
+                if (item.videoInfo.source == "shortdrama" && item.backdropUrl.isNotEmpty()) {
+                    item
+                } else {
+                    val art = runCatching {
+                        TmdbService.resolveArt(
+                            originalTitle = item.title,
+                            year = item.year,
+                            apiKey = tmdbKey,
+                            cache = doubanCacheService
+                        )
+                    }.getOrNull()
+
+                    val newBackdrop = art?.backdropUrl ?: item.backdropUrl
+                    val newPoster = art?.posterUrl ?: item.posterUrl
+                    if (newBackdrop != item.backdropUrl || newPoster != item.posterUrl) {
+                        item.copy(backdropUrl = newBackdrop, posterUrl = newPoster)
+                    } else {
+                        item
+                    }
+                }
+            }
+            enrichedBannerItems = updated
+        }
+    }
+
     // 追踪是否是垂直方向的按键
     var isVerticalNavigation by remember { mutableStateOf(false) }
     
@@ -439,10 +478,11 @@ fun HomeTab(
             // 顶部留出 TabSwitcher 的空间
             Spacer(modifier = Modifier.height(58.dp))
 
-            // 全新设计的 TV 专属现代化沉浸视界幻灯片
-            if (heroBannerItems.isNotEmpty()) {
+            // 全新设计的 TV 专属现代化沉浸视界幻灯片 (优先呈现 TMDB 超清大图)
+            val displayBannerItems = if (enrichedBannerItems.isNotEmpty()) enrichedBannerItems else heroBannerItems
+            if (displayBannerItems.isNotEmpty()) {
                 TvHeroBanner(
-                    items = heroBannerItems,
+                    items = displayBannerItems,
                     onPlayClick = onVideoSelected,
                     onDetailClick = onVideoSelected,
                     modifier = Modifier.padding(bottom = 6.dp)

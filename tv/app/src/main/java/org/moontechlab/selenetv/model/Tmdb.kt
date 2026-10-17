@@ -14,6 +14,7 @@ import kotlinx.serialization.Serializable
 data class TmdbArt(
     val backdropUrl: String? = null,
     val logoUrl: String? = null,
+    val posterUrl: String? = null,
 )
 
 /**

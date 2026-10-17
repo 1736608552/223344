@@ -9,10 +9,11 @@ import kotlinx.serialization.Serializable
 data class ShortDramaCategory(
     val typeId: Int,
     val typeName: String,
+    val key: String = "",
 )
 
 /**
- * 短剧实体数据模型
+ * 短剧实体数据模型 (100% 对齐手机端红果短剧原生模型)
  */
 @Serializable
 data class ShortDrama(

@@ -34,6 +34,7 @@ object TmdbService {
     private const val DEFAULT_IMG_BASE = "https://image.tmdb.org/t/p"
     private const val BACKDROP_SIZE = "w1280"
     private const val LOGO_SIZE = "w500"
+    private const val POSTER_SIZE = "w780"
     private const val TIMEOUT_MS = 15000
 
     private fun getApiBase(): String {
@@ -63,7 +64,7 @@ object TmdbService {
     }
 
     /**
-     * 按 original_title + year 解析 TMDB 剧照/ logo。任一环节失败或无图返回 null。
+     * 按 original_title + year 解析 TMDB 剧照/海报/logo。任一环节失败或无图返回 null。
      * @param apiKey TMDB v3 API Key（用户在设置页填写）。为空直接返回 null。
      * @param cache 复用的磁盘缓存；需已 init（详情页在拉豆瓣详情时已初始化）。
      */
@@ -77,14 +78,14 @@ object TmdbService {
 
         val cacheKey = "${CACHE_PREFIX}_${originalTitle}_$year"
 
-        // 命中缓存（含负缓存）：两字段皆 null 表示「查过没图」，直接返回 null 不再请求
+        // 命中缓存（含负缓存）：三字段皆 null 表示「查过没图」，直接返回 null 不再请求
         val cached = try {
             cache.get(cacheKey) { json.decodeFromString<TmdbArt>(it) }
         } catch (_: Exception) {
             null
         }
         if (cached != null) {
-            return@withContext cached.takeIf { it.backdropUrl != null || it.logoUrl != null }
+            return@withContext cached.takeIf { it.backdropUrl != null || it.logoUrl != null || it.posterUrl != null }
         }
 
         val art = try {
@@ -102,7 +103,7 @@ object TmdbService {
         cache.set(
             cacheKey,
             json.encodeToString(art ?: TmdbArt()),
-            if (art?.backdropUrl != null || art?.logoUrl != null) TTL_HIT else TTL_MISS,
+            if (art?.backdropUrl != null || art?.logoUrl != null || art?.posterUrl != null) TTL_HIT else TTL_MISS,
         )
         art
     }
@@ -231,12 +232,14 @@ object TmdbService {
 
         val backdrops = (root["backdrops"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
         val logos = (root["logos"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
+        val posters = (root["posters"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
 
         val backdropUrl = pickBackdrop(backdrops)?.let { "${getImgBase()}/$BACKDROP_SIZE$it" }
         val logoUrl = pickLogo(logos)?.let { "${getImgBase()}/$LOGO_SIZE$it" }
+        val posterUrl = pickPoster(posters)?.let { "${getImgBase()}/$POSTER_SIZE$it" }
 
-        if (backdropUrl == null && logoUrl == null) return null
-        return TmdbArt(backdropUrl = backdropUrl, logoUrl = logoUrl)
+        if (backdropUrl == null && logoUrl == null && posterUrl == null) return null
+        return TmdbArt(backdropUrl = backdropUrl, logoUrl = logoUrl, posterUrl = posterUrl)
     }
 
     private fun path(o: JsonObject) = o["file_path"]?.jsonPrimitive?.contentOrNull
@@ -247,6 +250,14 @@ object TmdbService {
     private fun pickBackdrop(items: List<JsonObject>): String? {
         val textless = items.filter { lang(it) == null }.maxByOrNull { vote(it) }
         return (textless ?: items.maxByOrNull { vote(it) })?.let { path(it) }
+    }
+
+    /** 海报：中文优先 → 英文 → 其它，各组内取最高分。 */
+    private fun pickPoster(items: List<JsonObject>): String? {
+        val zh = items.filter { lang(it) == "zh" || lang(it) == "cn" }.maxByOrNull { vote(it) }
+        val en = items.filter { lang(it) == "en" }.maxByOrNull { vote(it) }
+        val any = items.maxByOrNull { vote(it) }
+        return (zh ?: en ?: any)?.let { path(it) }
     }
 
     /** logo：中文优先 → 英文 → 其它，各组内取最高分。跳过 .svg（Coil 无法渲染）。 */
