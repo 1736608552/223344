@@ -3804,13 +3804,14 @@ class _PlayerScreenState extends State<PlayerScreen>
   // 改用 M3U8Service 测速 + _stateFromSpeed. 老方法没人调, 留在这里只是 dead code.
   // 如需 HEAD ping fallback, 看 _fallbackHeadPing.
 
-  /// position stream 触发的检查: 距离结尾 < 1.5s 时尝试自动切下一集
+  /// position stream 触发的检查: 仅当真正播完到达末尾 (remainMs <= 100ms 或 position >= duration) 时兜底自动切下一集
+  /// 彻底解决之前由于 1500ms 阈值过大导致视频提前 1~2 秒被掐断切集的缺陷
   void _maybeAutoPlayNext() {
     if (_autoPlayedThisEpisode) return;
     final dur = _currentDuration;
     if (dur <= Duration.zero) return; // 时长还没拿到, 不要误判
     final remainMs = dur.inMilliseconds - _currentPosition.inMilliseconds;
-    if (remainMs > 1500) return; // 还没到结尾附近
+    if (remainMs > 100) return; // 必须真正到达视频末尾才兜底切集
     _autoPlayNextEpisode();
   }
 
@@ -3819,13 +3820,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   ///
   /// v1.0.55: 加 pos + dur 兜底守门
   /// 之前没守门, 走 streams.completed listener 直接调本函数时
-  /// (line 198 `streams.completed.listen((_) { _autoPlayNextEpisode(); })`)
-  /// 不经过 _maybeAutoPlayNext 的 remainMs > 1500 守门, 一发就切
-  /// 用户场景: 播放第2集没看完, 重开第2集 → video open 后 m3u8 源立刻发
-  /// streams.completed=true (直播流 / 解析失败 / seek 到 duration 附近) →
-  /// _autoPlayNextEpisode → 切第3集
-  /// 修法: pos 必须 ≥ dur - 1.5s 才允许切 (跟 _maybeAutoPlayNext 同阈值),
-  ///       dur < 30s 也跳过 (直播流 / 异常源)
+  /// 不经过守门, 一发就切
+  /// 修法: pos 必须接近末尾 (dur - 2500ms) 才允许切, 防止起播阶段误报 completed
   void _autoPlayNextEpisode() {
     final now = DateTime.now().millisecondsSinceEpoch;
     if (_isEpisodeSwitching || _isTransitioningEpisode || _autoPlayedThisEpisode) return;
@@ -3848,11 +3844,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     // 短剧通过 getPlaybackPlan 动态取流与获取解密密钥，非短剧才需校验预填充直链
     if (!isShortDrama && source.episodes[nextIndex].isEmpty) return; // 下一集没 url
 
-    // v1.0.55: 兜底守门 (堵 streams.completed 误触发)
+    // 兜底守门 (堵 streams.completed 误触发)
     final dur = _currentDuration;
     if (dur <= Duration.zero) return; // 时长还没拿到
     if (!isShortDrama && dur < const Duration(seconds: 30)) return; // 传统影视时长太短防异常，短剧不拦截
-    if (_currentPosition < dur - const Duration(milliseconds: 1500)) {
+    if (_currentPosition < dur - const Duration(milliseconds: 2500)) {
       // pos 还没到结尾附近, completed 误触发, 不切
       return;
     }
