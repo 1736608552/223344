@@ -67,6 +67,7 @@ fun RecommendSection(
     onVideoLongClick: ((VideoInfo) -> Unit)? = null,
     firstCardFocusRequester: FocusRequester? = null,
     onNavigateUp: (() -> Unit)? = null,
+    onNavigateDown: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -163,7 +164,7 @@ fun RecommendSection(
                         modifier = Modifier
                             .then(if (index == 0) Modifier.focusRequester(targetFirstFocusRequester) else Modifier)
                             .onPreviewKeyEvent { keyEvent ->
-                                handleVerticalNavigation(keyEvent, listState, coroutineScope, onNavigateUp)
+                                handleVerticalNavigation(keyEvent, listState, coroutineScope, onNavigateUp, onNavigateDown)
                             }
                     )
                 }
@@ -187,7 +188,7 @@ fun RecommendSection(
                         modifier = Modifier
                             .then(if (index == 0) Modifier.focusRequester(targetFirstFocusRequester) else Modifier)
                             .onPreviewKeyEvent { keyEvent ->
-                                handleVerticalNavigation(keyEvent, listState, coroutineScope, onNavigateUp)
+                                handleVerticalNavigation(keyEvent, listState, coroutineScope, onNavigateUp, onNavigateDown)
                             }
                     )
                 }
@@ -249,30 +250,27 @@ private fun SectionErrorState(
 }
 
 /**
- * 处理垂直导航 - 重置水平滚动位置并支持向上回调
+ * 处理垂直导航 - 支持向下与向上跨区块平滑导航
  */
 private fun handleVerticalNavigation(
     keyEvent: KeyEvent,
     listState: LazyListState,
     coroutineScope: kotlinx.coroutines.CoroutineScope,
-    onNavigateUp: (() -> Unit)? = null
+    onNavigateUp: (() -> Unit)? = null,
+    onNavigateDown: (() -> Unit)? = null
 ): Boolean {
     if (keyEvent.type == KeyEventType.KeyDown) {
         when (keyEvent.key) {
             Key.DirectionUp -> {
-                // 垂直向上导航时重置水平滚动位置
-                coroutineScope.launch {
-                    listState.animateScrollToItem(0)
-                }
                 if (onNavigateUp != null) {
                     onNavigateUp.invoke()
                     return true
                 }
             }
             Key.DirectionDown -> {
-                // 垂直向下导航时重置水平滚动位置
-                coroutineScope.launch {
-                    listState.animateScrollToItem(0)
+                if (onNavigateDown != null) {
+                    onNavigateDown.invoke()
+                    return true
                 }
             }
         }

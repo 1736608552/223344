@@ -501,6 +501,11 @@ private fun CinemaActionButton(
     modifier: Modifier = Modifier,
 ) {
     var isFocused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (isFocused) 1.08f else 1.0f,
+        animationSpec = tween(220),
+        label = "btn_scale"
+    )
 
     Surface(
         onClick = onClick,
@@ -510,45 +515,40 @@ private fun CinemaActionButton(
                 onFocusChanged(it.isFocused)
             }
             .graphicsLayer {
-                scaleX = if (isFocused) 1.08f else 1.0f
-                scaleY = if (isFocused) 1.08f else 1.0f
-            },
-        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
+                scaleX = scale
+                scaleY = scale
+            }
+            .then(
+                if (isFocused) {
+                    Modifier.border(2.dp, Color.White, RoundedCornerShape(12.dp))
+                } else {
+                    Modifier.border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                }
+            ),
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
         colors = ClickableSurfaceDefaults.colors(
-            containerColor = if (isPrimary) Color(0xFFFFFFFF) else Color.White.copy(alpha = 0.14f),
-            focusedContainerColor = if (isPrimary) Color(0xFFFFEEEE) else Color.White.copy(alpha = 0.28f)
+            containerColor = if (isPrimary) Color.White.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.12f),
+            focusedContainerColor = Color.White
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
     ) {
         Row(
-            modifier = Modifier
-                .padding(horizontal = 18.dp, vertical = 9.dp)
-                .then(
-                    if (isFocused) {
-                        Modifier.border(2.5.dp, Color(0xFFFF3D00), RoundedCornerShape(10.dp))
-                    } else {
-                        Modifier.border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
-                    }
-                ),
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = text,
-                tint = if (isPrimary) {
-                    if (isFocused) Color(0xFFD50000) else Color.Black
-                } else Color.White,
-                modifier = Modifier.size(18.dp)
+                tint = if (isFocused) Color(0xFF111111) else Color.White,
+                modifier = Modifier.size(19.dp)
             )
-            Spacer(modifier = Modifier.width(7.dp))
+            Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = text,
-                color = if (isPrimary) {
-                    if (isFocused) Color(0xFFD50000) else Color.Black
-                } else Color.White,
+                color = if (isFocused) Color(0xFF111111) else Color.White,
                 fontSize = 14.sp,
-                fontWeight = FontWeight.ExtraBold
+                fontWeight = FontWeight.Bold
             )
         }
     }

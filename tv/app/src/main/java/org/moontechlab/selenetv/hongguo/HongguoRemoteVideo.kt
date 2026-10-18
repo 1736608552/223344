@@ -96,7 +96,7 @@ class HongguoRemoteVideo(
     }
 
     companion object {
-        private const val CHUNK_SIZE = 2 * 1024 * 1024 // 2MB 高性能滑动缓冲块
+        private const val CHUNK_SIZE = 2560 * 1024 // 2.5MB 高吞吐预拉取滑动块
     }
 
     private class DecryptedChunk(
@@ -113,6 +113,39 @@ class HongguoRemoteVideo(
 
     @Volatile
     private var currentChunk: DecryptedChunk? = null
+
+    @Volatile
+    private var nextChunk: DecryptedChunk? = null
+
+    @Volatile
+    private var prefetchingStart: Long = -1L
+
+    private val prefetchExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "HongguoPrefetch").apply { isDaemon = true }
+    }
+
+    private fun triggerPrefetchNext(nextStart: Long) {
+        if (closed || nextStart >= total || nextStart == prefetchingStart) return
+        val existing = nextChunk
+        if (existing != null && existing.start == nextStart) return
+
+        prefetchingStart = nextStart
+        prefetchExecutor.execute {
+            if (closed || nextStart >= total) return@execute
+            try {
+                val pullEnd = minOf(total, nextStart + CHUNK_SIZE)
+                val raw = range(nextStart, pullEnd - 1).bytes
+                val decrypted = MediaCrypto.decrypt(raw, nextStart, key, prepared)
+                if (!closed) {
+                    nextChunk = DecryptedChunk(nextStart, decrypted)
+                }
+            } catch (_: Throwable) {
+                // 预取失败允许主线程后续平滑重试
+            } finally {
+                prefetchingStart = -1L
+            }
+        }
+    }
 
     @Synchronized
     fun prepare(): HongguoRemoteVideo {
@@ -151,7 +184,7 @@ class HongguoRemoteVideo(
     }
 
     /**
-     * 高速流式数据读取：双级高速内存缓存（头部常驻 + 2MB 滑动窗口），99% 请求零网络与零加解密瞬时返回
+     * 高速流式数据读取：头部常驻 + 双级异步流水线预取（主块常驻 + 下一块后台预取），消除任何网络等待，高帧率畅播
      */
     fun read(start: Long, length: Int): ByteArray {
         require(length in 1..8 * 1024 * 1024 && start >= 0)
@@ -173,21 +206,46 @@ class HongguoRemoteVideo(
             return headBytes + tailBytes
         }
 
-        // 2. 检查 2MB 滑动窗口缓存，命中则零 IO、零解密瞬时返回
-        val chunk = currentChunk
-        if (chunk != null && chunk.contains(start, reqEnd)) {
-            val offsetInChunk = (start - chunk.start).toInt()
-            return chunk.data.copyOfRange(offsetInChunk, offsetInChunk + reqLen)
+        // 2. 检查当前主块高速缓存
+        val cur = currentChunk
+        if (cur != null && cur.contains(start, reqEnd)) {
+            // 当主块消耗超过 30% 时，积极触发下一块后台预取
+            if (start - cur.start >= cur.data.size * 0.3f && cur.end < total) {
+                triggerPrefetchNext(cur.end)
+            }
+            val offsetInChunk = (start - cur.start).toInt()
+            return cur.data.copyOfRange(offsetInChunk, offsetInChunk + reqLen)
         }
 
-        // 3. 缓存未命中（顺序跨块或拖动 Seek）：拉取 2MB 大块并解密存入高速缓存
+        // 3. 检查预取缓冲区（若已命中，瞬时晋升为当前主块，实现 0ms 停顿滑接）
+        val nxt = nextChunk
+        if (nxt != null && nxt.contains(start, reqEnd)) {
+            currentChunk = nxt
+            nextChunk = null
+            if (nxt.end < total) {
+                triggerPrefetchNext(nxt.end)
+            }
+            val offsetInChunk = (start - nxt.start).toInt()
+            return nxt.data.copyOfRange(offsetInChunk, offsetInChunk + reqLen)
+        }
+
+        // 4. 缓存未命中（跨块拖拽 Seek 等）：双重校验锁拉取当前块，并立即启动下一块异步预取
         synchronized(this) {
             if (closed) throw IOException("短剧播放请求已取消")
-            // 双重校验锁（DCL）
-            val doubleCheckChunk = currentChunk
-            if (doubleCheckChunk != null && doubleCheckChunk.contains(start, reqEnd)) {
-                val offsetInChunk = (start - doubleCheckChunk.start).toInt()
-                return doubleCheckChunk.data.copyOfRange(offsetInChunk, offsetInChunk + reqLen)
+            val doubleCur = currentChunk
+            if (doubleCur != null && doubleCur.contains(start, reqEnd)) {
+                val offsetInChunk = (start - doubleCur.start).toInt()
+                return doubleCur.data.copyOfRange(offsetInChunk, offsetInChunk + reqLen)
+            }
+            val doubleNxt = nextChunk
+            if (doubleNxt != null && doubleNxt.contains(start, reqEnd)) {
+                currentChunk = doubleNxt
+                nextChunk = null
+                if (doubleNxt.end < total) {
+                    triggerPrefetchNext(doubleNxt.end)
+                }
+                val offsetInChunk = (start - doubleNxt.start).toInt()
+                return doubleNxt.data.copyOfRange(offsetInChunk, offsetInChunk + reqLen)
             }
 
             val pullStart = start
@@ -197,6 +255,11 @@ class HongguoRemoteVideo(
             val decrypted = MediaCrypto.decrypt(raw, pullStart, key, prepared)
             val newChunk = DecryptedChunk(pullStart, decrypted)
             currentChunk = newChunk
+
+            // 立即触发下一块预取
+            if (newChunk.end < total) {
+                triggerPrefetchNext(newChunk.end)
+            }
 
             val returnLen = minOf(reqLen, decrypted.size)
             return decrypted.copyOfRange(0, returnLen)
@@ -209,8 +272,10 @@ class HongguoRemoteVideo(
             calls.toList().forEach { runCatching { it.cancel() } }
             calls.clear()
             currentChunk = null
+            nextChunk = null
             decryptedPrefix = byteArrayOf()
             prefix = byteArrayOf()
+            runCatching { prefetchExecutor.shutdownNow() }
         }
     }
 }

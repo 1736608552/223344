@@ -443,43 +443,49 @@ fun HomeTab(
         }
     }
 
-    // 追踪是否是垂直方向的按键
-    var isVerticalNavigation by remember { mutableStateOf(false) }
-    
-    // 根据按键方向决定是否允许垂直滚动
-    val directionalBringIntoViewSpec = remember(isVerticalNavigation) {
+    // 各推荐横轴专属 FocusRequester，构建无缝垂直焦点链路
+    val playRecordsFocusRequester = remember { FocusRequester() }
+    val favoritesFocusRequester = remember { FocusRequester() }
+    val hotMoviesFocusRequester = remember { FocusRequester() }
+    val hotShortDramasFocusRequester = remember { FocusRequester() }
+    val hotTvShowsFocusRequester = remember { FocusRequester() }
+    val bangumiFocusRequester = remember { FocusRequester() }
+    val hotShowsFocusRequester = remember { FocusRequester() }
+
+    // 智能平滑视口滚动规范：横向切卡片时视口稳如泰山，纵向换行时平滑将卡片带入最佳黄金浏览区
+    val tvBringIntoViewSpec = remember {
         object : BringIntoViewSpec {
             override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
-                // 只有垂直导航时才允许滚动
-                if (!isVerticalNavigation) return 0f
-                
-                // 将聚焦项滚动到正中位置
-                return offset + (size / 2f) - (containerSize / 2f)
+                val topThreshold = 68f
+                val bottomThreshold = containerSize - 40f
+                val itemTop = offset
+                val itemBottom = offset + size
+
+                // 若目标已经在舒适可视区内，禁止垂直滚动（彻底消解左右换卡片时的上下微晃）
+                if (itemTop >= topThreshold && itemBottom <= bottomThreshold) {
+                    return 0f
+                }
+                // 向下导航：平滑将下一行滚入视口中上方（约 32% 位置）
+                if (itemBottom > bottomThreshold) {
+                    return itemTop - (containerSize * 0.32f)
+                }
+                // 向上导航：平滑回滚至顶部边距
+                if (itemTop < topThreshold) {
+                    return itemTop - topThreshold
+                }
+                return 0f
             }
         }
     }
-    
+
     CompositionLocalProvider(
-        androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides directionalBringIntoViewSpec
+        androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides tvBringIntoViewSpec
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(scrollState)
                 .focusGroup()
-                .onPreviewKeyEvent { keyEvent ->
-                    if (keyEvent.type == KeyEventType.KeyDown) {
-                        when (keyEvent.key) {
-                            Key.DirectionUp, Key.DirectionDown -> {
-                                isVerticalNavigation = true
-                            }
-                            Key.DirectionLeft, Key.DirectionRight -> {
-                                isVerticalNavigation = false
-                            }
-                        }
-                    }
-                    false // 不消费事件
-                }
         ) {
             // 顶部留出 TabSwitcher 的空间
             Spacer(modifier = Modifier.height(58.dp))
@@ -488,15 +494,17 @@ fun HomeTab(
             val displayBannerItems = if (enrichedBannerItems.isNotEmpty()) enrichedBannerItems else heroBannerItems
             val hasBanner = displayBannerItems.isNotEmpty()
 
-            // 确定首个展示的卡片横轴（用于与 Banner 或顶部 Header 形成焦点回路）
+            // 确定各区块的显隐与首个内容行焦点目标
             val showPlayRecords = isLoggedIn && (playRecords.isNotEmpty() || isLoadingPlayRecords || errorPlayRecords != null)
             val showFavorites = isLoggedIn && (favorites.isNotEmpty() || isLoadingFavorites || errorFavorites != null)
-            val isFirstSectionPlayRecords = showPlayRecords
-            val isFirstSectionFavorites = !showPlayRecords && showFavorites
-            val isFirstSectionHotMovies = !showPlayRecords && !showFavorites
+            val firstContentRequester = when {
+                showPlayRecords -> playRecordsFocusRequester
+                showFavorites -> favoritesFocusRequester
+                else -> hotMoviesFocusRequester
+            }
 
-            // 首行卡片向上导航：有 banner 回到 banner 的立即播放；无 banner 直达顶部 TabSwitcher
-            val onNavigateUpFromFirstSection: () -> Unit = {
+            // 向上直达 Banner 或顶部导航栏
+            val navigateUpToBannerOrHeader: () -> Unit = {
                 if (hasBanner) {
                     try { focusRequester.requestFocus() } catch (_: Exception) {}
                 } else {
@@ -512,13 +520,13 @@ fun HomeTab(
                     bannerFocusRequester = focusRequester,
                     onNavigateUp = onNavigateUpToHeader,
                     onNavigateDown = {
-                        try { firstContentFocusRequester.requestFocus() } catch (_: Exception) {}
+                        try { firstContentRequester.requestFocus() } catch (_: Exception) {}
                     },
                     modifier = Modifier.padding(bottom = 6.dp)
                 )
             }
             
-            // 播放历史 - 仅登录后、且有数据/加载中/有错误时显示（#4 未登录隐藏）
+            // 播放历史 - 仅登录后、且有数据/加载中/有错误时显示
             if (showPlayRecords) {
                 RecommendSection(
                     title = "继续观看",
@@ -526,10 +534,17 @@ fun HomeTab(
                     from = VideoCardSource.PLAYRECORD,
                     isLoading = isLoadingPlayRecords,
                     errorMessage = errorPlayRecords,
-                    firstCardFocusRequester = if (isFirstSectionPlayRecords) {
-                        if (!hasBanner) focusRequester else firstContentFocusRequester
-                    } else null,
-                    onNavigateUp = if (isFirstSectionPlayRecords) onNavigateUpFromFirstSection else null,
+                    firstCardFocusRequester = playRecordsFocusRequester,
+                    onNavigateUp = navigateUpToBannerOrHeader,
+                    onNavigateDown = {
+                        try {
+                            if (showFavorites) {
+                                favoritesFocusRequester.requestFocus()
+                            } else {
+                                hotMoviesFocusRequester.requestFocus()
+                            }
+                        } catch (_: Exception) {}
+                    },
                     onRetry = { loadPlayRecordsAndFavorites() },
                     onVideoClick = onVideoSelected,
                     onVideoLongClick = { video ->
@@ -540,7 +555,7 @@ fun HomeTab(
                 )
             }
 
-            // 收藏夹 - 仅登录后、且有数据/加载中/有错误时显示（#4 未登录隐藏）
+            // 收藏夹 - 仅登录后、且有数据/加载中/有错误时显示
             if (showFavorites) {
                 RecommendSection(
                     title = "我的收藏",
@@ -548,10 +563,21 @@ fun HomeTab(
                     from = VideoCardSource.FAVORITE,
                     isLoading = isLoadingFavorites,
                     errorMessage = errorFavorites,
-                    firstCardFocusRequester = if (isFirstSectionFavorites) {
-                        if (!hasBanner) focusRequester else firstContentFocusRequester
-                    } else null,
-                    onNavigateUp = if (isFirstSectionFavorites) onNavigateUpFromFirstSection else null,
+                    firstCardFocusRequester = favoritesFocusRequester,
+                    onNavigateUp = {
+                        try {
+                            if (showPlayRecords) {
+                                playRecordsFocusRequester.requestFocus()
+                            } else if (hasBanner) {
+                                focusRequester.requestFocus()
+                            } else {
+                                onNavigateUpToHeader?.invoke()
+                            }
+                        } catch (_: Exception) {}
+                    },
+                    onNavigateDown = {
+                        try { hotMoviesFocusRequester.requestFocus() } catch (_: Exception) {}
+                    },
                     onRetry = { loadPlayRecordsAndFavorites() },
                     onVideoClick = onVideoSelected,
                     onVideoLongClick = { video ->
@@ -568,10 +594,23 @@ fun HomeTab(
                 from = VideoCardSource.DOUBAN,
                 isLoading = isLoadingMovies,
                 errorMessage = errorMovies,
-                firstCardFocusRequester = if (isFirstSectionHotMovies) {
-                    if (!hasBanner) focusRequester else firstContentFocusRequester
-                } else null,
-                onNavigateUp = if (isFirstSectionHotMovies) onNavigateUpFromFirstSection else null,
+                firstCardFocusRequester = hotMoviesFocusRequester,
+                onNavigateUp = {
+                    try {
+                        if (showFavorites) {
+                            favoritesFocusRequester.requestFocus()
+                        } else if (showPlayRecords) {
+                            playRecordsFocusRequester.requestFocus()
+                        } else if (hasBanner) {
+                            focusRequester.requestFocus()
+                        } else {
+                            onNavigateUpToHeader?.invoke()
+                        }
+                    } catch (_: Exception) {}
+                },
+                onNavigateDown = {
+                    try { hotShortDramasFocusRequester.requestFocus() } catch (_: Exception) {}
+                },
                 onRetry = { loadHotMovies() },
                 onVideoClick = onVideoSelected
             )
@@ -583,6 +622,13 @@ fun HomeTab(
                 from = VideoCardSource.SHORTDRAMA,
                 isLoading = isLoadingShortDramas,
                 errorMessage = errorShortDramas,
+                firstCardFocusRequester = hotShortDramasFocusRequester,
+                onNavigateUp = {
+                    try { hotMoviesFocusRequester.requestFocus() } catch (_: Exception) {}
+                },
+                onNavigateDown = {
+                    try { hotTvShowsFocusRequester.requestFocus() } catch (_: Exception) {}
+                },
                 onRetry = { loadHotShortDramas() },
                 onVideoClick = onVideoSelected
             )
@@ -593,6 +639,13 @@ fun HomeTab(
                 from = VideoCardSource.DOUBAN,
                 isLoading = isLoadingTvShows,
                 errorMessage = errorTvShows,
+                firstCardFocusRequester = hotTvShowsFocusRequester,
+                onNavigateUp = {
+                    try { hotShortDramasFocusRequester.requestFocus() } catch (_: Exception) {}
+                },
+                onNavigateDown = {
+                    try { bangumiFocusRequester.requestFocus() } catch (_: Exception) {}
+                },
                 onRetry = { loadHotTvShows() },
                 onVideoClick = onVideoSelected
             )
@@ -603,6 +656,13 @@ fun HomeTab(
                 from = VideoCardSource.BANGUMI,
                 isLoading = isLoadingBangumi,
                 errorMessage = errorBangumi,
+                firstCardFocusRequester = bangumiFocusRequester,
+                onNavigateUp = {
+                    try { hotTvShowsFocusRequester.requestFocus() } catch (_: Exception) {}
+                },
+                onNavigateDown = {
+                    try { hotShowsFocusRequester.requestFocus() } catch (_: Exception) {}
+                },
                 onRetry = { loadBangumi() },
                 onVideoClick = onVideoSelected
             )
@@ -613,6 +673,11 @@ fun HomeTab(
                 from = VideoCardSource.DOUBAN,
                 isLoading = isLoadingShows,
                 errorMessage = errorShows,
+                firstCardFocusRequester = hotShowsFocusRequester,
+                onNavigateUp = {
+                    try { bangumiFocusRequester.requestFocus() } catch (_: Exception) {}
+                },
+                onNavigateDown = null,
                 onRetry = { loadHotShows() },
                 onVideoClick = onVideoSelected
             )
