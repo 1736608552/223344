@@ -111,18 +111,20 @@ fun TabSwitcher(
         }
     }
     
-    // 应用启动时，焦点默认在当前激活的标签上（多阶延迟尝试，保障首帧稳定获焦）
+    // 应用启动时，焦点默认在当前激活的标签上（持续巡检直到获焦，保障首帧稳定获焦）
     LaunchedEffect(selectedTabId) {
         val selectedIndex = tabs.indexOfFirst { it.id == selectedTabId }
         if (selectedIndex >= 0) {
             val requester = focusRequesters[selectedIndex]
-            try { requester.requestFocus() } catch (_: Exception) {}
-            // 阶梯重试：50ms, 120ms, 250ms, 500ms
-            for (delayMs in listOf(50L, 120L, 250L, 500L)) {
-                delay(delayMs)
-                if (focusedTabId == null) {
-                    try { requester.requestFocus() } catch (_: Exception) {}
-                }
+            // 在电视端，系统窗口获焦可能有较长动画延迟（如海信电视冷启动约 800ms~1500ms）
+            // 采用持久巡检重试：前 1 秒每 60ms 重试一次，后续每 150ms 重试一次，最长重试 4 秒
+            var attempts = 0
+            while (focusedTabId == null && attempts < 35) {
+                try {
+                    requester.requestFocus()
+                } catch (_: Exception) {}
+                delay(if (attempts < 12) 60L else 150L)
+                attempts++
             }
         }
     }
@@ -186,7 +188,7 @@ fun TabSwitcher(
                         } catch (_: Exception) {}
                     },
                     onNavigateDown = {
-                        onNavigateDown(selectedTabId)
+                        onNavigateDown(focusedTabId ?: selectedTabId)
                     },
                     onBackPressed = {
                         // 在标签栏按返回键时，如果当前不是首页，则自动切换到首页标签
@@ -242,26 +244,13 @@ private fun TabButton(
     val contentColor = if (isFocused) Color(0xFF0a0a0a) else Color.White
     
     Box(
-        modifier = Modifier
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                onTabClick()
-            }
-            .padding(vertical = 4.dp),
+        modifier = Modifier.padding(vertical = 4.dp),
         contentAlignment = Alignment.Center
     ) {
         Surface(
             onClick = onTabClick,
             modifier = Modifier
                 .height(31.dp)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) {
-                    onTabClick()
-                }
                 .focusRequester(focusRequester)
                 .onFocusChanged { focusState ->
                     isFocused = focusState.isFocused
@@ -274,11 +263,12 @@ private fun TabButton(
                 .onPreviewKeyEvent { keyEvent ->
                     if (keyEvent.type == KeyEventType.KeyDown) {
                         when (keyEvent.key) {
-                            // 下方向键：移动到内容区域（切换期间锁定）
+                            // 下方向键：移动到内容区域（如聚焦Tab尚未生效立即触发切换）
                             Key.DirectionDown, Key.NavigateNext -> {
-                                if (!isSwitching) {
-                                    onNavigateDown()
+                                if (focusedTabId != null && focusedTabId != selectedTabId) {
+                                    onTabSelected(focusedTabId!!)
                                 }
+                                onNavigateDown()
                                 true
                             }
                             // 上方向键：边界陷阱，不允许向上移出（切换期间也锁定）
@@ -310,12 +300,6 @@ private fun TabButton(
         ) {
             Row(
                 modifier = Modifier
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) {
-                        onTabClick()
-                    }
                     .padding(
                         horizontal = if (tab.isIconOnly) 10.dp else 13.dp,
                         vertical = 0.dp

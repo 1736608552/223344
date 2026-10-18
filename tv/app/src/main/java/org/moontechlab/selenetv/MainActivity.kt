@@ -89,6 +89,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            window.decorView.post {
+                window.decorView.requestFocus()
+            }
+        }
+    }
+
     // 返回键完全自管（修复真机播放页返回失效，同时杜绝重复分发）：
     // 历史上播放页覆盖层会吞掉 BACK 的 ACTION_DOWN，致使 Activity 未 startTracking、抬起时系统不触发
     // onBackPressed，BackHandler 收不到返回。早期改为「super 未处理(返回 false)则补发 onBackPressed」，
@@ -106,6 +115,21 @@ class MainActivity : ComponentActivity() {
             }
             return true
         }
+
+        // TV 遥控器 D-pad 按键安全保底：在方向键或确定键按下时，若 View 树未获焦，强行唤醒 DecorView 获焦分发
+        if (event.keyCode in listOf(
+                KeyEvent.KEYCODE_DPAD_UP,
+                KeyEvent.KEYCODE_DPAD_DOWN,
+                KeyEvent.KEYCODE_DPAD_LEFT,
+                KeyEvent.KEYCODE_DPAD_RIGHT,
+                KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER
+            )) {
+            if (currentFocus == null) {
+                window.decorView.requestFocus()
+            }
+        }
+
         return super.dispatchKeyEvent(event)
     }
 
