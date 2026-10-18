@@ -32,6 +32,7 @@ object HongguoStreamResolver {
 
         // 抖动重试最多 2 次，规避服务端偶发拒签或网络波动
         for (attempt in 0..1) {
+            try {
                 val signed = try {
                     signer.signStandard(
                         "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/video_detail/v1/",
@@ -271,6 +272,7 @@ object HongguoStreamResolver {
 
         // 优先尝试官方 App 预加载高清端点 (带抖动重试最多 2 次)
         for (attempt in 0..1) {
+            try {
                 val signed = try {
                     signer.signStandard("https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/", VendorConstants.device, payload)
                 } catch (_: Exception) {
