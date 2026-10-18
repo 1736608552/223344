@@ -80,6 +80,7 @@ fun SpeedPill(
     scrubberFocus: FocusRequester,
     upTarget: FocusRequester? = null,
     leftTarget: FocusRequester? = null,
+    rightTarget: FocusRequester? = null,
     modifier: Modifier = Modifier,
 ) {
     var focused by remember { mutableStateOf(false) }
@@ -99,7 +100,7 @@ fun SpeedPill(
                 down = scrubberFocus
                 up = upTarget ?: FocusRequester.Cancel
                 left = leftTarget ?: FocusRequester.Cancel
-                right = FocusRequester.Cancel
+                right = rightTarget ?: FocusRequester.Cancel
             },
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
         shape = ClickableSurfaceDefaults.shape(shape = shape),
@@ -270,3 +271,61 @@ private fun SpeedPopupItem(
         }
     }
 }
+
+/**
+ * 解码模式药丸胶囊：展示当前「硬解」或「软解」，点击直接一键切换并记住配置
+ */
+@Composable
+fun DecodeModePill(
+    currentMode: org.moontechlab.selenetv.service.AppDataService.DecodeMode,
+    onClick: () -> Unit,
+    focusRequester: FocusRequester,
+    scrubberFocus: FocusRequester,
+    leftTarget: FocusRequester? = null,
+    upTarget: FocusRequester? = null,
+    modifier: Modifier = Modifier,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (focused) 1.04f else 1f,
+        animationSpec = spring(dampingRatio = 0.6f, stiffness = 400f),
+        label = "decode_pill_scale",
+    )
+    val shape = RoundedCornerShape(percent = 50)
+    Surface(
+        onClick = onClick,
+        modifier = modifier
+            .focusRequester(focusRequester)
+            .onFocusChanged { focused = it.isFocused }
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .focusProperties {
+                down = scrubberFocus
+                up = upTarget ?: FocusRequester.Cancel
+                left = leftTarget ?: FocusRequester.Cancel
+                right = FocusRequester.Cancel
+            },
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+        shape = ClickableSurfaceDefaults.shape(shape = shape),
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = Color.Transparent,
+            focusedContainerColor = Color.White,
+        ),
+        border = ClickableSurfaceDefaults.border(
+            border = Border(
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f)),
+                shape = shape,
+            ),
+            focusedBorder = Border(BorderStroke(0.dp, Color.Transparent), shape = shape),
+        ),
+    ) {
+        Box(modifier = Modifier.padding(horizontal = 11.dp, vertical = 3.dp)) {
+            Text(
+                text = currentMode.displayName,
+                color = if (focused) Color(0xFF0A0A0A) else Color.White.copy(alpha = 0.85f),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.W600,
+            )
+        }
+    }
+}
+

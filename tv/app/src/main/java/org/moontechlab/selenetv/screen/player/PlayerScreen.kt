@@ -299,8 +299,10 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                         vids.getOrNull(index) ?: ""
                     }
                     if (vid.isNotEmpty()) {
+                        val activeDecode = org.moontechlab.selenetv.service.AppDataService.getDecodeModeSync()
+                        val maxQ = if (activeDecode == org.moontechlab.selenetv.service.AppDataService.DecodeMode.SOFTWARE) 720 else 1080
                         val result = withContext(Dispatchers.IO) {
-                            org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid)
+                            org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ)
                         }
                         resolvedUrl = result["url"] as? String ?: ""
                         decryptionKey = result["decryptionKey"] as? String ?: ""
@@ -344,6 +346,8 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     val panelTabFocus = remember { FocusRequester() }
     val speedPillFocus = remember { FocusRequester() }
     val aspectPillFocus = remember { FocusRequester() }
+    val decodePillFocus = remember { FocusRequester() }
+    var currentDecodeModeState by remember { mutableStateOf(org.moontechlab.selenetv.service.AppDataService.getDecodeModeSync()) }
     val danmakuPillFocus = remember { FocusRequester() }   // 弹幕开关段（主）
     val danmakuGearFocus = remember { FocusRequester() }   // 弹幕齿轮段（进设置）
     val skipFocus = remember { FocusRequester() }
@@ -907,6 +911,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                                 scrubberFocus = scrubberFocus,
                                 upTarget = if (activeSegment != null) skipFocus else null,
                                 leftTarget = aspectPillFocus,
+                                rightTarget = decodePillFocus,
                             )
                             // SpeedPopup 内部用 MutableTransitionState 跟踪进出态，
                             // 退场动画期间自行续命挂载——不再用外层 if 直接拆装
@@ -919,6 +924,32 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                                     wake()
                                 },
                                 onDismiss = { speedPopupOpen = false },
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box {
+                            DecodeModePill(
+                                currentMode = currentDecodeModeState,
+                                onClick = {
+                                    val next = if (currentDecodeModeState == org.moontechlab.selenetv.service.AppDataService.DecodeMode.HARDWARE) {
+                                        org.moontechlab.selenetv.service.AppDataService.DecodeMode.SOFTWARE
+                                    } else {
+                                        org.moontechlab.selenetv.service.AppDataService.DecodeMode.HARDWARE
+                                    }
+                                    currentDecodeModeState = next
+                                    scope.launch {
+                                        org.moontechlab.selenetv.service.AppDataService.saveDecodeMode(next.displayName)
+                                        withContext(Dispatchers.Main) {
+                                            org.moontechlab.selenetv.ui.MoonToast.show("已切换为${next.displayName}，重新加载中")
+                                        }
+                                        playEpisode(currentEpisode, positionMs)
+                                    }
+                                    wake()
+                                },
+                                focusRequester = decodePillFocus,
+                                scrubberFocus = scrubberFocus,
+                                leftTarget = speedPillFocus,
+                                upTarget = if (activeSegment != null) skipFocus else null,
                             )
                         }
                     }

@@ -180,13 +180,28 @@ class MpvPlayerController(
                 mpv.setPropertyString("demuxer-lavf-probesize", "1048576")
                 mpv.setPropertyString("force-seekable", "yes")
                 mpv.setPropertyString("hr-seek", "default")
-                // 关键短剧解密播放：开启机顶盒硬件 VPU 解码加速，杜绝低端 4核 CPU 软解 1080P 卡死
-                if (android.os.Build.VERSION.SDK_INT >= 26) {
-                    mpv.setPropertyString("hwdec", "mediacodec,mediacodec-copy")
-                } else {
-                    mpv.setPropertyString("hwdec", "mediacodec-copy")
+                // 核心：严格遵循用户设置中选择的解码方式 (硬解 / 软解)
+                val activeDecodeMode = org.moontechlab.selenetv.service.AppDataService.getDecodeModeSync()
+                when (activeDecodeMode) {
+                    org.moontechlab.selenetv.service.AppDataService.DecodeMode.HARDWARE -> {
+                        // 硬解模式：优先 mediacodec-copy（规避机顶盒 Direct Surface 零拷贝竖屏黑屏故障），再回退 mediacodec
+                        if (android.os.Build.VERSION.SDK_INT >= 26) {
+                            mpv.setPropertyString("hwdec", "mediacodec-copy,mediacodec")
+                        } else {
+                            mpv.setPropertyString("hwdec", "mediacodec-copy")
+                        }
+                        mpv.setPropertyString("hwdec-codecs", "all")
+                    }
+                    org.moontechlab.selenetv.service.AppDataService.DecodeMode.SOFTWARE -> {
+                        // 软解模式：走纯 CPU 软解，100% 杜绝机顶盒硬件黑屏
+                        mpv.setPropertyString("hwdec", "no")
+                        // 极致多核软解性能调优：开启多线程并发与快速解码算法，彻底杜绝慢放与掉帧
+                        val cpuCores = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+                        mpv.setPropertyString("vd-lavc-threads", cpuCores.toString())
+                        mpv.setPropertyString("vd-lavc-fast", "yes")
+                        mpv.setPropertyString("vd-lavc-skiploopfilter", "nonkey")
+                    }
                 }
-                mpv.setPropertyString("hwdec-codecs", "all")
                 // 核心音画同步保障：必须设为 vo 允许丢弃过期视频帧以严格追赶音频时钟，杜绝画面慢放与音画失步
                 mpv.setPropertyString("framedrop", "vo")
                 mpv.setPropertyString("video-sync", "audio")
@@ -199,15 +214,22 @@ class MpvPlayerController(
         } else {
             try {
                 mpv.setPropertyString("demuxer-lavf-o", "")
-                when (currentDecodeMode) {
+                val activeDecodeMode = org.moontechlab.selenetv.service.AppDataService.getDecodeModeSync()
+                when (activeDecodeMode) {
                     AppDataService.DecodeMode.HARDWARE -> {
                         if (android.os.Build.VERSION.SDK_INT >= 26) {
-                            mpv.setPropertyString("hwdec", "mediacodec,mediacodec-copy")
+                            mpv.setPropertyString("hwdec", "mediacodec-copy,mediacodec")
                         } else {
                             mpv.setPropertyString("hwdec", "mediacodec-copy")
                         }
+                        mpv.setPropertyString("hwdec-codecs", "h264,hevc,vp9,av1")
                     }
-                    AppDataService.DecodeMode.SOFTWARE -> mpv.setPropertyString("hwdec", "no")
+                    AppDataService.DecodeMode.SOFTWARE -> {
+                        mpv.setPropertyString("hwdec", "no")
+                        val cpuCores = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+                        mpv.setPropertyString("vd-lavc-threads", cpuCores.toString())
+                        mpv.setPropertyString("vd-lavc-fast", "yes")
+                    }
                 }
             } catch (_: Exception) {}
         }
