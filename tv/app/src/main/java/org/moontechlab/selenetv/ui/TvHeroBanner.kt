@@ -106,7 +106,7 @@ fun TvHeroBanner(
         modifier = modifier
             .fillMaxWidth()
             .height(350.dp)
-            .background(Color(0xFF0F0F0F))
+            .background(Color.Black)
             .onFocusChanged { focusState ->
                 isBannerFocused = focusState.hasFocus
             }
@@ -131,10 +131,10 @@ fun TvHeroBanner(
                         alignment = Alignment.Center,
                         modifier = Modifier
                             .fillMaxSize()
-                            .graphicsLayer { alpha = 0.22f }
+                            .graphicsLayer { alpha = 0.16f }
                     )
                 } else {
-                    // 横版电影模式背景：靠右铺满 75% 区域
+                    // 横版电影模式背景：靠右铺满 85% 区域
                     Box(
                         modifier = Modifier
                             .fillMaxHeight()
@@ -153,68 +153,115 @@ fun TvHeroBanner(
             }
         }
 
-        // 2. 电影级专业遮罩层：
-        // (A) 左侧从纯黑到透明的横向遮罩（确保文字在任何明暗剧照下均 100% 清晰）
+        // 2. 电影级专业三重融合遮罩层：
+        // (A) 左侧从纯黑到透明的横向遮罩（确保文字在任何明暗剧照下均 100% 清晰，且左边缘完美融入黑色底板）
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     Brush.horizontalGradient(
-                        0.0f to Color(0xFF0F0F0F),
-                        0.38f to Color(0xFF0F0F0F),
-                        0.58f to Color(0xE60F0F0F),
-                        0.80f to Color(0x660F0F0F),
+                        0.0f to Color.Black,
+                        0.38f to Color.Black,
+                        0.58f to Color.Black.copy(alpha = 0.90f),
+                        0.80f to Color.Black.copy(alpha = 0.40f),
                         1.0f to Color.Transparent,
                     )
                 )
         )
 
-        // (B) 底部向纯黑背景无缝融化（与下方推荐行自然交融）
+        // (B) 顶部向纯黑平滑羽化过渡（彻底消除顶部导航栏下方的横向切线与色块断层）
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(90.dp)
+                .align(Alignment.TopCenter)
+                .background(
+                    Brush.verticalGradient(
+                        0.0f to Color.Black,
+                        0.40f to Color.Black.copy(alpha = 0.70f),
+                        1.0f to Color.Transparent,
+                    )
+                )
+        )
+
+        // (C) 底部向纯黑背景无缝融化（与下方推荐行自然交融）
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
                         0.0f to Color.Transparent,
-                        0.60f to Color.Transparent,
-                        0.85f to Color(0xCC0F0F0F),
-                        1.0f to Color(0xFF0F0F0F),
+                        0.55f to Color.Transparent,
+                        0.85f to Color.Black.copy(alpha = 0.85f),
+                        1.0f to Color.Black,
                     )
                 )
         )
 
-        // 3. 右侧舞台：如果是短剧，右侧悬浮展现原比例 9:16 高清海报立面（绝不切头切字幕！）
+        // 3. 右侧舞台：短剧 9:16 独立立面 3D 悬浮巨幕海报 + 背后立体漫反射光晕（绝不切头切字幕，彻底消除死黑孤立感！）
         if (isShortDrama) {
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
-                    .padding(end = 48.dp, top = 20.dp, bottom = 32.dp)
-                    .width(170.dp)
+                    .padding(end = 44.dp, top = 20.dp, bottom = 26.dp)
+                    .width(175.dp)
                     .fillMaxHeight()
-                    .shadow(16.dp, RoundedCornerShape(14.dp))
-                    .clip(RoundedCornerShape(14.dp))
-                    .border(1.5.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(14.dp))
-                    .background(Color(0xFF1E1E1E))
             ) {
+                // (1) 海报背后环境光辉漫反射层（消除死黑孤立感，营造影院级通透氛围）
                 AsyncImage(
                     model = getImageUrlSync(currentItem.posterUrl),
-                    contentDescription = currentItem.title,
+                    contentDescription = null,
                     contentScale = ContentScale.Crop,
                     alignment = Alignment.Center,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 6.dp, vertical = 6.dp)
+                        .graphicsLayer {
+                            alpha = 0.35f
+                            scaleX = 1.08f
+                            scaleY = 1.08f
+                        }
+                        .clip(RoundedCornerShape(16.dp))
                 )
-                // 海报底部微渐变
+
+                // (2) 前景立面高清单体海报
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(60.dp)
-                        .align(Alignment.BottomCenter)
-                        .background(
+                        .fillMaxSize()
+                        .shadow(20.dp, RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(14.dp))
+                        .border(
+                            1.2.dp,
                             Brush.verticalGradient(
-                                listOf(Color.Transparent, Color.Black.copy(alpha = 0.8f))
-                            )
+                                listOf(
+                                    Color.White.copy(alpha = 0.30f),
+                                    Color.White.copy(alpha = 0.08f)
+                                )
+                            ),
+                            RoundedCornerShape(14.dp)
                         )
-                )
+                        .background(Color(0xFF141414))
+                ) {
+                    AsyncImage(
+                        model = getImageUrlSync(currentItem.posterUrl),
+                        contentDescription = currentItem.title,
+                        contentScale = ContentScale.Crop,
+                        alignment = Alignment.Center,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    // 海报底部微光渐变，烘托立体纵深感
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(65.dp)
+                            .align(Alignment.BottomCenter)
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f))
+                                )
+                            )
+                    )
+                }
             }
         }
 

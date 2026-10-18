@@ -259,11 +259,13 @@ object MediaCrypto {
         return Prepared(header, sorted, secretKey)
     }
 
-    private val ctrCipherThreadLocal = ThreadLocal.withInitial {
-        try {
-            Cipher.getInstance("AES/CTR/NoPadding")
-        } catch (_: Throwable) {
-            null
+    private val ctrCipherThreadLocal = object : ThreadLocal<Cipher?>() {
+        override fun initialValue(): Cipher? {
+            return try {
+                Cipher.getInstance("AES/CTR/NoPadding")
+            } catch (_: Throwable) {
+                null
+            }
         }
     }
 
@@ -283,7 +285,7 @@ object MediaCrypto {
     }
 
     /**
-     * 高吞吐透明解密引擎：支持原地（in-place）零拷贝解密，彻底根除高频 GC 停顿与掉帧
+     * 高吞吐透明解密引擎：稳健兼容全版本机顶盒底层，加固异常防护，杜绝闪退
      */
     fun decrypt(data: ByteArray, start: Long, key: ByteArray?, prepared: Prepared): ByteArray {
         require(start >= 0)
@@ -303,7 +305,11 @@ object MediaCrypto {
         if (low >= samples.size) return result
 
         val secretKey = prepared.secretKey ?: SecretKeySpec(key, "AES")
-        val cipher = ctrCipherThreadLocal.get() ?: Cipher.getInstance("AES/CTR/NoPadding")
+        val cipher = ctrCipherThreadLocal.get() ?: try {
+            Cipher.getInstance("AES/CTR/NoPadding")
+        } catch (_: Throwable) {
+            return result
+        }
         val ivBuffer = ByteArray(16)
 
         for (i in low until samples.size) {
@@ -317,22 +323,26 @@ object MediaCrypto {
             val skip = (relative % 16).toInt()
             val blockOffset = relative / 16
 
-            computeCtrIv(sample.iv, blockOffset, ivBuffer)
-            val ivSpec = IvParameterSpec(ivBuffer)
-            cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
-
             val segStart = (begin - start).toInt()
             val segLen = (stop - begin).toInt()
 
-            if (skip == 0) {
-                // 99.9% 场景：块对齐原地零拷贝解密，消除所有 byte[] 分配与 GC 压力
-                cipher.doFinal(result, segStart, segLen, result, segStart)
-            } else {
-                // 极少数跨分段非块对齐边界：安全规整解密
-                val padded = ByteArray(skip + segLen)
-                result.copyInto(padded, skip, segStart, segStart + segLen)
-                val decrypted = cipher.doFinal(padded)
-                decrypted.copyInto(result, segStart, skip, skip + segLen)
+            try {
+                computeCtrIv(sample.iv, blockOffset, ivBuffer)
+                val ivSpec = IvParameterSpec(ivBuffer)
+                cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
+
+                if (skip == 0) {
+                    val decrypted = cipher.doFinal(result, segStart, segLen)
+                    decrypted.copyInto(result, segStart)
+                } else {
+                    val padded = ByteArray(skip + segLen)
+                    result.copyInto(padded, skip, segStart, segStart + segLen)
+                    val decrypted = cipher.doFinal(padded)
+                    decrypted.copyInto(result, segStart, skip, skip + segLen)
+                }
+            } catch (e: Throwable) {
+                // 防御性静默降级保护：记录日志，绝对不抛出致命异常导致播放器进程闪退
+                android.util.Log.w("MediaCrypto", "Sample 解密跳过保护: offset=$begin, len=$segLen", e)
             }
         }
         return result

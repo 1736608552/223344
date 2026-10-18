@@ -166,6 +166,11 @@ class HongguoRemoteVideo(
             if (reqEnd <= pref.size) {
                 return pref.copyOfRange(start.toInt(), reqEnd.toInt())
             }
+            // 跨越头部边界：前半段自 pref 截取，后半段自 pref.size 递归读取并拼接
+            val headLen = (pref.size - start).toInt()
+            val headBytes = pref.copyOfRange(start.toInt(), pref.size)
+            val tailBytes = read(pref.size.toLong(), reqLen - headLen)
+            return headBytes + tailBytes
         }
 
         // 2. 检查 2MB 滑动窗口缓存，命中则零 IO、零解密瞬时返回
