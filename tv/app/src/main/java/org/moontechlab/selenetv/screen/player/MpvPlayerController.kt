@@ -180,10 +180,15 @@ class MpvPlayerController(
                 mpv.setPropertyString("demuxer-lavf-probesize", "1048576")
                 mpv.setPropertyString("force-seekable", "yes")
                 mpv.setPropertyString("hr-seek", "default")
-                // 关键短剧解密播放：走软解杜绝机顶盒硬件芯片驱动对 CENC 加密帧静默丢帧（解决进度条走却黑屏无声）
-                mpv.setPropertyString("hwdec", "no")
+                // 关键短剧解密播放：开启机顶盒硬件 VPU 解码加速，杜绝低端 4核 CPU 软解 1080P 卡死
+                if (android.os.Build.VERSION.SDK_INT >= 26) {
+                    mpv.setPropertyString("hwdec", "mediacodec,mediacodec-copy")
+                } else {
+                    mpv.setPropertyString("hwdec", "mediacodec-copy")
+                }
                 mpv.setPropertyString("hwdec-codecs", "all")
-                mpv.setPropertyString("framedrop", "no")
+                // 核心音画同步保障：必须设为 vo 允许丢弃过期视频帧以严格追赶音频时钟，杜绝画面慢放与音画失步
+                mpv.setPropertyString("framedrop", "vo")
                 mpv.setPropertyString("video-sync", "audio")
                 mpv.setPropertyString("scale", "bilinear")
                 mpv.setPropertyString("audio-pitch-correction", "no")

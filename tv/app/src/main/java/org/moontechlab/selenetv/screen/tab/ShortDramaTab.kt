@@ -126,11 +126,20 @@ fun ShortDramaTab(
                         FilterSelector(
                             options = GENRE_FILTER_OPTIONS,
                             selectedKey = selectedGenreKey,
-                            onSelect = { 
-                                selectedGenreKey = it
-                                // 切换主分类时若处于榜单模式，重置榜单为全部
-                                if (selectedRankKey != "all") {
-                                    selectedRankKey = "all"
+                            onSelect = { genre ->
+                                if (selectedGenreKey != genre || selectedRankKey == "all") {
+                                    selectedGenreKey = genre
+                                    // 联动次行排行 (100% 对标手机端 short_drama_screen.dart _onCategoryChanged)
+                                    when (genre) {
+                                        "all" -> {
+                                            if (selectedRankKey != "rank_hot" && selectedRankKey != "all") {
+                                                selectedRankKey = "all"
+                                            }
+                                        }
+                                        "short_play" -> selectedRankKey = "rank_real"
+                                        "comic_series" -> selectedRankKey = "rank_comic"
+                                        "ai_series" -> selectedRankKey = "rank_ai"
+                                    }
                                 }
                             },
                             focusRequester = genreFocusRequester,
@@ -150,8 +159,20 @@ fun ShortDramaTab(
                         FilterSelector(
                             options = RANK_FILTER_OPTIONS,
                             selectedKey = selectedRankKey,
-                            onSelect = { 
-                                selectedRankKey = it
+                            onSelect = { rank ->
+                                if (selectedRankKey != rank) {
+                                    selectedRankKey = rank
+                                    // 联动首行主分类 (100% 对标手机端 short_drama_screen.dart _onRankChanged)
+                                    when (rank) {
+                                        "rank_hot" -> selectedGenreKey = "all"
+                                        "rank_real" -> selectedGenreKey = "short_play"
+                                        "rank_comic" -> selectedGenreKey = "comic_series"
+                                        "rank_ai" -> selectedGenreKey = "ai_series"
+                                        "all" -> {
+                                            // 次行选中「全部」表示退出榜单，查看首行当前选中的分类全库，保持 selectedGenreKey 不变
+                                        }
+                                    }
+                                }
                             },
                             focusRequester = rankFocusRequester,
                             modifier = Modifier.onPreviewKeyEvent { keyEvent ->
