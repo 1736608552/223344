@@ -5,13 +5,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.ui.Alignment
-import androidx.tv.material3.Icon
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.BringIntoViewSpec
@@ -1028,29 +1023,6 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
                 ),
             ) {
                 PlayerScreen(launch = l, onExit = { playerLaunch = null })
-            }
-        }
-
-        // 触屏返回按钮：悬浮在左上角，当未打开播放器时可见，点击直接退出详情页（禁止TV遥控器对焦）
-        if (playerLaunch == null) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(start = 28.dp, top = 24.dp)
-                    .size(44.dp)
-                    .background(Color.Black.copy(alpha = 0.55f), CircleShape)
-                    .focusProperties { canFocus = false }
-                    .clickable {
-                        onBack()
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Default.ArrowBack,
-                    contentDescription = "返回",
-                    tint = Color.White,
-                    modifier = Modifier.size(24.dp),
-                )
             }
         }
     }

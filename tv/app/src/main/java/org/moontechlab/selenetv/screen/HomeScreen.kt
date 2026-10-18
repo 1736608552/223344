@@ -102,20 +102,7 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
     val scrollState = rememberScrollState()
     
     // 追踪焦点是否在 TabSwitcher 上
-    var isTabSwitcherFocused by remember { mutableStateOf(false) }
-
-    // 启动首屏持续获焦巡检，保障冷启动窗口过渡期间稳定获焦（最长 4 秒）
-    LaunchedEffect(Unit) {
-        var attempts = 0
-        while (!isTabSwitcherFocused && attempts < 40) {
-            delay(100)
-            if (isTabSwitcherFocused) break
-            try {
-                tabSwitcherFocusRequester.requestFocus()
-            } catch (_: Exception) {}
-            attempts++
-        }
-    }
+    var isTabSwitcherFocused by remember { mutableStateOf(true) }
     
     // 当焦点不在 TabSwitcher 时，拦截返回键，滚动到顶部并聚焦 TabSwitcher
     // （详情覆盖层打开时由 DetailScreen 自己的 BackHandler 处理，这里禁用）
@@ -223,21 +210,6 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
             modifier = Modifier
                 .fillMaxSize()
                 .background(brush = gradientBrush)
-                .onPreviewKeyEvent { keyEvent ->
-                    if (keyEvent.type == KeyEventType.KeyDown) {
-                        val isDpad = when (keyEvent.key) {
-                            Key.DirectionUp, Key.DirectionDown, Key.DirectionLeft, Key.DirectionRight,
-                            Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> true
-                            else -> false
-                        }
-                        if (isDpad && !isTabSwitcherFocused && detailEntry == null && liveLaunch == null) {
-                            try {
-                                tabSwitcherFocusRequester.requestFocus()
-                            } catch (_: Exception) {}
-                        }
-                    }
-                    false
-                }
         ) {
             // 根据 selectedTabId 显示对应的内容页面（带动画）
             // TabSwitcher 作为 header 不参与动画，但会跟随滚动

@@ -98,7 +98,17 @@ fun AnimatedTabContent(
     }
     
     Box(modifier = modifier) {
-        // 内容区域参与动画（先声明，作为底层内容）
+        // Header 在动画层外部，不参与切换动画
+        // 使用 offset 跟随滚动状态
+        Box(
+            modifier = Modifier
+                .zIndex(1f)
+                .offset { IntOffset(0, -scrollState.value) }
+        ) {
+            header()
+        }
+        
+        // 内容区域参与动画
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -112,16 +122,6 @@ fun AnimatedTabContent(
                 }
         ) {
             content(displayedTabId)
-        }
-
-        // Header 在动画层外部，不参与切换动画，后声明确保触屏点击手势具有最高命中测试优先级
-        // 使用 offset 跟随滚动状态
-        Box(
-            modifier = Modifier
-                .zIndex(10f)
-                .offset { IntOffset(0, -scrollState.value) }
-        ) {
-            header()
         }
     }
 }

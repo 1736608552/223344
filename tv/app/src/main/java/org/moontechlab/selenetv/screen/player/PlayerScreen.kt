@@ -24,14 +24,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Surface
 import androidx.compose.runtime.Composable
@@ -662,27 +658,6 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
 
         controller.VideoSurface(Modifier.fillMaxSize())
 
-        // 触屏手势层：单击切换控制条显隐，双击切换播放/暂停
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = {
-                            if (panelOpen) {
-                                panelOpen = false
-                            } else {
-                                controlsVisible = !controlsVisible
-                                wake()
-                            }
-                        },
-                        onDoubleTap = {
-                            togglePlay()
-                        }
-                    )
-                }
-        )
-
         // 弹幕层：叠在画面之上、压暗/控制条之下。区域决定占屏高度（上对齐）：1/3 / 半屏 / 全屏。
         // 只要弹幕开启就常驻挂载（不再按 comments 是否为空卸载/重建）——避免每集开头空窗、切换间隙频繁
         // datasetKey 恒定不重建：切集（下一集）位置归零走引擎软跳转(seekTo 重定基)——已发射弹幕飞完、新集续上，不清屏；
@@ -1097,30 +1072,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             }
         }
 
-        // 触屏返回按钮：悬浮在左上角，跟随控制条显隐（淡入淡出），点击直接保存进度并退出（禁止TV遥控器对焦）
-        if (ctrlAlpha > 0.05f || panelOpen) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(start = 32.dp, top = 28.dp)
-                    .graphicsLayer { alpha = if (panelOpen) 1f else ctrlAlpha }
-                    .size(44.dp)
-                    .background(Color.Black.copy(alpha = 0.55f), CircleShape)
-                    .focusProperties { canFocus = false }
-                    .clickable {
-                        saveProgress(force = true)
-                        onExit()
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Default.ArrowBack,
-                    contentDescription = "返回",
-                    tint = Color.White,
-                    modifier = Modifier.size(24.dp),
-                )
-            }
-        }
+
 
         // 二次返回退出提示（自绘，不用系统 Toast）
         BackExitHint(

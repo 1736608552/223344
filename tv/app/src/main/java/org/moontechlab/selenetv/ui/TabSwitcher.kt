@@ -109,21 +109,11 @@ fun TabSwitcher(
         }
     }
     
-    // 应用启动时，焦点默认在当前激活的标签上（持续巡检直到获焦，保障首帧稳定获焦）
+    // 应用启动时，焦点默认在当前激活的标签上
     LaunchedEffect(selectedTabId) {
         val selectedIndex = tabs.indexOfFirst { it.id == selectedTabId }
         if (selectedIndex >= 0) {
-            val requester = focusRequesters[selectedIndex]
-            // 在电视端，系统窗口获焦可能有较长动画延迟（如海信电视冷启动约 800ms~1500ms）
-            // 采用持久巡检重试：前 1 秒每 60ms 重试一次，后续每 150ms 重试一次，最长重试 4 秒
-            var attempts = 0
-            while (focusedTabId == null && attempts < 35) {
-                try {
-                    requester.requestFocus()
-                } catch (_: Exception) {}
-                delay(if (attempts < 12) 60L else 150L)
-                attempts++
-            }
+            focusRequesters[selectedIndex].requestFocus()
         }
     }
     
@@ -178,19 +168,9 @@ fun TabSwitcher(
                     onFocusChanged = { isFocused ->
                         focusedTabId = if (isFocused) tab.id else null
                     },
-                    onTabClick = {
-                        focusedTabId = tab.id
-                        onTabSelected(tab.id)
-                        try {
-                            focusRequesters[index].requestFocus()
-                        } catch (_: Exception) {}
-                    },
+                    onTabClick = { onTabSelected(tab.id) },
                     onNavigateDown = {
-                        val targetTab = focusedTabId ?: selectedTabId
-                        if (targetTab != selectedTabId) {
-                            onTabSelected(targetTab)
-                        }
-                        onNavigateDown(targetTab)
+                        onNavigateDown(selectedTabId)
                     },
                     onBackPressed = {
                         // 在标签栏按返回键时，如果当前不是首页，则自动切换到首页标签
@@ -245,85 +225,82 @@ private fun TabButton(
     
     val contentColor = if (isFocused) Color(0xFF0a0a0a) else Color.White
     
-    Box(
-        modifier = Modifier.padding(vertical = 4.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Surface(
-            onClick = onTabClick,
-            modifier = Modifier
-                .height(31.dp)
-                .focusRequester(focusRequester)
-                .onFocusChanged { focusState ->
-                    isFocused = focusState.isFocused
-                    onFocusChanged(focusState.isFocused)
-                }
-                .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                }
-                .onPreviewKeyEvent { keyEvent ->
-                    if (keyEvent.type == KeyEventType.KeyDown) {
-                        when (keyEvent.key) {
-                            // 下方向键：移动到内容区域（由外部回调处理Tab确认与焦点下移）
-                            Key.DirectionDown, Key.NavigateNext -> {
+    Surface(
+        onClick = onTabClick,
+        modifier = Modifier
+            .height(31.dp)
+            .focusRequester(focusRequester)
+            .onFocusChanged { focusState ->
+                isFocused = focusState.isFocused
+                onFocusChanged(focusState.isFocused)
+            }
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .onPreviewKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyDown) {
+                    when (keyEvent.key) {
+                        // 下方向键：移动到内容区域（切换期间锁定）
+                        Key.DirectionDown, Key.NavigateNext -> {
+                            if (!isSwitching) {
                                 onNavigateDown()
-                                true
                             }
-                            // 上方向键：边界陷阱，不允许向上移出（切换期间也锁定）
-                            Key.DirectionUp, Key.NavigatePrevious -> {
-                                true // 消费事件，阻止向上移动
-                            }
-                            // 左右方向键：边界陷阱（只在边界时消费事件）
-                            Key.DirectionLeft -> {
-                                isFirstTab // 如果是第一个标签，消费事件阻止移出；否则允许正常导航
-                            }
-                            Key.DirectionRight -> {
-                                isLastTab // 如果是最后一个标签，消费事件阻止移出；否则允许正常导航
-                            }
-                            // 返回键由 BackHandler 处理，这里不消费
-                            Key.Back, Key.Escape -> false
-                            else -> false
+                            true
                         }
-                    } else {
-                        false
+                        // 上方向键：边界陷阱，不允许向上移出（切换期间也锁定）
+                        Key.DirectionUp, Key.NavigatePrevious -> {
+                            true // 消费事件，阻止向上移动
+                        }
+                        // 左右方向键：边界陷阱（只在边界时消费事件）
+                        Key.DirectionLeft -> {
+                            isFirstTab // 如果是第一个标签，消费事件阻止移出；否则允许正常导航
+                        }
+                        Key.DirectionRight -> {
+                            isLastTab // 如果是最后一个标签，消费事件阻止移出；否则允许正常导航
+                        }
+                        // 返回键由 BackHandler 处理，这里不消费
+                        Key.Back, Key.Escape -> false
+                        else -> false
                     }
-                },
-            shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(16.dp)),
-            colors = ClickableSurfaceDefaults.colors(
-                containerColor = backgroundColor,
-                focusedContainerColor = backgroundColor,
-                pressedContainerColor = backgroundColor
-            ),
-            scale = ClickableSurfaceDefaults.scale(focusedScale = 1f) // 禁用默认缩放，使用自定义动画
-        ) {
-            Row(
-                modifier = Modifier
-                    .padding(
-                        horizontal = if (tab.isIconOnly) 10.dp else 13.dp,
-                        vertical = 0.dp
-                    )
-                    .fillMaxHeight(),
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // 图标
-                Icon(
-                    imageVector = tab.icon,
-                    contentDescription = tab.label,
-                    modifier = Modifier.size(14.dp),
-                    tint = contentColor
-                )
-                
-                // 文字（搜索标签仅显示图标）
-                if (!tab.isIconOnly) {
-                    Text(
-                        text = tab.label,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold, // 600
-                        color = contentColor
-                    )
+                } else {
+                    false
                 }
+            },
+        shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(16.dp)),
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = backgroundColor,
+            focusedContainerColor = backgroundColor,
+            pressedContainerColor = backgroundColor
+        ),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f) // 禁用默认缩放，使用自定义动画
+    ) {
+        Row(
+            modifier = Modifier
+                .padding(
+                    horizontal = if (tab.isIconOnly) 10.dp else 13.dp,
+                    vertical = 0.dp
+                )
+                .fillMaxHeight(),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // 图标
+            Icon(
+                imageVector = tab.icon,
+                contentDescription = tab.label,
+                modifier = Modifier.size(14.dp),
+                tint = contentColor
+            )
+            
+            // 文字（搜索标签仅显示图标）
+            if (!tab.isIconOnly) {
+                Text(
+                    text = tab.label,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold, // 600
+                    color = contentColor
+                )
             }
         }
     }
