@@ -76,11 +76,38 @@ private val LogoutButtonBgFocused = Color(0xFFE74C3C) // 退出登录聚焦填�
 private fun getAllIpAddresses(): List<String> {
     val allIps = mutableListOf<String>()
     try {
-        NetworkInterface.getNetworkInterfaces()?.toList()?.forEach { networkInterface ->
+        val interfaces = NetworkInterface.getNetworkInterfaces()?.toList() ?: emptyList()
+        // 按照物理网卡优先排序：eth (以太网) > wlan (Wi-Fi) > 其余
+        val sortedInterfaces = interfaces.sortedWith { a, b ->
+            val nameA = a.name.lowercase()
+            val nameB = b.name.lowercase()
+            val scoreA = when {
+                nameA.startsWith("eth") -> 0
+                nameA.startsWith("wlan") -> 1
+                nameA.startsWith("en") -> 2
+                else -> 10
+            }
+            val scoreB = when {
+                nameB.startsWith("eth") -> 0
+                nameB.startsWith("wlan") -> 1
+                nameB.startsWith("en") -> 2
+                else -> 10
+            }
+            scoreA.compareTo(scoreB)
+        }
+
+        for (networkInterface in sortedInterfaces) {
+            val name = networkInterface.name.lowercase()
+            // 排除虚拟网卡、热点 P2P、VPN/tun/tap 等干扰接口
+            if (name.startsWith("p2p") || name.startsWith("dummy") || name.startsWith("tun") || name.startsWith("tap")) {
+                continue
+            }
             if (networkInterface.isUp && !networkInterface.isLoopback) {
                 networkInterface.inetAddresses?.toList()?.forEach { address ->
-                    if (!address.isLoopbackAddress && address.hostAddress?.contains('.') == true) {
-                        address.hostAddress?.let { allIps.add(it) }
+                    val host = address.hostAddress ?: ""
+                    // 仅 IPv4 且非回环且非 Wi-Fi Direct 热点 (192.168.49.x)
+                    if (!address.isLoopbackAddress && host.contains('.') && !host.startsWith("192.168.49.")) {
+                        allIps.add(host)
                     }
                 }
             }
@@ -90,12 +117,14 @@ private fun getAllIpAddresses(): List<String> {
 }
 
 /**
- * 获取设备所有 IPv4 地址，优先返回 192.168.x.x 网段
+ * 获取设备所有 IPv4 地址，优先返回物理局域网段 (192.168.x.x / 10.x.x.x / 172.x.x.x)
  */
 private fun getPreferredIpAddress(): String? {
     val allIps = getAllIpAddresses()
-    // 优先选择 192.168.x.x 网段
-    return allIps.find { it.startsWith("192.168.") } ?: allIps.firstOrNull()
+    return allIps.find { it.startsWith("192.168.") }
+        ?: allIps.find { it.startsWith("10.") }
+        ?: allIps.find { it.startsWith("172.") }
+        ?: allIps.firstOrNull()
 }
 
 @Composable
@@ -1505,7 +1534,7 @@ private fun RemoteControlQrCode(
             val ip = selectedIp.ifEmpty { getPreferredIpAddress() }
             val port = org.moontechlab.selenetv.server.RemoteControlServer.getPort()
             if (ip != null) {
-                val url = "http://$ip:$port/remote_control"
+                val url = "http://$ip:$port/"
                 remoteUrl = url
                 try {
                     val qrBytes = QRCode.ofSquares()
@@ -1570,6 +1599,14 @@ private fun RemoteControlQrCode(
                 text = "若 IP 非本机 IP，可在右侧选项调整",
                 fontSize = 13.sp,
                 color = TextGray.copy(alpha = 0.7f)
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = "（微信扫码后若提示受限，请点击右上角在系统浏览器打开）",
+                fontSize = 11.sp,
+                color = TextGray.copy(alpha = 0.5f)
             )
         }
 

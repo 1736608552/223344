@@ -82,6 +82,8 @@ class MpvPlayerController(
             }
         }
 
+    private val currentDecodeMode = decodeMode
+
     init {
         mpv.setOptionString("vo", "gpu")
         mpv.setOptionString("gpu-context", "android")
@@ -89,36 +91,25 @@ class MpvPlayerController(
         mpv.setOptionString("ytdl", "no")
         when (decodeMode) {
             AppDataService.DecodeMode.HARDWARE -> {
-                // 优先直通（零拷贝）MediaCodec，失败再退回拷，最后软解（mpv 0.41 行为：按列表
-                // 逐个尝试初始化，全失败才软解）。直通解码输出经 AImageReader 直接作为 GL 纹理被
-                // vo=gpu 采样，不回读系统内存——这也是项目 MPV_MIN_SDK=26 的由来（AImageReader 需 API 26）。
-                // 旧值仅 "mediacodec-copy" 会把每帧从 GPU 回拷到 CPU 再重新上传，4K 像素吞吐约为
-                // 1080p 的 4 倍，直接打满内存带宽 → 解码追不上 → 音视频同时卡顿（issue #14）；
-                // 1080p 拷贝路径尚能扛、4K 则不行，与「1080p 流畅、4K 卡」吻合。列表第二项 -copy
-                // 保留为兜底：直通初始化失败的设备自动退回原行为，不丢兼容性。
-                mpv.setOptionString("hwdec", "mediacodec,mediacodec-copy")
+                // 优先直通（零拷贝）MediaCodec，失败再退回拷，最后软解。
+                // API < 26 时不支持 AImageReader，安全使用 mediacodec-copy 避免奔溃。
+                if (android.os.Build.VERSION.SDK_INT >= 26) {
+                    mpv.setOptionString("hwdec", "mediacodec,mediacodec-copy")
+                } else {
+                    mpv.setOptionString("hwdec", "mediacodec-copy")
+                }
                 mpv.setOptionString("hwdec-codecs", "h264,hevc,vp9,av1")
             }
             AppDataService.DecodeMode.SOFTWARE -> mpv.setOptionString("hwdec", "no")
         }
         userAgent?.let { mpv.setOptionString("user-agent", MediaHttp.resolveLiveUa(it)) }
 
-        // issue #14 跟进：1.4.5 的直通解码修好了 4K「持续卡顿」，但长时间（约 20~30min）播 4K
-        // 直播后会周期性出现 ~10s 卡顿（用户已排除网络：1000M 宽带；同源用其他 App 长播不卡）。
-        // 根因不在解码，而在 mpv 默认的前向缓冲太浅：demuxer-readahead-secs 默认仅 1.0s，直播源
-        // 按实时速率推流，缓冲只攒 1~2s；一旦源侧/链路出现瞬时抖动（HLS 取段延迟、服务端节流间隙、
-        // GC 暂停等）就立刻见底 → paused-for-cache（即本类的 isBuffering）。而 HTTP-FLV/HLS 直播
-        // 连接断后要重连重灌，恢复常达 ~10s。其他播放器默认缓冲更深，同样抖动不外露。
-        // 对策：① 建一个真正的前向缓冲吸收突发抖动；② 让底层 HTTP 透明重连自愈，避免一次抖动升级
-        // 成长卡顿。readahead 是「上限」不是「起播门槛」，首帧到达即起播；直播数据本就只能实时到达，
-        // 稳态下不会显著偏离直播边缘，仅在源突发供给时多攒几段做缓冲，延迟代价极小。
         val mpvCache = org.moontechlab.selenetv.util.DeviceMemoryManager.getMpvCacheConfig(context)
         mpv.setOptionString("cache", "yes")
         mpv.setOptionString("demuxer-readahead-secs", mpvCache.readaheadSecs)
         mpv.setOptionString("demuxer-max-bytes", mpvCache.maxBytes)
         mpv.setOptionString("demuxer-max-back-bytes", mpvCache.maxBackBytes)
-        // FFmpeg(libavformat) 层 HTTP 透明重连：直播连接被服务端/链路掐断时自动重连续读，
-        // 把「断流→~10s 黑屏重缓冲」降级为底层无感重连。reconnect_streamed 覆盖不可 seek 的直播流。
+        // FFmpeg(libavformat) 层 HTTP 透明重连
         mpv.setOptionString(
             "stream-lavf-o",
             "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=2",
@@ -148,9 +139,6 @@ class MpvPlayerController(
         error = null
         hasStarted = false
         positionMs = 0; durationMs = 0; bufferedMs = 0
-        // mpv 的 paused-for-cache 只反映「播放中」的缓存停顿，不覆盖初始连接/解封装/首帧解码阶段。
-        // 这里在开始载入时主动置 true（等价于 ExoPlayer prepare() 触发的 STATE_BUFFERING），
-        // 让加载月牙立即出现，避免首帧前一段纯黑无反馈；首帧到达（time-pos>0）时清掉。
         isBuffering = true
         if (!surfaceAttached) {
             pendingUrl = url
@@ -170,19 +158,52 @@ class MpvPlayerController(
         decryptionKey: String? = null,
         headers: Map<String, String>? = null,
     ) {
-        // 若已有文件在播，replace 会先给旧文件发一个 END_FILE(stop)，需忽略，避免误判为新源加载失败。
         if (fileActive) pendingStopEndFiles++
         fileActive = true
 
         val rawKey = decryptionKey?.trim() ?: ""
         val cleanKey = if (rawKey.matches(Regex("^[0-9a-fA-F]{32}$"))) rawKey.lowercase() else ""
         if (cleanKey.isNotEmpty()) {
+            // 对齐手机端成熟的解密推流配置：必须包含 protocol_whitelist=[http,https,tcp,tls,crypto,data,file]
+            val lavfOptions = listOf(
+                "seg_max_retry=3",
+                "strict=experimental",
+                "allowed_extensions=ALL",
+                "protocol_whitelist=[http,https,tcp,tls,crypto,data,file]",
+                "decryption_key=$cleanKey"
+            ).joinToString(",")
             try {
-                mpv.setPropertyString("demuxer-lavf-o", "decryption_key=$cleanKey")
-            } catch (_: Exception) {}
+                mpv.setPropertyString("demuxer-lavf-o", lavfOptions)
+                mpv.setPropertyString("network-timeout", "10")
+                // 极速探测起播：缩短 lavf 分析时长与探测尺寸，大幅缩短首帧与起播等待
+                mpv.setPropertyString("demuxer-lavf-analyzeduration", "1000000")
+                mpv.setPropertyString("demuxer-lavf-probesize", "1048576")
+                mpv.setPropertyString("force-seekable", "yes")
+                mpv.setPropertyString("hr-seek", "default")
+                // 关键短剧解密播放：走软解杜绝机顶盒硬件芯片驱动对 CENC 加密帧静默丢帧（解决进度条走却黑屏无声）
+                mpv.setPropertyString("hwdec", "no")
+                mpv.setPropertyString("hwdec-codecs", "all")
+                mpv.setPropertyString("framedrop", "no")
+                mpv.setPropertyString("video-sync", "audio")
+                mpv.setPropertyString("scale", "bilinear")
+                mpv.setPropertyString("audio-pitch-correction", "no")
+                mpv.setPropertyString("autosync", "0")
+            } catch (e: Exception) {
+                android.util.Log.w("MpvPlayerController", "短剧属性注入异常: ${e.message}")
+            }
         } else {
             try {
                 mpv.setPropertyString("demuxer-lavf-o", "")
+                when (currentDecodeMode) {
+                    AppDataService.DecodeMode.HARDWARE -> {
+                        if (android.os.Build.VERSION.SDK_INT >= 26) {
+                            mpv.setPropertyString("hwdec", "mediacodec,mediacodec-copy")
+                        } else {
+                            mpv.setPropertyString("hwdec", "mediacodec-copy")
+                        }
+                    }
+                    AppDataService.DecodeMode.SOFTWARE -> mpv.setPropertyString("hwdec", "no")
+                }
             } catch (_: Exception) {}
         }
 
@@ -194,16 +215,8 @@ class MpvPlayerController(
         }
 
         val startSec = (startMs / 1000.0).coerceAtLeast(0.0)
-        val optionsList = mutableListOf<String>()
         if (startSec > 0) {
-            optionsList.add("start=$startSec")
-        }
-        if (cleanKey.isNotEmpty()) {
-            optionsList.add("demuxer-lavf-o=decryption_key=$cleanKey")
-        }
-        val optionsStr = optionsList.joinToString(",")
-        if (optionsStr.isNotEmpty()) {
-            mpv.command(arrayOf("loadfile", url, "replace", "0", optionsStr))
+            mpv.command(arrayOf("loadfile", url, "replace", "0", "start=$startSec"))
         } else {
             mpv.command(arrayOf("loadfile", url, "replace"))
         }

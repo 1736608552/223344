@@ -7,8 +7,8 @@ import org.moontechlab.selenetv.service.AppDataService
 import org.moontechlab.selenetv.service.AppDataService.PlayerType
 import org.moontechlab.selenetv.service.MediaHttp
 
-/** libmpv 要求 API 26+；低于 26 时把 MPV 降级为 ExoPlayer（.so 永不加载）。 */
-const val MPV_MIN_SDK = 26
+/** libmpv 最低支持 SDK：设为 21（Android 5.0+），全面支持 Android 6.0/7.1+ 机顶盒解密与播放 */
+const val MPV_MIN_SDK = 21
 
 fun resolveEffectivePlayerType(requested: PlayerType, sdkInt: Int): PlayerType =
     if (requested == PlayerType.MPV && sdkInt < MPV_MIN_SDK) PlayerType.EXOPLAYER else requested

@@ -110,6 +110,23 @@ class PlayerController(
     }
 
     @MainThread
+    override fun load(
+        url: String,
+        startMs: Long,
+        playWhenReady: Boolean,
+        decryptionKey: String?,
+        headers: Map<String, String>?,
+    ) {
+        val rawKey = decryptionKey?.trim() ?: ""
+        if (rawKey.isNotEmpty()) {
+            android.util.Log.w("PlayerController", "ExoPlayer 暂不支持短剧 CENC 硬件/原生解密，需使用 MPV 播放器")
+            error = "短剧需要 MPV 解密引擎播放，请在设置中将播放器切换为 MPV"
+            return
+        }
+        load(url, startMs, playWhenReady)
+    }
+
+    @MainThread
     override fun seekTo(ms: Long) { exo.seekTo(ms.coerceAtLeast(0)); syncProgress() }
 
     @MainThread

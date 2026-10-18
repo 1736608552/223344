@@ -169,10 +169,7 @@ object RemoteControlServer {
                 method == "OPTIONS" -> {
                     sendResponse(output, "204 No Content", "text/plain", "")
                 }
-                method == "GET" && (path == "/" || path.isEmpty()) -> {
-                    sendRedirect(output, "/remote_control")
-                }
-                method == "GET" && path == "/remote_control" -> {
+                method == "GET" && (path == "/" || path.isEmpty() || path == "/remote_control") -> {
                     sendResponse(output, "200 OK", "text/html; charset=utf-8", remoteControlHtml)
                 }
                 method == "GET" && path == "/api/ping" -> {

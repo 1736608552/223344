@@ -84,6 +84,11 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // 确保 Web 遥控器随 Activity 启动自愈保活
+        activityScope.launch(Dispatchers.IO) {
+            RemoteControlServer.ensureRunning()
+        }
+
         setContent {
             AppNavHost()
         }
