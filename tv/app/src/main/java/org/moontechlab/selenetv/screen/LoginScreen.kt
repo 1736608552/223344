@@ -344,6 +344,7 @@ private fun LoginScreenContent(
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
                             .background(Color(0x224CAF50))
+                            .focusProperties { canFocus = false }
                             .clickable {
                                 fetchJob?.cancel()
                                 fetchJob = null
@@ -402,6 +403,7 @@ private fun LoginScreenContent(
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
                             .background(Color(0x224CAF50))
+                            .focusProperties { canFocus = false }
                             .clickable {
                                 fetchJob?.cancel()
                                 fetchJob = null
@@ -517,13 +519,7 @@ private fun LoginTextField(
 ) {
     var isFocused by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable {
-                try { focusRequester.requestFocus() } catch (_: Exception) {}
-            }
-    ) {
+    Column {
         Text(
             text = label,
             fontSize = 12.sp,
@@ -605,7 +601,6 @@ private fun LoginButton(
         onClick = { if (enabled) onClick() },
         modifier = modifier
             .fillMaxWidth()
-            .clickable(enabled = enabled) { onClick() }
             .focusProperties {
                 if (upFocusRequester != null) up = upFocusRequester
                 if (downFocusRequester != null) down = downFocusRequester
@@ -625,7 +620,6 @@ private fun LoginButton(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(enabled = enabled) { onClick() }
                 .padding(vertical = 14.dp),
             contentAlignment = Alignment.Center
         ) {

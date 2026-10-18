@@ -6,6 +6,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -133,6 +134,12 @@ fun ShortDramaTab(
                                 }
                             },
                             focusRequester = genreFocusRequester,
+                            modifier = Modifier.onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionDown) {
+                                    rankFocusRequester.requestFocus()
+                                    true
+                                } else false
+                            }
                         )
                     }
 
@@ -147,6 +154,21 @@ fun ShortDramaTab(
                                 selectedRankKey = it
                             },
                             focusRequester = rankFocusRequester,
+                            modifier = Modifier.onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp -> {
+                                            genreFocusRequester.requestFocus()
+                                            true
+                                        }
+                                        Key.DirectionDown -> {
+                                            contentFocusRequester.requestFocus()
+                                            true
+                                        }
+                                        else -> false
+                                    }
+                                } else false
+                            }
                         )
                     }
                 }

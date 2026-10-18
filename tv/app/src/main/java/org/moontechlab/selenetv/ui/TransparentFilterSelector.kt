@@ -3,8 +3,6 @@ package org.moontechlab.selenetv.ui
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -159,12 +157,6 @@ private fun TransparentFilterOptionItem(
     Surface(
         onClick = onSelect,
         modifier = Modifier
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                onSelect()
-            }
             .focusRequester(focusRequester)
             .onFocusChanged { focusState ->
                 val wasFocused = isFocused
@@ -190,12 +182,6 @@ private fun TransparentFilterOptionItem(
     ) {
         Row(
             modifier = Modifier
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) {
-                    onSelect()
-                }
                 .height(30.dp)
                 .padding(horizontal = 13.dp),
             verticalAlignment = Alignment.CenterVertically

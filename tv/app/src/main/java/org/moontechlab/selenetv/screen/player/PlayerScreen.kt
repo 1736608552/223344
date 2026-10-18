@@ -1097,7 +1097,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             }
         }
 
-        // 触屏返回按钮：悬浮在左上角，跟随控制条显隐（淡入淡出），点击直接保存进度并退出
+        // 触屏返回按钮：悬浮在左上角，跟随控制条显隐（淡入淡出），点击直接保存进度并退出（禁止TV遥控器对焦）
         if (ctrlAlpha > 0.05f || panelOpen) {
             Box(
                 modifier = Modifier
@@ -1106,6 +1106,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                     .graphicsLayer { alpha = if (panelOpen) 1f else ctrlAlpha }
                     .size(44.dp)
                     .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                    .focusProperties { canFocus = false }
                     .clickable {
                         saveProgress(force = true)
                         onExit()

@@ -11,11 +11,9 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -1099,12 +1097,6 @@ private fun SearchInputField(
                 Surface(
                     onClick = { onClear() },
                     modifier = Modifier
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null
-                        ) {
-                            onClear()
-                        }
                         .focusRequester(clearButtonFocusRequester)
                         .onFocusChanged { 
                             clearFocused = it.isFocused
@@ -1126,14 +1118,7 @@ private fun SearchInputField(
                     )
                 ) {
                     Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null
-                            ) {
-                                onClear()
-                            },
+                        modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -1175,12 +1160,6 @@ private fun SearchButton(
     Surface(
         onClick = onClick,
         modifier = modifier
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                onClick()
-            }
             .focusRequester(focusRequester)
             .onFocusChanged { focusState ->
                 isFocused = focusState.isFocused
@@ -1200,12 +1179,6 @@ private fun SearchButton(
     ) {
         Box(
             modifier = Modifier
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) {
-                    onClick()
-                }
                 .height(42.dp)
                 .padding(horizontal = 28.dp),
             contentAlignment = Alignment.Center
@@ -1294,12 +1267,6 @@ private fun HistoryTag(
     Surface(
         onClick = onClick,
         modifier = modifier
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                onClick()
-            }
             .onFocusChanged { focusState ->
                 isFocused = focusState.isFocused
             }
@@ -1317,14 +1284,7 @@ private fun HistoryTag(
         )
     ) {
         Box(
-            modifier = Modifier
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) {
-                    onClick()
-                }
-                .padding(horizontal = 18.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
             contentAlignment = Alignment.Center
         ) {
             Text(

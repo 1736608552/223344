@@ -4,8 +4,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -198,12 +196,6 @@ private fun FilterDialogContent(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                onClose()
-            }
             .graphicsLayer {
                 alpha = overlayOpacity
             }
@@ -223,12 +215,6 @@ private fun FilterDialogContent(
             modifier = Modifier
                 .width(dialogWidth)
                 .heightIn(min = minHeight, max = maxHeight)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) {
-                    // 消费内部点击，防止误触发遮罩关闭
-                }
                 .graphicsLayer {
                     scaleX = dialogScale
                     scaleY = dialogScale
@@ -333,12 +319,6 @@ private fun FilterDialogOptionItem(
     Surface(
         onClick = onSelect,
         modifier = Modifier
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                onSelect()
-            }
             .focusRequester(focusRequester)
             .onFocusChanged { focusState ->
                 isFocused = focusState.isFocused
@@ -367,12 +347,6 @@ private fun FilterDialogOptionItem(
     ) {
         Box(
             modifier = Modifier
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) {
-                    onSelect()
-                }
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             contentAlignment = Alignment.Center
         ) {

@@ -1031,7 +1031,7 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
             }
         }
 
-        // 触屏返回按钮：悬浮在左上角，当未打开播放器时可见，点击直接退出详情页
+        // 触屏返回按钮：悬浮在左上角，当未打开播放器时可见，点击直接退出详情页（禁止TV遥控器对焦）
         if (playerLaunch == null) {
             Box(
                 modifier = Modifier
@@ -1039,6 +1039,7 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
                     .padding(start = 28.dp, top = 24.dp)
                     .size(44.dp)
                     .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                    .focusProperties { canFocus = false }
                     .clickable {
                         onBack()
                     },

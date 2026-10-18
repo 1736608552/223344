@@ -6,11 +6,9 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -680,13 +678,6 @@ private fun ChannelCard(
             onClick()
         },
         modifier = modifier
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                returnFocus?.setTarget(returnKey)
-                onClick()
-            }
             .then(
                 if (returnFocus != null && returnFocus.matches(returnKey))
                     Modifier.focusRequester(returnFocus.requester)
@@ -709,13 +700,6 @@ private fun ChannelCard(
         )
     ) {
         Column(
-            modifier = Modifier.clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                returnFocus?.setTarget(returnKey)
-                onClick()
-            },
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Logo 区域

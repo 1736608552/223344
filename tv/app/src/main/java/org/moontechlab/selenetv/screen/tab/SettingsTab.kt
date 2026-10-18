@@ -5,9 +5,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -1791,12 +1789,6 @@ private fun SettingRow(
             onClick = onClick,
             modifier = modifier
                 .fillMaxWidth()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) {
-                    onClick()
-                }
                 .onFocusChanged { isFocused = it.isFocused }
                 .onKeyEvent { event ->
                     // 拦截左右方向键，阻止焦点移动
@@ -1812,12 +1804,6 @@ private fun SettingRow(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) {
-                        onClick()
-                    }
                     .padding(horizontal = 16.dp, vertical = 11.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically

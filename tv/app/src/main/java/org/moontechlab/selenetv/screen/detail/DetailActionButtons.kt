@@ -11,7 +11,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -268,7 +267,7 @@ private fun PillActionButton(
         ),
     ) {
         Row(
-            modifier = Modifier.fillMaxHeight().clickable { onClick() }.padding(horizontal = 24.dp),
+            modifier = Modifier.fillMaxHeight().padding(horizontal = 24.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
@@ -321,7 +320,7 @@ private fun ContinueActionButton(
             focusedContainerColor = FocusedBg,
         ),
     ) {
-        Box(modifier = Modifier.fillMaxHeight().clickable { onClick() }) {
+        Box(modifier = Modifier.fillMaxHeight()) {
             // Row 决定按钮宽度（贴合文案）
             Row(
                 modifier = Modifier.fillMaxHeight().padding(horizontal = 24.dp),
@@ -378,7 +377,7 @@ private fun IconActionButton(
             focusedContainerColor = FocusedBg,
         ),
     ) {
-        Box(modifier = Modifier.fillMaxSize().clickable { onClick() }, contentAlignment = Alignment.Center) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Icon(
                 imageVector = icon,
                 contentDescription = contentDescription,
