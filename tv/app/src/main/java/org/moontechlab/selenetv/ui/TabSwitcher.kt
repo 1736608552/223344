@@ -188,7 +188,11 @@ fun TabSwitcher(
                         } catch (_: Exception) {}
                     },
                     onNavigateDown = {
-                        onNavigateDown(focusedTabId ?: selectedTabId)
+                        val targetTab = focusedTabId ?: selectedTabId
+                        if (targetTab != selectedTabId) {
+                            onTabSelected(targetTab)
+                        }
+                        onNavigateDown(targetTab)
                     },
                     onBackPressed = {
                         // 在标签栏按返回键时，如果当前不是首页，则自动切换到首页标签
@@ -263,11 +267,8 @@ private fun TabButton(
                 .onPreviewKeyEvent { keyEvent ->
                     if (keyEvent.type == KeyEventType.KeyDown) {
                         when (keyEvent.key) {
-                            // 下方向键：移动到内容区域（如聚焦Tab尚未生效立即触发切换）
+                            // 下方向键：移动到内容区域（由外部回调处理Tab确认与焦点下移）
                             Key.DirectionDown, Key.NavigateNext -> {
-                                if (focusedTabId != null && focusedTabId != selectedTabId) {
-                                    onTabSelected(focusedTabId!!)
-                                }
                                 onNavigateDown()
                                 true
                             }
