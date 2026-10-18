@@ -57,7 +57,7 @@ class HongguoVideoDataSource(
         if (remaining == 0L) return C.RESULT_END_OF_INPUT
 
         if (offset >= buffer.size) {
-            val toRead = minOf(512 * 1024L, remaining).toInt()
+            val toRead = minOf(1024 * 1024L, remaining).toInt()
             buffer = video.read(position, toRead)
             offset = 0
         }

@@ -43,7 +43,7 @@ jobs:
           mkdir -p artifacts
           TAG="${GITHUB_REF_NAME}"
           if [[ ! "$TAG" =~ ^v[0-9] ]]; then
-            TAG="v2.6.130"
+            TAG="v2.6.133"
           fi
           echo "RELEASE_TAG=$TAG" >> $GITHUB_ENV
           echo "Listing all generated APKs in outputs:"

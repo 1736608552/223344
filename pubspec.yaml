@@ -1,7 +1,7 @@
 name: luna_tv
 description: "LunaTV-inspired Flutter client"
 publish_to: 'none'
-version: 2.6.133+20733
+version: 2.6.135+20735
 
 environment:
   sdk: ">=3.5.0 <4.0.0"

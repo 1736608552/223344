@@ -27,7 +27,7 @@ val (resolvedVersionName, resolvedVersionCode) = if (pubspecFile.exists()) {
     val vCode = rawVersion.substringAfter("+", "20733").trim().toIntOrNull() ?: 20733
     vName to vCode
 } else {
-    (System.getenv("APP_VERSION") ?: "2.6.133") to (System.getenv("APP_BUILD_NUMBER")?.toIntOrNull() ?: 20733)
+    (System.getenv("APP_VERSION") ?: "2.6.135") to (System.getenv("APP_BUILD_NUMBER")?.toIntOrNull() ?: 20735)
 }
 
 android {
