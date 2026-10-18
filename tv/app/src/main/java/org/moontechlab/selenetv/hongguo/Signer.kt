@@ -156,6 +156,69 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         }
         return (le32(random) + output.toByteArray()).base64()
     }
+    fun signHongguo(queryString: String, body: ByteArray?, nowMs: Long): Map<String, String> {
+        val ts = (nowMs / 1000).toInt()
+        val queryHash = digest("MD5", queryString.toByteArray(Charsets.UTF_8))
+        val payload = ByteArray(20)
+        System.arraycopy(queryHash, 0, payload, 0, 4)
+        var bodyStub = ""
+        if (body != null && body.isNotEmpty()) {
+            val bodyHash = digest("MD5", body)
+            System.arraycopy(bodyHash, 0, payload, 4, 4)
+            bodyStub = bodyHash.hex().uppercase()
+        }
+        payload[12] = 0
+        payload[13] = 6
+        payload[14] = 11
+        payload[15] = 28
+        val tsBytes = be32(ts)
+        System.arraycopy(tsBytes, 0, payload, 16, 4)
+
+        val key = intArrayOf(
+            0x44, 0xb9, 0xb9, 0xd9, 0xa4, 0xae, 0xf9, 0xfc, 0xa4, 0x93,
+            0xaa, 0x75, 0x7c, 0xa3, 0xc2, 0xc4, 0xa4, 0x96, 0x93, 0x8f
+        )
+        for (i in 0 until 20) {
+            payload[i] = (payload[i].u() xor key[i]).toByte()
+        }
+        for (i in 0 until 20) {
+            val cur = payload[i].u()
+            val rot = ((cur shl 4) or (cur ushr 4)) and 0xff
+            val mixed = rot xor payload[(i + 1) % 20].u()
+            val rev = Integer.reverse(mixed) ushr 24
+            payload[i] = (rev xor 0xff xor 20).toByte()
+        }
+        val prefix = byteArrayOf(0x84.toByte(), 0x04.toByte(), 0x40.toByte(), 0x1c.toByte(), 0, 0)
+        val fullSig = prefix + payload
+        val gorgonHex = fullSig.hex()
+
+        val headers = mutableMapOf(
+            "X-Khronos" to ts.toString(),
+            "X-Gorgon" to gorgonHex,
+            "X-SS-Req-Ticket" to nowMs.toString()
+        )
+        if (bodyStub.isNotEmpty()) {
+            headers["X-SS-STUB"] = bodyStub
+        }
+        return headers
+    }
+
+    fun signStandard(base: String, values: Map<String, String>, body: ByteArray? = null): Request {
+        val now = clock()
+        val query = encode(values + mapOf("_rticket" to now.toString()))
+        val signHeaders = signHongguo(query, body, now)
+        val url = "$base?$query"
+        val headers = linkedMapOf(
+            "User-Agent" to (if (body != null) VendorConstants.VIDEO_UA else VendorConstants.APP_UA),
+            "Accept" to "application/json",
+            "Content-Type" to "application/json; charset=utf-8",
+            "X-XS-From-Web" to "0",
+            "Sdk-Version" to "2"
+        )
+        headers.putAll(signHeaders)
+        return Request(url, headers, body)
+    }
+
     fun sign(base: String, values: Map<String, String>, body: ByteArray? = null): Request {
         val now = clock()
         val ts = (now / 1000).toInt()

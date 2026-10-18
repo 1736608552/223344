@@ -14,11 +14,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 object RemoteControlServer {
     private const val TAG = "RemoteControlServer"
-    private const val START_PORT = 28256
-    private const val MAX_PORT_ATTEMPTS = 100
+    private val PREFERRED_PORTS = intArrayOf(8888, 8080, 9999, 18888, 28256)
+    private const val FALLBACK_START_PORT = 8889
+    private const val MAX_PORT_ATTEMPTS = 50
 
     private var serverSocket: ServerSocket? = null
-    private var currentPort: Int = START_PORT
+    private var currentPort: Int = PREFERRED_PORTS[0]
     private val isRunning = AtomicBoolean(false)
     private var serverThread: Thread? = null
     private var workerExecutor = Executors.newCachedThreadPool()
@@ -45,6 +46,17 @@ object RemoteControlServer {
         textInputCallback = null
     }
 
+    /**
+     * 确保服务处于监听状态，若未运行则自动拉起启动 (自愈保活)
+     */
+    @Synchronized
+    fun ensureRunning(): Boolean {
+        if (isRunning.get() && serverSocket != null && !serverSocket!!.isClosed) {
+            return true
+        }
+        return start()
+    }
+
     @Synchronized
     fun start(): Boolean {
         if (isRunning.get() && serverSocket != null && !serverSocket!!.isClosed) {
@@ -54,12 +66,19 @@ object RemoteControlServer {
 
         stop()
 
+        // 1. 优先尝试智能电视高兼容白名单端口列表 (8888, 8080, 9999, 18888, 28256)
+        val candidatePorts = mutableListOf<Int>()
+        for (p in PREFERRED_PORTS) candidatePorts.add(p)
         for (i in 0 until MAX_PORT_ATTEMPTS) {
-            val port = START_PORT + i
+            val p = FALLBACK_START_PORT + i
+            if (!candidatePorts.contains(p)) candidatePorts.add(p)
+        }
+
+        for (port in candidatePorts) {
             try {
                 val ss = ServerSocket()
                 ss.reuseAddress = true
-                ss.bind(java.net.InetSocketAddress("0.0.0.0", port), 50)
+                ss.bind(java.net.InetSocketAddress(port), 50)
                 serverSocket = ss
                 currentPort = port
                 isRunning.set(true)
@@ -87,7 +106,7 @@ object RemoteControlServer {
                 Log.d(TAG, "Port $port unavailable: ${e.message}")
             }
         }
-        Log.e(TAG, "Failed to bind any port in range $START_PORT..${START_PORT + MAX_PORT_ATTEMPTS}")
+        Log.e(TAG, "Failed to bind any port from candidates")
         return false
     }
 

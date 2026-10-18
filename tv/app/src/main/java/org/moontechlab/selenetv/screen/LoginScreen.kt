@@ -670,9 +670,10 @@ private fun LoginQrCodeSection(
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             try {
+                org.moontechlab.selenetv.server.RemoteControlServer.ensureRunning()
                 val ips = getAllIpAddresses()
                 val ip = ips.find { it.startsWith("192.168.") } ?: ips.firstOrNull()
-                val port = RemoteControlServer.getPort()
+                val port = org.moontechlab.selenetv.server.RemoteControlServer.getPort()
                 if (ip != null) {
                     val url = "http://$ip:$port/remote_control"
                     remoteUrl = url

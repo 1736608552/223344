@@ -176,18 +176,15 @@ class MpvPlayerController(
 
         val rawKey = decryptionKey?.trim() ?: ""
         val cleanKey = if (rawKey.matches(Regex("^[0-9a-fA-F]{32}$"))) rawKey.lowercase() else ""
-        val lavfOptions = mutableListOf(
-            "seg_max_retry=3",
-            "strict=experimental",
-            "allowed_extensions=ALL",
-            "protocol_whitelist=[http,https,tcp,tls,crypto,data,file]"
-        )
         if (cleanKey.isNotEmpty()) {
-            lavfOptions.add("decryption_key=$cleanKey")
+            try {
+                mpv.setPropertyString("demuxer-lavf-o", "decryption_key=$cleanKey")
+            } catch (_: Exception) {}
+        } else {
+            try {
+                mpv.setPropertyString("demuxer-lavf-o", "")
+            } catch (_: Exception) {}
         }
-        try {
-            mpv.setPropertyString("demuxer-lavf-o", lavfOptions.joinToString(","))
-        } catch (_: Exception) {}
 
         if (!headers.isNullOrEmpty()) {
             val headerLines = headers.entries.joinToString("\r\n") { "${it.key}: ${it.value}" }
@@ -197,11 +194,16 @@ class MpvPlayerController(
         }
 
         val startSec = (startMs / 1000.0).coerceAtLeast(0.0)
-        // loadfile 语法：loadfile <url> [<flags> [<index> [<options>]]]。
-        // start 是 option，必须放在第 4 个位置（index 之后）；放在 index 位会被当成整数解析失败、
-        // 导致整条 loadfile 被拒、什么都不播（黑屏）。start=0 时不传 option。
+        val optionsList = mutableListOf<String>()
         if (startSec > 0) {
-            mpv.command(arrayOf("loadfile", url, "replace", "0", "start=$startSec"))
+            optionsList.add("start=$startSec")
+        }
+        if (cleanKey.isNotEmpty()) {
+            optionsList.add("demuxer-lavf-o=decryption_key=$cleanKey")
+        }
+        val optionsStr = optionsList.joinToString(",")
+        if (optionsStr.isNotEmpty()) {
+            mpv.command(arrayOf("loadfile", url, "replace", "0", optionsStr))
         } else {
             mpv.command(arrayOf("loadfile", url, "replace"))
         }

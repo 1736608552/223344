@@ -110,6 +110,13 @@ class MainActivity : ComponentActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    override fun onResume() {
+        super.onResume()
+        activityScope.launch(Dispatchers.IO) {
+            org.moontechlab.selenetv.server.RemoteControlServer.ensureRunning()
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         // 解除单例 RemoteControlServer 对本 Activity 的持有（回调 lambda 捕获了 this），避免泄漏。

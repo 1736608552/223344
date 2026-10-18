@@ -1501,8 +1501,9 @@ private fun RemoteControlQrCode(
     // 当 selectedIp 变化时重新生成二维码
     LaunchedEffect(selectedIp) {
         withContext(Dispatchers.IO) {
+            org.moontechlab.selenetv.server.RemoteControlServer.ensureRunning()
             val ip = selectedIp.ifEmpty { getPreferredIpAddress() }
-            val port = RemoteControlServer.getPort()
+            val port = org.moontechlab.selenetv.server.RemoteControlServer.getPort()
             if (ip != null) {
                 val url = "http://$ip:$port/remote_control"
                 remoteUrl = url
