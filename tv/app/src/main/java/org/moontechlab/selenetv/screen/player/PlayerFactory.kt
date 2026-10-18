@@ -19,9 +19,10 @@ fun resolveEffectivePlayerType(requested: PlayerType, sdkInt: Int): PlayerType =
  */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 object PlayerFactory {
-    fun create(context: Context, userAgent: String? = null): VideoPlayer {
+    fun create(context: Context, userAgent: String? = null, preferMpv: Boolean = false): VideoPlayer {
         val decode = AppDataService.getDecodeModeSync()
-        val type = resolveEffectivePlayerType(AppDataService.getPlayerTypeSync(), Build.VERSION.SDK_INT)
+        val userType = resolveEffectivePlayerType(AppDataService.getPlayerTypeSync(), Build.VERSION.SDK_INT)
+        val type = if (preferMpv && Build.VERSION.SDK_INT >= MPV_MIN_SDK) PlayerType.MPV else userType
         fun exo(): VideoPlayer {
             val ds: DataSource.Factory =
                 if (userAgent != null) MediaHttp.dataSourceFactory(userAgent) else MediaHttp.dataSourceFactory

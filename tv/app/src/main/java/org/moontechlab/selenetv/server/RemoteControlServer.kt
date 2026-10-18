@@ -1,26 +1,28 @@
 package org.moontechlab.selenetv.server
 
 import android.util.Log
-import io.ktor.http.*
-import io.ktor.server.application.*
-import io.ktor.server.engine.*
-import io.ktor.server.netty.*
-import io.ktor.server.request.*
-import io.ktor.server.response.*
-import io.ktor.server.routing.*
-import kotlinx.coroutines.*
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.OutputStream
 import java.net.ServerSocket
+import java.net.Socket
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 遥控器 Web 服务器 (Ktor 实现)
+ * 遥控器 Web 服务器 (原生 Java ServerSocket 实现，零第三方库依赖，超轻量，100% 杜绝 Netty 崩溃与端口拒绝)
  */
 object RemoteControlServer {
     private const val TAG = "RemoteControlServer"
     private const val START_PORT = 28256
     private const val MAX_PORT_ATTEMPTS = 100
 
-    private var server: ApplicationEngine? = null
+    private var serverSocket: ServerSocket? = null
     private var currentPort: Int = START_PORT
+    private val isRunning = AtomicBoolean(false)
+    private var serverThread: Thread? = null
+    private var workerExecutor = Executors.newCachedThreadPool()
+
     private var keyEventCallback: ((Int) -> Unit)? = null
     private var textInputCallback: ((String) -> Unit)? = null
 
@@ -43,81 +45,174 @@ object RemoteControlServer {
         textInputCallback = null
     }
 
+    @Synchronized
     fun start(): Boolean {
-        if (server != null) {
+        if (isRunning.get() && serverSocket != null && !serverSocket!!.isClosed) {
             Log.d(TAG, "Server already running on port $currentPort")
             return true
         }
 
+        stop()
+
         for (i in 0 until MAX_PORT_ATTEMPTS) {
             val port = START_PORT + i
-            if (isPortAvailable(port)) {
-                try {
-                    server = embeddedServer(Netty, port = port, host = "0.0.0.0") {
-                        configureRouting()
-                    }.start(wait = false)
-                    currentPort = port
-                    Log.i(TAG, "Remote control server started on port $port")
-                    return true
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to start server on port $port", e)
+            try {
+                val ss = ServerSocket()
+                ss.reuseAddress = true
+                ss.bind(java.net.InetSocketAddress("0.0.0.0", port), 50)
+                serverSocket = ss
+                currentPort = port
+                isRunning.set(true)
+                if (workerExecutor.isShutdown) {
+                    workerExecutor = Executors.newCachedThreadPool()
                 }
+
+                serverThread = Thread({
+                    Log.i(TAG, "Remote control server listening on 0.0.0.0:$port")
+                    while (isRunning.get() && !ss.isClosed) {
+                        try {
+                            val clientSocket = ss.accept()
+                            workerExecutor.execute {
+                                handleClient(clientSocket)
+                            }
+                        } catch (e: Exception) {
+                            if (!isRunning.get() || ss.isClosed) break
+                            Log.w(TAG, "Error accepting client: ${e.message}")
+                        }
+                    }
+                }, "RemoteControlServer-Listen").apply { isDaemon = true }
+                serverThread?.start()
+                return true
+            } catch (e: Throwable) {
+                Log.d(TAG, "Port $port unavailable: ${e.message}")
             }
         }
-        Log.e(TAG, "Failed to find available port")
+        Log.e(TAG, "Failed to bind any port in range $START_PORT..${START_PORT + MAX_PORT_ATTEMPTS}")
         return false
     }
 
+    @Synchronized
     fun stop() {
-        server?.stop(1000, 2000)
-        server = null
+        isRunning.set(false)
+        try {
+            serverSocket?.close()
+        } catch (_: Exception) {}
+        serverSocket = null
+        try {
+            serverThread?.interrupt()
+        } catch (_: Exception) {}
+        serverThread = null
         Log.i(TAG, "Remote control server stopped")
     }
 
-    private fun isPortAvailable(port: Int): Boolean {
-        return try {
-            ServerSocket(port).use { true }
-        } catch (e: Exception) {
-            false
-        }
-    }
+    private fun handleClient(socket: Socket) {
+        try {
+            socket.soTimeout = 5000
+            val input = socket.getInputStream()
+            val reader = BufferedReader(InputStreamReader(input, Charsets.UTF_8))
+            val output = socket.getOutputStream()
 
-    private fun Application.configureRouting() {
-        routing {
-            get("/") { call.respondRedirect("/remote_control") }
-            get("/remote_control") { call.respondText(remoteControlHtml, ContentType.Text.Html) }
-            post("/api/key") {
-                try {
-                    val keyCode = call.receiveText().trim().toIntOrNull()
+            val requestLine = reader.readLine() ?: return
+            val parts = requestLine.split(" ")
+            if (parts.size < 2) return
+
+            val method = parts[0].uppercase()
+            val rawPath = parts[1]
+            val path = rawPath.substringBefore("?").trim()
+
+            var contentLength = 0
+            while (true) {
+                val headerLine = reader.readLine() ?: break
+                if (headerLine.isEmpty()) break
+                val colonIdx = headerLine.indexOf(':')
+                if (colonIdx > 0) {
+                    val key = headerLine.substring(0, colonIdx).trim().lowercase()
+                    val value = headerLine.substring(colonIdx + 1).trim()
+                    if (key == "content-length") {
+                        contentLength = value.toIntOrNull() ?: 0
+                    }
+                }
+            }
+
+            var body = ""
+            if (contentLength > 0 && contentLength < 65536) {
+                val chars = CharArray(contentLength)
+                var readTotal = 0
+                while (readTotal < contentLength) {
+                    val count = reader.read(chars, readTotal, contentLength - readTotal)
+                    if (count < 0) break
+                    readTotal += count
+                }
+                body = String(chars, 0, readTotal).trim()
+            }
+
+            when {
+                method == "OPTIONS" -> {
+                    sendResponse(output, "204 No Content", "text/plain", "")
+                }
+                method == "GET" && (path == "/" || path.isEmpty()) -> {
+                    sendRedirect(output, "/remote_control")
+                }
+                method == "GET" && path == "/remote_control" -> {
+                    sendResponse(output, "200 OK", "text/html; charset=utf-8", remoteControlHtml)
+                }
+                method == "GET" && path == "/api/ping" -> {
+                    sendResponse(output, "200 OK", "application/json; charset=utf-8", """{"pong":true}""")
+                }
+                method == "POST" && path == "/api/key" -> {
+                    val keyCode = body.toIntOrNull()
                     if (keyCode != null) {
                         Log.d(TAG, "Received key: $keyCode")
                         keyEventCallback?.invoke(keyCode)
-                        call.respondText("""{"success":true}""", ContentType.Application.Json)
+                        sendResponse(output, "200 OK", "application/json; charset=utf-8", """{"success":true}""")
                     } else {
-                        call.respond(HttpStatusCode.BadRequest)
+                        sendResponse(output, "400 Bad Request", "application/json; charset=utf-8", """{"error":"Invalid keyCode"}""")
                     }
-                } catch (e: Exception) {
-                    call.respond(HttpStatusCode.BadRequest)
+                }
+                method == "POST" && path == "/api/text" -> {
+                    if (body.isNotEmpty()) {
+                        Log.d(TAG, "Received text: $body")
+                        textInputCallback?.invoke(body)
+                        sendResponse(output, "200 OK", "application/json; charset=utf-8", """{"success":true}""")
+                    } else {
+                        sendResponse(output, "400 Bad Request", "application/json; charset=utf-8", """{"error":"Empty text"}""")
+                    }
+                }
+                else -> {
+                    sendResponse(output, "404 Not Found", "text/plain; charset=utf-8", "Not Found")
                 }
             }
-            post("/api/text") {
-                try {
-                    val text = call.receiveText().trim()
-                    if (text.isNotEmpty()) {
-                        Log.d(TAG, "Received text: $text")
-                        textInputCallback?.invoke(text)
-                        call.respondText("""{"success":true}""", ContentType.Application.Json)
-                    } else {
-                        call.respond(HttpStatusCode.BadRequest)
-                    }
-                } catch (e: Exception) {
-                    call.respond(HttpStatusCode.BadRequest)
-                }
-            }
-            get("/api/ping") {
-                call.respondText("""{"pong":true}""", ContentType.Application.Json)
-            }
+        } catch (_: Exception) {
+        } finally {
+            try {
+                socket.close()
+            } catch (_: Exception) {}
         }
+    }
+
+    private fun sendRedirect(output: OutputStream, location: String) {
+        val header = "HTTP/1.1 302 Found\r\n" +
+                "Location: $location\r\n" +
+                "Content-Length: 0\r\n" +
+                "Connection: close\r\n\r\n"
+        output.write(header.toByteArray(Charsets.US_ASCII))
+        output.flush()
+    }
+
+    private fun sendResponse(output: OutputStream, status: String, contentType: String, content: String) {
+        val bytes = content.toByteArray(Charsets.UTF_8)
+        val header = "HTTP/1.1 $status\r\n" +
+                "Content-Type: $contentType\r\n" +
+                "Content-Length: ${bytes.size}\r\n" +
+                "Access-Control-Allow-Origin: *\r\n" +
+                "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n" +
+                "Access-Control-Allow-Headers: *\r\n" +
+                "Connection: close\r\n\r\n"
+        output.write(header.toByteArray(Charsets.US_ASCII))
+        if (bytes.isNotEmpty()) {
+            output.write(bytes)
+        }
+        output.flush()
     }
 
 

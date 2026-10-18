@@ -23,11 +23,11 @@ val pubspecFile = rootProject.file("../pubspec.yaml")
 val (resolvedVersionName, resolvedVersionCode) = if (pubspecFile.exists()) {
     val versionLine = pubspecFile.readLines().firstOrNull { it.trim().startsWith("version:") } ?: ""
     val rawVersion = versionLine.substringAfter("version:").trim()
-    val vName = rawVersion.substringBefore("+").trim().ifEmpty { "2.6.127" }
-    val vCode = rawVersion.substringAfter("+", "20727").trim().toIntOrNull() ?: 20727
+    val vName = rawVersion.substringBefore("+").trim().ifEmpty { "2.6.128" }
+    val vCode = rawVersion.substringAfter("+", "20728").trim().toIntOrNull() ?: 20728
     vName to vCode
 } else {
-    (System.getenv("APP_VERSION") ?: "2.6.127") to (System.getenv("APP_BUILD_NUMBER")?.toIntOrNull() ?: 20727)
+    (System.getenv("APP_VERSION") ?: "2.6.128") to (System.getenv("APP_BUILD_NUMBER")?.toIntOrNull() ?: 20728)
 }
 
 android {

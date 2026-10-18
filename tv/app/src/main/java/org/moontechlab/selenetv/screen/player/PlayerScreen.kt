@@ -101,7 +101,10 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     // MainActivity.dispatchKeyEvent，故 5021ed4 的 Activity 级 BACK 自管对这里失效。BackHandler 绑定的是
     // Dialog 自身的 onBackPressedDispatcher，下方 root 直接拦截 BACK 手动驱动它（见 onPreviewKeyEvent 注释）。
     val backDispatcher = androidx.activity.compose.LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
-    val controller: VideoPlayer = remember { PlayerFactory.create(context) }
+    val isShortDrama = launch.selectedSource?.source == "hongguo" ||
+        launch.selectedSource?.source == "shortdrama" ||
+        launch.sources.any { it.source == "hongguo" || it.source == "shortdrama" }
+    val controller: VideoPlayer = remember { PlayerFactory.create(context, preferMpv = isShortDrama) }
     val reporter = remember { PlayProgressReporter() }
 
     // 播放页处于独立 Dialog 窗口（见 DetailScreen 用 Dialog 隔离焦点域）。Compose Dialog 在
@@ -282,9 +285,10 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         val raw = src?.episodes?.getOrNull(index) ?: return
         scope.launch {
             if (src.source == "hongguo" || src.source == "shortdrama") {
-                // 短剧专属直解：精准调用单集专属直链解析通道 (支持 1080P/720P/480P 超清直出)
+                // 短剧专属直解：精准调用单集专属直链解析通道 (支持 1080P/720P/480P 超清直出 + CENC 硬件解密)
                 val seriesId = src.id
                 var resolvedUrl = ""
+                var decryptionKey = ""
                 try {
                     val vid = if (raw.length > 10 && raw.matches(Regex("[0-9]+"))) {
                         raw
@@ -299,13 +303,23 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                             org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid)
                         }
                         resolvedUrl = result["url"] as? String ?: ""
+                        decryptionKey = result["decryptionKey"] as? String ?: ""
                     }
                 } catch (e: Exception) {
                     android.util.Log.w("PlayerScreen", "短剧直链解析异常: ${e.message}")
                 }
 
                 if (resolvedUrl.isNotEmpty()) {
-                    controller.load(resolvedUrl, startMs)
+                    val dramaHeaders = mapOf(
+                        "User-Agent" to "Mozilla/5.0 (Linux; Android 16; 25053RT47C) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36",
+                        "Referer" to "https://novel.snssdk.com/"
+                    )
+                    controller.load(resolvedUrl, startMs, decryptionKey = decryptionKey, headers = dramaHeaders)
+                    return@launch
+                } else {
+                    withContext(Dispatchers.Main) {
+                        org.moontechlab.selenetv.ui.MoonToast.show("短剧分集解析失败，请稍后重试")
+                    }
                     return@launch
                 }
             }

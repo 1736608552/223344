@@ -79,6 +79,42 @@ object HongguoStreamResolver {
                 try { Thread.sleep(200) } catch (_: InterruptedException) {}
             }
         }
+
+        // 兜底通道: 请求 Web 官网 SSR 详情页提取 vid_list (对齐手机端多通道高可用架构)
+        try {
+            val webUrl = "https://hongguoduanju.com/detail?series_id=$cleanId"
+            val webReq = Request.Builder()
+                .url(webUrl)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .build()
+            val webResp = client.newCall(webReq).execute()
+            if (webResp.isSuccessful) {
+                val html = webResp.body?.string() ?: ""
+                val regex = Regex("""_ROUTER_DATA\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL)
+                val match = regex.find(html)
+                if (match != null) {
+                    val root = JSONObject(match.groupValues[1])
+                    val loaderData = root.optJSONObject("loaderData")
+                    if (loaderData != null) {
+                        for (key in loaderData.keys()) {
+                            val page = loaderData.optJSONObject(key) ?: continue
+                            val sd = page.optJSONObject("seriesDetail")
+                            val vList = sd?.optJSONArray("vid_list") ?: page.optJSONArray("vid_list") ?: page.optJSONArray("video_list")
+                            if (vList != null && vList.length() > 0) {
+                                val list = mutableListOf<String>()
+                                for (i in 0 until vList.length()) {
+                                    val v = vList.optString(i).trim()
+                                    if (v.isNotEmpty()) list.add(v)
+                                }
+                                if (list.isNotEmpty()) return list
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
         throw lastErr ?: IOException("Failed to fetch episode vids for $cleanId")
     }
 
@@ -393,10 +429,28 @@ object HongguoStreamResolver {
                 for (cand in candidateList) {
                     val qNum = cand.qNum
                     var rawUrl = cand.mainUrl
-                    if (seed.isNotEmpty() && rawUrl.isNotEmpty()) {
-                        try {
-                            rawUrl = MediaCrypto.decryptUrl(rawUrl, seed)
-                        } catch (_: Exception) {}
+                    if (rawUrl.isNotEmpty()) {
+                        // 1. 若已经是 http/https 直链，直接可用
+                        if (!rawUrl.startsWith("http://") && !rawUrl.startsWith("https://")) {
+                            // 2. 尝试使用 seed 进行 AES 解密 (火山 0xa8 密文)
+                            if (seed.isNotEmpty()) {
+                                try {
+                                    val decrypted = MediaCrypto.decryptUrl(rawUrl, seed)
+                                    if (decrypted.startsWith("http")) {
+                                        rawUrl = decrypted
+                                    }
+                                } catch (_: Exception) {}
+                            }
+                            // 3. 尝试标准 Base64 解码 (若未加密仅是 Base64 包装)
+                            if (!rawUrl.startsWith("http://") && !rawUrl.startsWith("https://")) {
+                                try {
+                                    val b64Str = String(decode64(rawUrl), Charsets.UTF_8)
+                                    if (b64Str.startsWith("http://") || b64Str.startsWith("https://")) {
+                                        rawUrl = b64Str
+                                    }
+                                } catch (_: Exception) {}
+                            }
+                        }
                     }
                     if (rawUrl.startsWith("http")) {
                         val qLabel = "${qNum}P"

@@ -25,6 +25,15 @@ interface VideoPlayer {
     var resizeMode: VideoResizeMode
 
     fun load(url: String, startMs: Long, playWhenReady: Boolean = true)
+    fun load(
+        url: String,
+        startMs: Long,
+        playWhenReady: Boolean = true,
+        decryptionKey: String? = null,
+        headers: Map<String, String>? = null,
+    ) {
+        load(url, startMs, playWhenReady)
+    }
     fun seekTo(ms: Long)
     fun togglePlay()
     /** 强制暂停（不是切换）。宿主在 App 切后台时调用。 */

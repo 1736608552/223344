@@ -36,6 +36,8 @@ class MpvPlayerController(
     private var pendingUrl: String? = null
     private var pendingStartMs: Long = 0
     private var pendingPlayWhenReady: Boolean = true
+    private var pendingDecryptionKey: String? = null
+    private var pendingHeaders: Map<String, String>? = null
     private var surfaceAttached = false
     @Volatile private var released = false
 
@@ -133,6 +135,16 @@ class MpvPlayerController(
     }
 
     override fun load(url: String, startMs: Long, playWhenReady: Boolean) {
+        load(url, startMs, playWhenReady, null, null)
+    }
+
+    override fun load(
+        url: String,
+        startMs: Long,
+        playWhenReady: Boolean,
+        decryptionKey: String?,
+        headers: Map<String, String>?,
+    ) {
         error = null
         hasStarted = false
         positionMs = 0; durationMs = 0; bufferedMs = 0
@@ -141,17 +153,49 @@ class MpvPlayerController(
         // 让加载月牙立即出现，避免首帧前一段纯黑无反馈；首帧到达（time-pos>0）时清掉。
         isBuffering = true
         if (!surfaceAttached) {
-            pendingUrl = url; pendingStartMs = startMs
+            pendingUrl = url
+            pendingStartMs = startMs
             pendingPlayWhenReady = playWhenReady
+            pendingDecryptionKey = decryptionKey
+            pendingHeaders = headers
             return
         }
-        doLoad(url, startMs, playWhenReady)
+        doLoad(url, startMs, playWhenReady, decryptionKey, headers)
     }
 
-    private fun doLoad(url: String, startMs: Long, playWhenReady: Boolean) {
+    private fun doLoad(
+        url: String,
+        startMs: Long,
+        playWhenReady: Boolean,
+        decryptionKey: String? = null,
+        headers: Map<String, String>? = null,
+    ) {
         // 若已有文件在播，replace 会先给旧文件发一个 END_FILE(stop)，需忽略，避免误判为新源加载失败。
         if (fileActive) pendingStopEndFiles++
         fileActive = true
+
+        val rawKey = decryptionKey?.trim() ?: ""
+        val cleanKey = if (rawKey.matches(Regex("^[0-9a-fA-F]{32}$"))) rawKey.lowercase() else ""
+        val lavfOptions = mutableListOf(
+            "seg_max_retry=3",
+            "strict=experimental",
+            "allowed_extensions=ALL",
+            "protocol_whitelist=[http,https,tcp,tls,crypto,data,file]"
+        )
+        if (cleanKey.isNotEmpty()) {
+            lavfOptions.add("decryption_key=$cleanKey")
+        }
+        try {
+            mpv.setPropertyString("demuxer-lavf-o", lavfOptions.joinToString(","))
+        } catch (_: Exception) {}
+
+        if (!headers.isNullOrEmpty()) {
+            val headerLines = headers.entries.joinToString("\r\n") { "${it.key}: ${it.value}" }
+            try {
+                mpv.setPropertyString("http-header-fields", headerLines)
+            } catch (_: Exception) {}
+        }
+
         val startSec = (startMs / 1000.0).coerceAtLeast(0.0)
         // loadfile 语法：loadfile <url> [<flags> [<index> [<options>]]]。
         // start 是 option，必须放在第 4 个位置（index 之后）；放在 index 位会被当成整数解析失败、
@@ -244,7 +288,12 @@ class MpvPlayerController(
                             mpv.setOptionString("force-window", "yes")
                             mpv.setPropertyString("vo", "gpu")
                             surfaceAttached = true
-                            pendingUrl?.let { doLoad(it, pendingStartMs, pendingPlayWhenReady); pendingUrl = null }
+                            pendingUrl?.let {
+                                doLoad(it, pendingStartMs, pendingPlayWhenReady, pendingDecryptionKey, pendingHeaders)
+                                pendingUrl = null
+                                pendingDecryptionKey = null
+                                pendingHeaders = null
+                            }
                         }
                         override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) {
                             if (released) return
