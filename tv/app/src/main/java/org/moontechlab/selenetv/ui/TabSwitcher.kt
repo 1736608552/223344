@@ -111,11 +111,19 @@ fun TabSwitcher(
         }
     }
     
-    // 应用启动时，焦点默认在当前激活的标签上
+    // 应用启动时，焦点默认在当前激活的标签上（多阶延迟尝试，保障首帧稳定获焦）
     LaunchedEffect(selectedTabId) {
         val selectedIndex = tabs.indexOfFirst { it.id == selectedTabId }
         if (selectedIndex >= 0) {
-            focusRequesters[selectedIndex].requestFocus()
+            val requester = focusRequesters[selectedIndex]
+            try { requester.requestFocus() } catch (_: Exception) {}
+            // 阶梯重试：50ms, 120ms, 250ms, 500ms
+            for (delayMs in listOf(50L, 120L, 250L, 500L)) {
+                delay(delayMs)
+                if (focusedTabId == null) {
+                    try { requester.requestFocus() } catch (_: Exception) {}
+                }
+            }
         }
     }
     

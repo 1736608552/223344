@@ -69,7 +69,7 @@ fun ShortDramaTab(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var currentPage by remember { mutableIntStateOf(1) }
 
-    val genreFocusRequester = remember { FocusRequester() }
+    val genreFocusRequester = focusRequester
     val rankFocusRequester = remember { FocusRequester() }
     val contentFocusRequester = remember { FocusRequester() }
 

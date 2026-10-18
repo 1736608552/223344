@@ -38,6 +38,11 @@ import kotlinx.coroutines.delay
 import org.moontechlab.selenetv.model.VideoInfo
 import org.moontechlab.selenetv.util.getImageUrlSync
 
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.*
+
 /**
  * TV 端专属 Hero 幻灯片项目数据模型
  */
@@ -61,6 +66,7 @@ data class TvHeroItem(
  * 2. 醒目视觉层次：流光类型胶囊 + 豆瓣高光金星评分 + 28sp 电影级巨幅主标题 + 两行看点摘要
  * 3. 遥控器与触屏双模按键：高光高斯毛玻璃「立即播放」与「详情」按钮，获焦呼吸光晕
  * 4. 动态胶囊呼吸指示器，获焦自动驻留防打扰，离开后 6 秒平滑淡入淡出（Crossfade）轮播
+ * 5. 坚如磐石的 TV 遥控器焦点感知与双向链条（上通导航栏，下达推荐横轴，杜绝失焦与焦点死锁）
  */
 @Composable
 fun TvHeroBanner(
@@ -68,17 +74,22 @@ fun TvHeroBanner(
     onPlayClick: (VideoInfo) -> Unit,
     onDetailClick: (VideoInfo) -> Unit,
     modifier: Modifier = Modifier,
+    bannerFocusRequester: FocusRequester = remember { FocusRequester() },
+    onNavigateUp: (() -> Unit)? = null,
+    onNavigateDown: (() -> Unit)? = null,
 ) {
     if (items.isEmpty()) return
 
     var currentIndex by remember { mutableIntStateOf(0) }
-    var isUserInteracting by remember { mutableStateOf(false) }
+    var isBannerFocused by remember { mutableStateOf(false) }
 
-    // 自动轮播逻辑（6秒切换，遥控器交互时暂停）
-    LaunchedEffect(currentIndex, isUserInteracting, items.size) {
-        if (!isUserInteracting && items.size > 1) {
+    // 自动轮播逻辑（6秒切换，横幅获焦时绝对暂停防打扰与防失焦）
+    LaunchedEffect(currentIndex, isBannerFocused, items.size) {
+        if (!isBannerFocused && items.size > 1) {
             delay(6000)
-            currentIndex = (currentIndex + 1) % items.size
+            if (!isBannerFocused) {
+                currentIndex = (currentIndex + 1) % items.size
+            }
         }
     }
 
@@ -92,6 +103,9 @@ fun TvHeroBanner(
             .clip(RoundedCornerShape(18.dp))
             .background(Color(0xFF141414))
             .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(18.dp))
+            .onFocusChanged { focusState ->
+                isBannerFocused = focusState.hasFocus
+            }
     ) {
         // 1. 大剧照沉浸背景（带平滑淡入淡出动效）
         Crossfade(
@@ -237,27 +251,70 @@ fun TvHeroBanner(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // 按钮 1：立即播放
+                // 按钮 1：立即播放（挂载 bannerFocusRequester，支持上下遥控导航）
                 HeroActionButton(
                     text = "立即播放",
                     icon = Icons.Default.PlayArrow,
                     isPrimary = true,
                     onClick = { onPlayClick(currentItem.videoInfo) },
-                    onFocusChanged = { isUserInteracting = it }
+                    onFocusChanged = { focused ->
+                        if (focused) isBannerFocused = true
+                    },
+                    modifier = Modifier
+                        .focusRequester(bannerFocusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionUp -> {
+                                        onNavigateUp?.invoke()
+                                        onNavigateUp != null
+                                    }
+                                    Key.DirectionDown -> {
+                                        onNavigateDown?.invoke()
+                                        onNavigateDown != null
+                                    }
+                                    Key.DirectionLeft -> {
+                                        true // 左边界锁定，防止移出窗口
+                                    }
+                                    else -> false
+                                }
+                            } else false
+                        }
                 )
 
-                // 按钮 2：详情信息
+                // 按钮 2：详情信息（支持上下遥控导航，右侧锁定防逃逸）
                 HeroActionButton(
                     text = "查看详情",
                     icon = Icons.Default.Info,
                     isPrimary = false,
                     onClick = { onDetailClick(currentItem.videoInfo) },
-                    onFocusChanged = { isUserInteracting = it }
+                    onFocusChanged = { focused ->
+                        if (focused) isBannerFocused = true
+                    },
+                    modifier = Modifier.onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown) {
+                            when (keyEvent.key) {
+                                Key.DirectionUp -> {
+                                    onNavigateUp?.invoke()
+                                    onNavigateUp != null
+                                }
+                                Key.DirectionDown -> {
+                                    onNavigateDown?.invoke()
+                                    onNavigateDown != null
+                                }
+                                Key.DirectionRight -> {
+                                    // 阻断向右进入指示器盲区，彻底杜绝失焦
+                                    true
+                                }
+                                else -> false
+                            }
+                        } else false
+                    }
                 )
             }
         }
 
-        // 4. 右下角动态胶囊呼吸指示器与触屏快速切换
+        // 4. 右下角动态胶囊呼吸指示器与触屏快速切换（彻底禁止遥控器焦点进入）
         Row(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -284,7 +341,11 @@ fun TvHeroBanner(
                         .clip(CircleShape)
                         .background(if (isSelected) Color(0xFFFF5252) else Color.White)
                         .graphicsLayer { this.alpha = alpha }
-                        .clickable { currentIndex = index }
+                        .focusProperties { canFocus = false }
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { currentIndex = index }
                 )
             }
         }

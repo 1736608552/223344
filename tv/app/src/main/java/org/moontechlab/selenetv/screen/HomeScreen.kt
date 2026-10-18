@@ -221,16 +221,20 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
                     selectedTabId = selectedTabId,
                     onTabSelected = { tabId -> selectedTabId = tabId },
                     onNavigateDown = { currentTab ->
-                        when (currentTab) {
-                            "search" -> searchFocusRequester.requestFocus()
-                            "home" -> homeTabFocusRequester.requestFocus()
-                            "movies" -> movieCategoryFocusRequester.requestFocus()
-                            "series" -> tvCategoryFocusRequester.requestFocus()
-                            "anime" -> animeCategoryFocusRequester.requestFocus()
-                            "show" -> showCategoryFocusRequester.requestFocus()
-                            "short_drama" -> shortDramaFocusRequester.requestFocus()
-                            "live" -> liveFocusRequester.requestFocus()
-                            "settings" -> settingsFocusRequester.requestFocus()
+                        try {
+                            when (currentTab) {
+                                "search" -> searchFocusRequester.requestFocus()
+                                "home" -> homeTabFocusRequester.requestFocus()
+                                "movies" -> movieCategoryFocusRequester.requestFocus()
+                                "series" -> tvCategoryFocusRequester.requestFocus()
+                                "anime" -> animeCategoryFocusRequester.requestFocus()
+                                "show" -> showCategoryFocusRequester.requestFocus()
+                                "short_drama" -> shortDramaFocusRequester.requestFocus()
+                                "live" -> liveFocusRequester.requestFocus()
+                                "settings" -> settingsFocusRequester.requestFocus()
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("HomeScreen", "onNavigateDown focus request failed", e)
                         }
                     },
                     onBackPressed = {
@@ -262,6 +266,11 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
                     scrollState = scrollState,
                     onVideoSelected = openDetail,
                     homeRefreshKey = homeRefreshKey,
+                    onNavigateUpToHeader = {
+                        try {
+                            tabSwitcherFocusRequester.requestFocus()
+                        } catch (_: Exception) {}
+                    },
                 )
                 "movies" -> MovieTab(
                     categoryFocusRequester = movieCategoryFocusRequester,

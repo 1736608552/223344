@@ -51,10 +51,15 @@ fun HomeTab(
     scrollState: ScrollState = rememberScrollState(),
     onVideoSelected: (VideoInfo) -> Unit = {},
     homeRefreshKey: Int = 0,
+    onNavigateUpToHeader: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val doubanCacheService = remember { DoubanCacheService.getInstance(context) }
     val coroutineScope = rememberCoroutineScope()
+    
+    // 首屏焦点请求器（用于衔接 banner 与内容推荐横轴）
+    val firstContentFocusRequester = remember { FocusRequester() }
+    val bannerFocusRequester = remember { FocusRequester() }
     
     // 播放历史数据状态
     var playRecords by remember { mutableStateOf<List<VideoInfo>>(emptyList()) }
@@ -461,7 +466,6 @@ fun HomeTab(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(scrollState)
-                .focusRequester(focusRequester)
                 .focusGroup()
                 .onPreviewKeyEvent { keyEvent ->
                     if (keyEvent.type == KeyEventType.KeyDown) {
@@ -482,23 +486,50 @@ fun HomeTab(
 
             // 全新设计的 TV 专属现代化沉浸视界幻灯片 (优先呈现 TMDB 超清大图)
             val displayBannerItems = if (enrichedBannerItems.isNotEmpty()) enrichedBannerItems else heroBannerItems
-            if (displayBannerItems.isNotEmpty()) {
+            val hasBanner = displayBannerItems.isNotEmpty()
+
+            // 确定首个展示的卡片横轴（用于与 Banner 或顶部 Header 形成焦点回路）
+            val showPlayRecords = isLoggedIn && (playRecords.isNotEmpty() || isLoadingPlayRecords || errorPlayRecords != null)
+            val showFavorites = isLoggedIn && (favorites.isNotEmpty() || isLoadingFavorites || errorFavorites != null)
+            val isFirstSectionPlayRecords = showPlayRecords
+            val isFirstSectionFavorites = !showPlayRecords && showFavorites
+            val isFirstSectionHotMovies = !showPlayRecords && !showFavorites
+
+            // 首行卡片向上导航：有 banner 回到 banner 的立即播放；无 banner 直达顶部 TabSwitcher
+            val onNavigateUpFromFirstSection: () -> Unit = {
+                if (hasBanner) {
+                    try { focusRequester.requestFocus() } catch (_: Exception) {}
+                } else {
+                    onNavigateUpToHeader?.invoke()
+                }
+            }
+
+            if (hasBanner) {
                 TvHeroBanner(
                     items = displayBannerItems,
                     onPlayClick = onVideoSelected,
                     onDetailClick = onVideoSelected,
+                    bannerFocusRequester = focusRequester,
+                    onNavigateUp = onNavigateUpToHeader,
+                    onNavigateDown = {
+                        try { firstContentFocusRequester.requestFocus() } catch (_: Exception) {}
+                    },
                     modifier = Modifier.padding(bottom = 6.dp)
                 )
             }
             
             // 播放历史 - 仅登录后、且有数据/加载中/有错误时显示（#4 未登录隐藏）
-            if (isLoggedIn && (playRecords.isNotEmpty() || isLoadingPlayRecords || errorPlayRecords != null)) {
+            if (showPlayRecords) {
                 RecommendSection(
                     title = "继续观看",
                     videos = playRecords,
                     from = VideoCardSource.PLAYRECORD,
                     isLoading = isLoadingPlayRecords,
                     errorMessage = errorPlayRecords,
+                    firstCardFocusRequester = if (isFirstSectionPlayRecords) {
+                        if (!hasBanner) focusRequester else firstContentFocusRequester
+                    } else null,
+                    onNavigateUp = if (isFirstSectionPlayRecords) onNavigateUpFromFirstSection else null,
                     onRetry = { loadPlayRecordsAndFavorites() },
                     onVideoClick = onVideoSelected,
                     onVideoLongClick = { video ->
@@ -510,13 +541,17 @@ fun HomeTab(
             }
 
             // 收藏夹 - 仅登录后、且有数据/加载中/有错误时显示（#4 未登录隐藏）
-            if (isLoggedIn && (favorites.isNotEmpty() || isLoadingFavorites || errorFavorites != null)) {
+            if (showFavorites) {
                 RecommendSection(
                     title = "我的收藏",
                     videos = favorites,
                     from = VideoCardSource.FAVORITE,
                     isLoading = isLoadingFavorites,
                     errorMessage = errorFavorites,
+                    firstCardFocusRequester = if (isFirstSectionFavorites) {
+                        if (!hasBanner) focusRequester else firstContentFocusRequester
+                    } else null,
+                    onNavigateUp = if (isFirstSectionFavorites) onNavigateUpFromFirstSection else null,
                     onRetry = { loadPlayRecordsAndFavorites() },
                     onVideoClick = onVideoSelected,
                     onVideoLongClick = { video ->
@@ -533,6 +568,10 @@ fun HomeTab(
                 from = VideoCardSource.DOUBAN,
                 isLoading = isLoadingMovies,
                 errorMessage = errorMovies,
+                firstCardFocusRequester = if (isFirstSectionHotMovies) {
+                    if (!hasBanner) focusRequester else firstContentFocusRequester
+                } else null,
+                onNavigateUp = if (isFirstSectionHotMovies) onNavigateUpFromFirstSection else null,
                 onRetry = { loadHotMovies() },
                 onVideoClick = onVideoSelected
             )

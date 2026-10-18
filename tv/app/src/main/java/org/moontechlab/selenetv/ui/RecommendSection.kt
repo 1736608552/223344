@@ -65,11 +65,14 @@ fun RecommendSection(
     onVideoClick: (VideoInfo) -> Unit,
     // 长按某张卡片的回调，为 null 时该区块卡片不响应长按
     onVideoLongClick: ((VideoInfo) -> Unit)? = null,
+    firstCardFocusRequester: FocusRequester? = null,
+    onNavigateUp: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val firstItemFocusRequester = remember { FocusRequester() }
+    val targetFirstFocusRequester = firstCardFocusRequester ?: firstItemFocusRequester
     var isRowFocused by remember { mutableStateOf(false) }
     val detailReturnFocus = org.moontechlab.selenetv.screen.LocalDetailReturnFocus.current
 
@@ -123,7 +126,7 @@ fun RecommendSection(
                 modifier = Modifier
                     .fillMaxWidth()
                     .focusGroup()
-                    .focusRestorer(firstItemFocusRequester)
+                    .focusRestorer(targetFirstFocusRequester)
                     .onFocusChanged { focusState ->
                         // 从其他行纵向进入本行时，自动聚焦第一张卡片。
                         // 但详情返回还原期间要跳过，否则会把精确还原到的卡片弹回第一张
@@ -132,7 +135,7 @@ fun RecommendSection(
                             isRowFocused = true
                             if (detailReturnFocus?.restoreInProgress != true) {
                                 try {
-                                    firstItemFocusRequester.requestFocus()
+                                    targetFirstFocusRequester.requestFocus()
                                 } catch (_: Exception) {
                                     // 忽略焦点请求失败
                                 }
@@ -158,9 +161,9 @@ fun RecommendSection(
                 items(10, contentType = { "skeleton" }) { index ->
                     SkeletonVideoCard(
                         modifier = Modifier
-                            .then(if (index == 0) Modifier.focusRequester(firstItemFocusRequester) else Modifier)
+                            .then(if (index == 0) Modifier.focusRequester(targetFirstFocusRequester) else Modifier)
                             .onPreviewKeyEvent { keyEvent ->
-                                handleVerticalNavigation(keyEvent, listState, coroutineScope)
+                                handleVerticalNavigation(keyEvent, listState, coroutineScope, onNavigateUp)
                             }
                     )
                 }
@@ -182,9 +185,9 @@ fun RecommendSection(
                         onLongClick = onVideoLongClick?.let { handler -> { handler(video) } },
                         sectionKey = title,
                         modifier = Modifier
-                            .then(if (index == 0) Modifier.focusRequester(firstItemFocusRequester) else Modifier)
+                            .then(if (index == 0) Modifier.focusRequester(targetFirstFocusRequester) else Modifier)
                             .onPreviewKeyEvent { keyEvent ->
-                                handleVerticalNavigation(keyEvent, listState, coroutineScope)
+                                handleVerticalNavigation(keyEvent, listState, coroutineScope, onNavigateUp)
                             }
                     )
                 }
@@ -246,17 +249,28 @@ private fun SectionErrorState(
 }
 
 /**
- * 处理垂直导航 - 重置水平滚动位置
+ * 处理垂直导航 - 重置水平滚动位置并支持向上回调
  */
 private fun handleVerticalNavigation(
     keyEvent: KeyEvent,
     listState: LazyListState,
-    coroutineScope: kotlinx.coroutines.CoroutineScope
+    coroutineScope: kotlinx.coroutines.CoroutineScope,
+    onNavigateUp: (() -> Unit)? = null
 ): Boolean {
     if (keyEvent.type == KeyEventType.KeyDown) {
         when (keyEvent.key) {
-            Key.DirectionUp, Key.DirectionDown -> {
-                // 垂直导航时重置水平滚动位置
+            Key.DirectionUp -> {
+                // 垂直向上导航时重置水平滚动位置
+                coroutineScope.launch {
+                    listState.animateScrollToItem(0)
+                }
+                if (onNavigateUp != null) {
+                    onNavigateUp.invoke()
+                    return true
+                }
+            }
+            Key.DirectionDown -> {
+                // 垂直向下导航时重置水平滚动位置
                 coroutineScope.launch {
                     listState.animateScrollToItem(0)
                 }
