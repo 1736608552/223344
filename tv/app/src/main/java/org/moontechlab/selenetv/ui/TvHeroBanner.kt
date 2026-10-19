@@ -78,6 +78,7 @@ fun TvHeroBanner(
     bannerFocusRequester: FocusRequester = remember { FocusRequester() },
     onNavigateUp: (() -> Unit)? = null,
     onNavigateDown: (() -> Unit)? = null,
+    onBannerFocused: (() -> Unit)? = null,
 ) {
     if (items.isEmpty()) return
 
@@ -395,7 +396,10 @@ fun TvHeroBanner(
                     isPrimary = true,
                     onClick = { onPlayClick(currentItem.videoInfo) },
                     onFocusChanged = { focused ->
-                        if (focused) isBannerFocused = true
+                        if (focused) {
+                            isBannerFocused = true
+                            onBannerFocused?.invoke()
+                        }
                     },
                     modifier = Modifier
                         .focusRequester(bannerFocusRequester)
@@ -426,7 +430,10 @@ fun TvHeroBanner(
                     isPrimary = false,
                     onClick = { onDetailClick(currentItem.videoInfo) },
                     onFocusChanged = { focused ->
-                        if (focused) isBannerFocused = true
+                        if (focused) {
+                            isBannerFocused = true
+                            onBannerFocused?.invoke()
+                        }
                     },
                     modifier = Modifier.onPreviewKeyEvent { keyEvent ->
                         if (keyEvent.type == KeyEventType.KeyDown) {

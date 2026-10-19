@@ -268,6 +268,9 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
                     onVideoSelected = openDetail,
                     homeRefreshKey = homeRefreshKey,
                     onNavigateUpToHeader = {
+                        coroutineScope.launch {
+                            scrollState.animateScrollTo(0)
+                        }
                         try {
                             tabSwitcherFocusRequester.requestFocus()
                         } catch (_: Exception) {}

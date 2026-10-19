@@ -503,8 +503,11 @@ fun HomeTab(
                 else -> hotMoviesFocusRequester
             }
 
-            // 向上直达 Banner 或顶部导航栏
+            // 向上直达 Banner 或顶部导航栏：联动平滑回滚至顶部 0 位置，完整展开巨幕 Banner 与顶部导航栏
             val navigateUpToBannerOrHeader: () -> Unit = {
+                coroutineScope.launch {
+                    scrollState.animateScrollTo(0)
+                }
                 if (hasBanner) {
                     try { focusRequester.requestFocus() } catch (_: Exception) {}
                 } else {
@@ -521,6 +524,13 @@ fun HomeTab(
                     onNavigateUp = onNavigateUpToHeader,
                     onNavigateDown = {
                         try { firstContentRequester.requestFocus() } catch (_: Exception) {}
+                    },
+                    onBannerFocused = {
+                        if (scrollState.value > 0) {
+                            coroutineScope.launch {
+                                scrollState.animateScrollTo(0)
+                            }
+                        }
                     },
                     modifier = Modifier.padding(bottom = 6.dp)
                 )
@@ -569,6 +579,7 @@ fun HomeTab(
                             if (showPlayRecords) {
                                 playRecordsFocusRequester.requestFocus()
                             } else if (hasBanner) {
+                                coroutineScope.launch { scrollState.animateScrollTo(0) }
                                 focusRequester.requestFocus()
                             } else {
                                 onNavigateUpToHeader?.invoke()
@@ -602,6 +613,7 @@ fun HomeTab(
                         } else if (showPlayRecords) {
                             playRecordsFocusRequester.requestFocus()
                         } else if (hasBanner) {
+                            coroutineScope.launch { scrollState.animateScrollTo(0) }
                             focusRequester.requestFocus()
                         } else {
                             onNavigateUpToHeader?.invoke()
