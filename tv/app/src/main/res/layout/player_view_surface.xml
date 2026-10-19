@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SurfaceView 原生硬件直通图层 PlayerView。
+  直通电视/机顶盒底层 VPU 视频处理单元与 SurfaceFlinger 硬件 Overlay 叠加层，
+  零显存拷贝 (Zero-Copy)，无 GPU 纹理采样瓶颈，彻底终结机顶盒播放掉帧与音画顿挫。
+-->
+<androidx.media3.ui.PlayerView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    app:surface_type="surface_view"
+    app:use_controller="false"
+    app:resize_mode="fit" />

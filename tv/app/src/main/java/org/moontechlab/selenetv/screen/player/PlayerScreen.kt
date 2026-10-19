@@ -299,8 +299,8 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                         vids.getOrNull(index) ?: ""
                     }
                     if (vid.isNotEmpty()) {
-                        val activeDecode = org.moontechlab.selenetv.service.AppDataService.getDecodeModeSync()
-                        val maxQ = if (activeDecode == org.moontechlab.selenetv.service.AppDataService.DecodeMode.SOFTWARE) 720 else 1080
+                        // 默认 1080P 超清原画硬解直出，满足高性能 TV 机顶盒硬件解码
+                        val maxQ = 1080
                         val result = withContext(Dispatchers.IO) {
                             org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ)
                         }

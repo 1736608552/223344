@@ -41,7 +41,6 @@ class PlayerController(
         .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
         .setLoadControl(org.moontechlab.selenetv.util.DeviceMemoryManager.createExoLoadControl(context))
         .apply {
-            // 软解：用把系统软件解码器排前的 RenderersFactory；硬解保持默认。
             if (decodeMode == AppDataService.DecodeMode.SOFTWARE) {
                 setRenderersFactory(object : DefaultRenderersFactory(context) {
                     override fun buildVideoRenderers(
@@ -61,9 +60,16 @@ class PlayerController(
                         )
                     }
                 })
+            } else {
+                setRenderersFactory(DefaultRenderersFactory(context).apply {
+                    setEnableDecoderFallback(true)
+                    setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
+                })
             }
         }
-        .build()
+        .build().apply {
+            videoScalingMode = androidx.media3.common.C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+        }
 
     override var positionMs by mutableLongStateOf(0L); private set
     override var durationMs by mutableLongStateOf(0L); private set
@@ -205,11 +211,11 @@ class PlayerController(
 
     @Composable
     override fun VideoSurface(modifier: Modifier) {
-        // texture_view 背景的 PlayerView：视频随覆盖层一起淡出（见 R.layout.player_view_texture）。
+        // surface_view 硬件直通图层：视频像素直通 VPU 视频处理单元，零拷贝，杜绝机顶盒掉帧（见 R.layout.player_view_surface）。
         AndroidView(
             factory = { ctx ->
                 (android.view.LayoutInflater.from(ctx)
-                    .inflate(org.moontechlab.selenetv.R.layout.player_view_texture, null) as PlayerView)
+                    .inflate(org.moontechlab.selenetv.R.layout.player_view_surface, null) as PlayerView)
                     .apply {
                         useController = false
                         player = exo
