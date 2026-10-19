@@ -87,13 +87,22 @@ object LocalStore {
 
     // ==================== 播放记录 ====================
     // 序列化形态：Map<key, PlayRecord>，key = "${source}+${id}"。
+    // 同步内存缓存以便首帧瞬发读取，避免异步解析导致详情页主按钮跳变与焦点错位。
+    @Volatile
+    private var playRecordsCache: Map<String, PlayRecord>? = null
 
     fun getPlayRecords(): Map<String, PlayRecord> {
+        playRecordsCache?.let { return it }
         val s = prefs.getString(KEY_PLAY_RECORDS, null) ?: return emptyMap()
-        return safeDecode("播放记录", emptyMap()) { json.decodeFromString<Map<String, PlayRecord>>(s) }
+        val decoded = safeDecode("播放记录", emptyMap()) { json.decodeFromString<Map<String, PlayRecord>>(s) }
+        playRecordsCache = decoded
+        return decoded
     }
 
+    fun getCachedPlayRecords(): Map<String, PlayRecord> = playRecordsCache ?: getPlayRecords()
+
     fun savePlayRecords(records: Map<String, PlayRecord>) {
+        playRecordsCache = records
         prefs.edit().putString(KEY_PLAY_RECORDS, json.encodeToString(records)).apply()
     }
 
@@ -144,5 +153,6 @@ object LocalStore {
             .remove(KEY_SEARCH_HISTORY)
             .apply()
         favoritesCache = null
+        playRecordsCache = null
     }
 }

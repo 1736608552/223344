@@ -6,9 +6,12 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.moontechlab.selenetv.model.SearchResult
 import org.moontechlab.selenetv.model.ShortDrama
 import org.moontechlab.selenetv.model.ShortDramaCategory
 import okhttp3.Request
@@ -515,5 +518,81 @@ object ShortDramaService {
             "short_play" -> list.filter { it.categoryName == "真人剧" }
             else -> list
         }
+    }
+
+    /**
+     * 搜索红果短剧并转换为全局通用的 SearchResult 列表 (用于并入 TV 端全局搜索体系)
+     */
+    suspend fun searchDramas(query: String): List<SearchResult> = withContext(Dispatchers.IO) {
+        val cleanQ = query.trim()
+        if (cleanQ.isEmpty()) return@withContext emptyList()
+
+        try {
+            val searchUrl = "https://hongguoduanju.com/search/" + java.net.URLEncoder.encode(cleanQ, "UTF-8")
+            val conn = (URL(searchUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 6000
+                readTimeout = 8000
+                setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
+            }
+
+            val html = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val routerMatch = Regex("""_ROUTER_DATA\s*=\s*(\{.*?\});""").find(html)
+            if (routerMatch != null) {
+                val jsonStr = routerMatch.groupValues[1]
+                val rootObj = json.parseToJsonElement(jsonStr).jsonObject
+                val loaderData = rootObj["loaderData"]?.jsonObject
+                val pageData = loaderData?.get("search_(keyword)/page")?.jsonObject
+                    ?: loaderData?.get("search_page")?.jsonObject
+                val searchList = pageData?.get("searchList")?.jsonArray
+
+                if (searchList != null && searchList.isNotEmpty()) {
+                    val results = mutableListOf<SearchResult>()
+                    for (elem in searchList) {
+                        try {
+                            val itObj = elem.jsonObject
+                            val vData = itObj["video_data"]?.jsonObject
+                            val title = itObj["name"]?.jsonPrimitive?.contentOrNull
+                                ?: vData?.get("series_title")?.jsonPrimitive?.contentOrNull
+                                ?: continue
+                            val seriesId = vData?.get("series_id")?.jsonPrimitive?.contentOrNull
+                                ?: itObj["keyword"]?.jsonPrimitive?.contentOrNull
+                                ?: continue
+                            val cover = vData?.get("series_cover")?.jsonPrimitive?.contentOrNull
+                                ?: itObj["cover_url"]?.jsonPrimitive?.contentOrNull
+                                ?: ""
+                            val epCount = vData?.get("episode_cnt")?.jsonPrimitive?.intOrNull ?: 80
+                            val intro = vData?.get("series_intro")?.jsonPrimitive?.contentOrNull.orEmpty()
+
+                            val epList = List(epCount) { (it + 1).toString() }
+                            val epTitles = List(epCount) { "第${it + 1}集" }
+
+                            results.add(
+                                SearchResult(
+                                    id = seriesId,
+                                    title = title,
+                                    poster = cover,
+                                    episodes = epList,
+                                    episodesTitles = epTitles,
+                                    source = "hongguo",
+                                    sourceName = "精品短剧",
+                                    year = "2026",
+                                    desc = intro.ifEmpty { "精品短剧官方原画，多清晰度极速秒开" },
+                                    typeName = "短剧"
+                                )
+                            )
+                        } catch (_: Exception) {}
+                    }
+                    if (results.isNotEmpty()) {
+                        return@withContext results
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "搜索红果短剧失败: ${e.message}")
+        }
+        emptyList()
     }
 }

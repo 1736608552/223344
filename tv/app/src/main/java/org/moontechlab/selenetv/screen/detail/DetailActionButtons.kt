@@ -106,20 +106,25 @@ fun DetailActionButtons(
             LoadingActionPill(modifier = Modifier.focusRequester(primaryFocusRequester))
         }
         if (showContinue) {
-            ContinueActionButton(
-                episode = continueEpisode,
-                progress = continueProgress,
-                onClick = onContinue,
-                modifier = Modifier.focusRequester(primaryFocusRequester),
-            )
+            androidx.compose.runtime.key("continue_btn") {
+                ContinueActionButton(
+                    episode = continueEpisode,
+                    progress = continueProgress,
+                    onClick = onContinue,
+                    modifier = Modifier.focusRequester(primaryFocusRequester),
+                )
+            }
         }
         if (showPlay) {
             // 有续看记录时，普通播放按钮语义变为「从头播放」以区分「继续」
-            PillActionButton(
-                text = if (showContinue) "从头播放" else "播放",
-                onClick = onPlay,
-                modifier = if (showContinue) Modifier else Modifier.focusRequester(primaryFocusRequester),
-            )
+            // 采用 key 区分：当出现续看记录时强制销毁旧的主播放组件重建为次级组件，杜绝焦点残留驻留在「从头播放」上
+            androidx.compose.runtime.key(if (showContinue) "play_from_start" else "play_main") {
+                PillActionButton(
+                    text = if (showContinue) "从头播放" else "播放",
+                    onClick = onPlay,
+                    modifier = if (showContinue) Modifier else Modifier.focusRequester(primaryFocusRequester),
+                )
+            }
         }
         if (showMigrate) {
             // 无记录时占位于「播放」之后；播放按钮仍承接 primaryFocus，本按钮为次级动作

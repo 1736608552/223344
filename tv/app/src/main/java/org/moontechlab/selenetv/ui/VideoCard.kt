@@ -400,8 +400,31 @@ fun VideoCard(
                     }
                 }
 
-                // 年份徽章（搜索场景）
-                if (from == VideoCardSource.SEARCH && videoInfo.year.isNotEmpty()) {
+                val isShortDrama = videoInfo.source == "hongguo" ||
+                    videoInfo.source == "shortdrama" ||
+                    videoInfo.sourceName.contains("精品短剧") ||
+                    from == VideoCardSource.SHORTDRAMA
+
+                // ★ 精品短剧海报左上角专属标注「精品短剧」字样
+                if (isShortDrama) {
+                    Box(
+                        modifier = Modifier
+                            .padding(4.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color(0xFF10B981))
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                            .align(Alignment.TopStart)
+                    ) {
+                        Text(
+                            text = "精品短剧",
+                            color = Color.White,
+                            fontSize = 9.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.2.sp
+                        )
+                    }
+                } else if (from == VideoCardSource.SEARCH && videoInfo.year.isNotEmpty()) {
+                    // 普通影视年份徽章（搜索场景）
                     Box(
                         modifier = Modifier
                             .padding(4.dp)

@@ -98,7 +98,12 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
     val bangumiService = remember { BangumiService.getInstance(context) }
     val doubanCacheService = remember { DoubanCacheService.getInstance(context) }
 
-    var state by remember(entry) { mutableStateOf(DetailUiState(entry = entry)) }
+    var state by remember(entry) {
+        val initialRecords = runCatching {
+            org.moontechlab.selenetv.data.local.LocalStore.getCachedPlayRecords()
+        }.getOrDefault(emptyMap())
+        mutableStateOf(DetailUiState(entry = entry, playRecords = initialRecords))
+    }
     // 搜索流累积的原始结果（Douban/Bangumi/History 用）
     var rawResults by remember(entry) { mutableStateOf<List<SearchResult>>(emptyList()) }
     // tier2 命中的 doubanId（>=2 相同）；一旦确定即稳定，供独立 effect 拉取豆瓣详情，
@@ -126,21 +131,29 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
 
     // 1) 源获取：SearchAggregate 直接快照；其余启动搜索累积
     LaunchedEffect(entry) {
-        val isShortDrama = entry is DetailEntry.History && (entry.source == "hongguo" || entry.source == "shortdrama")
+        val dramaSourceFromSearch = (entry as? DetailEntry.SearchAggregate)?.agg?.originalResults?.firstOrNull {
+            it.source == "hongguo" || it.source == "shortdrama" || it.sourceName.contains("精品短剧")
+        }
+        val isHistoryShortDrama = entry is DetailEntry.History && (entry.source == "hongguo" || entry.source == "shortdrama")
+        val isShortDrama = isHistoryShortDrama || dramaSourceFromSearch != null
+
         if (isShortDrama) {
-            val seriesId = (entry as DetailEntry.History).id
-            val defaultEpCount = 80
+            val seriesId = if (isHistoryShortDrama) (entry as DetailEntry.History).id else dramaSourceFromSearch!!.id
+            val title = if (isHistoryShortDrama) (entry as DetailEntry.History).title else dramaSourceFromSearch!!.title
+            val poster = if (isHistoryShortDrama) (entry as DetailEntry.History).poster else dramaSourceFromSearch!!.poster
+            val year = if (isHistoryShortDrama) (entry as DetailEntry.History).year.ifBlank { "2026" } else dramaSourceFromSearch!!.year.ifBlank { "2026" }
+            val defaultEpCount = dramaSourceFromSearch?.episodes?.size?.coerceAtLeast(80) ?: 80
             val initialEps = List(defaultEpCount) { (it + 1).toString() }
             val initialTitles = List(defaultEpCount) { "第${it + 1}集" }
             val hongguoSource = SearchResult(
                 id = seriesId,
-                title = entry.title,
-                poster = entry.poster,
+                title = title,
+                poster = poster,
                 episodes = initialEps,
                 episodesTitles = initialTitles,
                 source = "hongguo",
                 sourceName = "精品短剧",
-                year = entry.year.ifBlank { "2026" },
+                year = year,
                 desc = "精品短剧官方原画，多清晰度极速秒开",
                 typeName = "短剧"
             )
@@ -519,6 +532,20 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
             kotlinx.coroutines.delay(260)
             try { primaryFocus.requestFocus() } catch (_: Exception) {}
             scrollState.scrollTo(0)
+        }
+    }
+
+    // 当检测到当前源有续看记录时（无论是进页异步加载完成、还是换源、还是迁移完成）：
+    // 强制将焦点派给主按钮「继续播放」，杜绝焦点残留在次要的「从头播放」按钮上。
+    LaunchedEffect(state.selectedPlayRecord != null, state.selectedSourceKey) {
+        if (state.selectedPlayRecord != null && !state.detailsLoading && !noSources) {
+            repeat(6) {
+                kotlinx.coroutines.delay(40)
+                try {
+                    primaryFocus.requestFocus()
+                    return@LaunchedEffect
+                } catch (_: Exception) {}
+            }
         }
     }
 

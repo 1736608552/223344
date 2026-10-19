@@ -124,7 +124,7 @@ object SearchService {
                 return@coroutineScope
             }
 
-            _totalSources = resources.size
+            _totalSources = resources.size + 1
             _completedSources.set(0)
 
             // 发送初始进度
@@ -142,12 +142,17 @@ object SearchService {
             // 设置超时
             val searchWithTimeout = async {
                 withTimeout(SEARCH_TIMEOUT_MS) {
-                    // 并发搜索所有资源
-                    resources.map { resource ->
+                    // 并发搜索所有常规采集源 + 独立红果精品短剧专网源
+                    val tasks = mutableListOf<Deferred<Unit>>()
+                    tasks.addAll(resources.map { resource ->
                         async {
                             searchSingleResource(resource, query)
                         }
-                    }.awaitAll()
+                    })
+                    tasks.add(async {
+                        searchShortDramaResource(query)
+                    })
+                    tasks.awaitAll()
                 }
             }
 
@@ -235,6 +240,46 @@ object SearchService {
                 )
             )
         )
+    }
+
+    /**
+     * 搜索独立红果精品短剧专网源
+     */
+    private suspend fun searchShortDramaResource(query: String) {
+        try {
+            val dramaResults = ShortDramaService.searchDramas(query)
+            val completed = _completedSources.incrementAndGet()
+
+            if (dramaResults.isNotEmpty()) {
+                _eventFlow.emit(SearchEvent.Results(dramaResults))
+            }
+
+            _eventFlow.emit(
+                SearchEvent.Progress(
+                    SearchProgress(
+                        totalSources = _totalSources,
+                        completedSources = completed,
+                        currentSource = "精品短剧",
+                        isComplete = false
+                    )
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val completed = _completedSources.incrementAndGet()
+            Log.w(TAG, "精品短剧搜索失败: ${e.message}")
+            _eventFlow.emit(
+                SearchEvent.Progress(
+                    SearchProgress(
+                        totalSources = _totalSources,
+                        completedSources = completed,
+                        currentSource = "精品短剧",
+                        isComplete = false
+                    )
+                )
+            )
+        }
     }
 
     /**

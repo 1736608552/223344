@@ -65,11 +65,12 @@ data class AggregatedSearchResult(
      * 转换为 VideoInfo 用于显示
      */
     fun toVideoInfo(): VideoInfo {
+        val isShortDrama = originalResults.any { it.source == "hongguo" || it.source == "shortdrama" || it.sourceName.contains("精品短剧") }
         return VideoInfo(
             id = key,
-            source = originalResults.firstOrNull()?.source ?: "",
+            source = if (isShortDrama) "hongguo" else (originalResults.firstOrNull()?.source ?: ""),
             title = title,
-            sourceName = sourceNames.joinToString(", "),
+            sourceName = if (isShortDrama) "精品短剧" else sourceNames.joinToString(", "),
             year = year,
             cover = cover,
             index = 0,
@@ -100,6 +101,10 @@ fun titlesMatch(a: String, b: String): Boolean =
  * 生成聚合键
  */
 fun SearchResult.generateAggregateKey(): String {
+    val isShortDrama = source == "hongguo" || source == "shortdrama" || typeName == "短剧" || sourceName.contains("精品短剧")
+    if (isShortDrama) {
+        return "${normalizeTitleForMatch(title)}_shortdrama"
+    }
     val episodeCount = episodes.size.coerceAtLeast(1)
     val type = if (episodeCount > 1) "tv" else "movie"
     // 标题去空格后参与聚合键，使仅空格不同的标题聚合到同一组（展示仍用原始标题）
