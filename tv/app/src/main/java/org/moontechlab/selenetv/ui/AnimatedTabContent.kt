@@ -49,8 +49,8 @@ fun AnimatedTabContent(
     // 监听标签切换
     LaunchedEffect(selectedTabId) {
         if (selectedTabId != displayedTabId) {
-            // 判断切换方向
-            val tabOrder = listOf("search", "home", "movies", "series", "anime", "show", "live", "settings")
+            // 判断切换方向（统一采用 DEFAULT_TABS，包含 short_drama 短剧等完整分类）
+            val tabOrder = DEFAULT_TABS.map { it.id }
             val currentIndex = tabOrder.indexOf(displayedTabId)
             val newIndex = tabOrder.indexOf(selectedTabId)
             val isMovingRight = newIndex > currentIndex

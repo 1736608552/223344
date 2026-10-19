@@ -43,6 +43,21 @@ data class TabItem(
 )
 
 /**
+ * 默认标签页列表（全剧集/短剧/设置等标准排序，供 TabSwitcher 与 AnimatedTabContent 动画共用）
+ */
+val DEFAULT_TABS = listOf(
+    TabItem("search", "搜索", Icons.Default.Search, isIconOnly = true),
+    TabItem("home", "首页", Icons.Default.Home),
+    TabItem("movies", "电影", Icons.Default.Movie),
+    TabItem("series", "剧集", Icons.Default.Tv),
+    TabItem("anime", "动漫", Icons.Default.Pets),
+    TabItem("show", "综艺", Icons.Default.Stars),
+    TabItem("short_drama", "短剧", Icons.Default.VideoLibrary),
+    TabItem("live", "直播", Icons.Default.RadioButtonChecked),
+    TabItem("settings", "设置", Icons.Default.Settings)
+)
+
+/**
  * TV 应用顶部标签页切换器
  * 
  * @param selectedTabId 当前选中的标签页 ID
@@ -62,19 +77,7 @@ fun TabSwitcher(
     onFocusChanged: (Boolean) -> Unit = {}
 ) {
     // 内置标签页列表
-    val tabs = remember {
-        listOf(
-            TabItem("search", "搜索", Icons.Default.Search, isIconOnly = true),
-            TabItem("home", "首页", Icons.Default.Home),
-            TabItem("movies", "电影", Icons.Default.Movie),
-            TabItem("series", "剧集", Icons.Default.Tv),
-            TabItem("anime", "动漫", Icons.Default.Pets),
-            TabItem("show", "综艺", Icons.Default.Stars),
-            TabItem("short_drama", "短剧", Icons.Default.VideoLibrary),
-            TabItem("live", "直播", Icons.Default.RadioButtonChecked),
-            TabItem("settings", "设置", Icons.Default.Settings)
-        )
-    }
+    val tabs = remember { DEFAULT_TABS }
     
     // 焦点请求器，用于控制初始焦点
     val focusRequesters = remember { tabs.map { FocusRequester() } }
