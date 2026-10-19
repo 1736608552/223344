@@ -327,7 +327,12 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             }
 
             val proxy = org.moontechlab.selenetv.service.AppDataService.getM3u8ProxyUrl()
-            controller.load(PlayProgress.buildPlayUrl(raw, proxy), startMs)
+            val playUrl = if (proxy.isNotBlank()) {
+                PlayProgress.buildPlayUrl(raw, proxy)
+            } else {
+                org.moontechlab.selenetv.proxy.FastStreamProxy.getProxyUrl(raw)
+            }
+            controller.load(playUrl, startMs)
         }
     }
 

@@ -46,6 +46,9 @@ class SeleneApplication : Application(), ImageLoaderFactory {
         // 启动遥控器 Web 服务器
         startRemoteControlServer()
 
+        // 启动 FastStreamProxy 极速流媒体并发环回代理与智能切片引擎
+        org.moontechlab.selenetv.proxy.FastStreamProxy.start()
+
         // 本地模式启动后台刷新订阅：不阻塞 onCreate，失败仅 toast
         if (AppDataService.isLocalModeSync()) {
             applicationScope.launch {
@@ -66,6 +69,7 @@ class SeleneApplication : Application(), ImageLoaderFactory {
     override fun onTerminate() {
         super.onTerminate()
         RemoteControlServer.stop()
+        org.moontechlab.selenetv.proxy.FastStreamProxy.stop()
     }
     
     private var imageLoaderInstance: ImageLoader? = null
