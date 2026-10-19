@@ -84,12 +84,13 @@ object DeviceMemoryManager {
         val constrained = isConstrainedMemoryDevice(context)
         Log.i(TAG, "createExoLoadControl: isConstrainedMemory=$constrained, isHisense=${isHisenseDevice(context)}")
 
-        val minBufferMs = if (constrained) 10_000 else 25_000
-        val maxBufferMs = if (constrained) 20_000 else 45_000
-        val bufferForPlaybackMs = if (constrained) 1_500 else 2_500
-        val bufferForPlaybackAfterRebufferMs = if (constrained) 3_000 else 5_000
-        // 海信/受限机型锁死 12MB，非受限机型上限 32MB（避免默认无上限狂飙至 100MB+）
-        val targetBufferBytes = if (constrained) 12 * 1024 * 1024 else 32 * 1024 * 1024
+        // 咕噜咕噜四大黑科技之一：起播缓冲压榨至 500ms（真·秒开），首片到位即刻出画面
+        val minBufferMs = if (constrained) 8_000 else 20_000
+        val maxBufferMs = if (constrained) 15_000 else 40_000
+        val bufferForPlaybackMs = 500 // 极限压榨至 500ms 首帧出画
+        val bufferForPlaybackAfterRebufferMs = if (constrained) 1_500 else 2_000
+        // 海信/受限机型锁死 16MB，非受限机型 36MB（避免无上限狂飙）
+        val targetBufferBytes = if (constrained) 16 * 1024 * 1024 else 36 * 1024 * 1024
 
         return DefaultLoadControl.Builder()
             .setBufferDurationsMs(

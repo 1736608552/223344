@@ -80,13 +80,31 @@ final class HttpVideoAsset extends VideoAsset {
     return new DefaultMediaSourceFactory(context).setDataSourceFactory(dataSourceFactory);
   }
 
+  private static final String DEFAULT_WHITELIST_UA =
+      "Mozilla/5.0 (Linux; Android 14; 22081212C Build/UP1A.231005.007); AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.260 Mobile Safari/537.36 Quark/7.4.3.700";
+
   // TODO: Migrate to stable API, see https://github.com/flutter/flutter/issues/147039.
   @OptIn(markerClass = UnstableApi.class)
   private static void unstableUpdateDataSourceFactory(
       @NonNull DefaultHttpDataSource.Factory factory,
       @NonNull Map<String, String> httpHeaders,
       @Nullable String userAgent) {
-    factory.setUserAgent(userAgent).setAllowCrossProtocolRedirects(true);
+    boolean hasCustomUa = false;
+    for (String key : httpHeaders.keySet()) {
+      if ("user-agent".equalsIgnoreCase(key)) {
+        hasCustomUa = true;
+        break;
+      }
+    }
+    String finalUa = userAgent;
+    if (finalUa == null && !hasCustomUa) {
+      finalUa = DEFAULT_WHITELIST_UA;
+    }
+    factory
+        .setUserAgent(finalUa)
+        .setAllowCrossProtocolRedirects(true)
+        .setConnectTimeoutMs(8000)
+        .setReadTimeoutMs(15000);
     if (!httpHeaders.isEmpty()) {
       factory.setDefaultRequestProperties(httpHeaders);
     }

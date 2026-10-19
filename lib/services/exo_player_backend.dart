@@ -175,13 +175,16 @@ class ExoPlayerBackend implements PlayerBackend {
     //   "dual audio" (zombie audio that pause/stop/dispose can't reach).
     final myGen = ++_openGeneration;
 
+    final effectiveHeaders = Map<String, String>.from(headers ?? const <String, String>{});
+    final hasUa = effectiveHeaders.keys.any((k) => k.toLowerCase() == 'user-agent');
+    if (!hasUa) {
+      effectiveHeaders['User-Agent'] =
+          'Mozilla/5.0 (Linux; Android 14; 22081212C Build/UP1A.231005.007); AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.260 Mobile Safari/537.36 Quark/7.4.3.700';
+    }
+
     final c = VideoPlayerController.networkUrl(
       Uri.parse(url),
-      // v2.3.15: video_player 2.10.1 的 httpHeaders 形参是
-      //   Map<String, String> (非 nullable), open() 入参是
-      //   Map<String, String>?. 用 ?? {} 兜底避免编译错
-      //   "Map<String, String>? can't be assigned to Map<String, String>".
-      httpHeaders: headers ?? const <String, String>{},
+      httpHeaders: effectiveHeaders,
       videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
     );
     try {

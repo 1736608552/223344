@@ -58,8 +58,7 @@ public final class TextureVideoPlayer extends VideoPlayer implements SurfaceProd
         options,
         () -> {
           ExoPlayer.Builder builder = new ExoPlayer.Builder(context);
-          // ★ v2.5.64: 自定义缓冲配置 (对齐 SeleneTV)
-          //   minBuffer=50s / maxBuffer=50s / bufferForPlayback=2.5s / bufferAfterRebuffer=5s
+          // 咕噜咕噜四大黑科技：起播缓冲压至 500ms（真·秒开），二次缓冲恢复压缩至 1500ms
           int backBufferMs =
               options.backBufferDurationMs != null
                   ? (int) Math.min(Math.max(options.backBufferDurationMs.longValue(), 0), Integer.MAX_VALUE)
@@ -67,10 +66,11 @@ public final class TextureVideoPlayer extends VideoPlayer implements SurfaceProd
           DefaultLoadControl loadControl =
               new DefaultLoadControl.Builder()
                   .setBufferDurationsMs(
-                      /* minBufferMs = */ 50000,
-                      /* maxBufferMs = */ 50000,
-                      /* bufferForPlaybackMs = */ 2500,
-                      /* bufferForPlaybackAfterRebufferMs = */ 5000)
+                      /* minBufferMs = */ 30000,
+                      /* maxBufferMs = */ 60000,
+                      /* bufferForPlaybackMs = */ 500,
+                      /* bufferForPlaybackAfterRebufferMs = */ 1500)
+                  .setPrioritizeTimeOverSizeThresholds(true)
                   .setBackBuffer(backBufferMs, /* retainBackBufferFromKeyframe= */ true)
                   .build();
           builder.setLoadControl(loadControl);
