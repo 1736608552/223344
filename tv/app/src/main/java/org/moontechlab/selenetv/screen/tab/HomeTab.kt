@@ -504,15 +504,55 @@ fun HomeTab(
             }
 
             // 向上直达 Banner 或顶部导航栏：联动平滑回滚至顶部 0 位置，完整展开巨幕 Banner 与顶部导航栏
-            val navigateUpToBannerOrHeader: () -> Unit = {
+            val navigateUpToBannerOrHeader: () -> Boolean = {
                 coroutineScope.launch {
                     scrollState.animateScrollTo(0)
                 }
-                if (hasBanner) {
-                    try { focusRequester.requestFocus() } catch (_: Exception) {}
+                if (hasBanner && focusRequester.safeRequestFocus()) {
+                    true
+                } else if (onNavigateUpToHeader != null) {
+                    onNavigateUpToHeader.invoke()
+                    true
                 } else {
-                    onNavigateUpToHeader?.invoke()
+                    false
                 }
+            }
+
+            // 纵向安全向下导航：先平滑滚动视口，再尝试链式聚焦，杜绝因组件在视口外抛异常导致锁死
+            val navigateDownWithScroll: (List<FocusRequester>) -> Boolean = { targets ->
+                coroutineScope.launch {
+                    scrollState.animateScrollBy(340f)
+                }
+                var handled = false
+                for (target in targets) {
+                    if (target.safeRequestFocus()) {
+                        handled = true
+                        break
+                    }
+                }
+                handled
+            }
+
+            // 纵向安全向上导航：平滑回滚视口，并链式尝试聚焦上层组件
+            val navigateUpWithScroll: (List<FocusRequester>, (() -> Boolean)?) -> Boolean = { targets, fallbackToTop ->
+                coroutineScope.launch {
+                    if (scrollState.value <= 340) {
+                        scrollState.animateScrollTo(0)
+                    } else {
+                        scrollState.animateScrollBy(-340f)
+                    }
+                }
+                var handled = false
+                for (target in targets) {
+                    if (target.safeRequestFocus()) {
+                        handled = true
+                        break
+                    }
+                }
+                if (!handled && fallbackToTop != null) {
+                    handled = fallbackToTop()
+                }
+                handled
             }
 
             if (hasBanner) {
@@ -523,7 +563,7 @@ fun HomeTab(
                     bannerFocusRequester = focusRequester,
                     onNavigateUp = onNavigateUpToHeader,
                     onNavigateDown = {
-                        try { firstContentRequester.requestFocus() } catch (_: Exception) {}
+                        navigateDownWithScroll(listOf(firstContentRequester, hotMoviesFocusRequester))
                     },
                     onBannerFocused = {
                         if (scrollState.value > 0) {
@@ -547,13 +587,12 @@ fun HomeTab(
                     firstCardFocusRequester = playRecordsFocusRequester,
                     onNavigateUp = navigateUpToBannerOrHeader,
                     onNavigateDown = {
-                        try {
-                            if (showFavorites) {
-                                favoritesFocusRequester.requestFocus()
-                            } else {
-                                hotMoviesFocusRequester.requestFocus()
-                            }
-                        } catch (_: Exception) {}
+                        val targets = if (showFavorites && favorites.isNotEmpty()) {
+                            listOf(favoritesFocusRequester, hotMoviesFocusRequester)
+                        } else {
+                            listOf(hotMoviesFocusRequester, hotShortDramasFocusRequester)
+                        }
+                        navigateDownWithScroll(targets)
                     },
                     onRetry = { loadPlayRecordsAndFavorites() },
                     onVideoClick = onVideoSelected,
@@ -575,19 +614,11 @@ fun HomeTab(
                     errorMessage = errorFavorites,
                     firstCardFocusRequester = favoritesFocusRequester,
                     onNavigateUp = {
-                        try {
-                            if (showPlayRecords) {
-                                playRecordsFocusRequester.requestFocus()
-                            } else if (hasBanner) {
-                                coroutineScope.launch { scrollState.animateScrollTo(0) }
-                                focusRequester.requestFocus()
-                            } else {
-                                onNavigateUpToHeader?.invoke()
-                            }
-                        } catch (_: Exception) {}
+                        val targets = if (showPlayRecords) listOf(playRecordsFocusRequester) else emptyList()
+                        navigateUpWithScroll(targets, navigateUpToBannerOrHeader)
                     },
                     onNavigateDown = {
-                        try { hotMoviesFocusRequester.requestFocus() } catch (_: Exception) {}
+                        navigateDownWithScroll(listOf(hotMoviesFocusRequester, hotShortDramasFocusRequester))
                     },
                     onRetry = { loadPlayRecordsAndFavorites() },
                     onVideoClick = onVideoSelected,
@@ -607,21 +638,14 @@ fun HomeTab(
                 errorMessage = errorMovies,
                 firstCardFocusRequester = hotMoviesFocusRequester,
                 onNavigateUp = {
-                    try {
-                        if (showFavorites) {
-                            favoritesFocusRequester.requestFocus()
-                        } else if (showPlayRecords) {
-                            playRecordsFocusRequester.requestFocus()
-                        } else if (hasBanner) {
-                            coroutineScope.launch { scrollState.animateScrollTo(0) }
-                            focusRequester.requestFocus()
-                        } else {
-                            onNavigateUpToHeader?.invoke()
-                        }
-                    } catch (_: Exception) {}
+                    val targets = buildList {
+                        if (showFavorites && favorites.isNotEmpty()) add(favoritesFocusRequester)
+                        if (showPlayRecords) add(playRecordsFocusRequester)
+                    }
+                    navigateUpWithScroll(targets, navigateUpToBannerOrHeader)
                 },
                 onNavigateDown = {
-                    try { hotShortDramasFocusRequester.requestFocus() } catch (_: Exception) {}
+                    navigateDownWithScroll(listOf(hotShortDramasFocusRequester, hotTvShowsFocusRequester))
                 },
                 onRetry = { loadHotMovies() },
                 onVideoClick = onVideoSelected
@@ -636,10 +660,10 @@ fun HomeTab(
                 errorMessage = errorShortDramas,
                 firstCardFocusRequester = hotShortDramasFocusRequester,
                 onNavigateUp = {
-                    try { hotMoviesFocusRequester.requestFocus() } catch (_: Exception) {}
+                    navigateUpWithScroll(listOf(hotMoviesFocusRequester), null)
                 },
                 onNavigateDown = {
-                    try { hotTvShowsFocusRequester.requestFocus() } catch (_: Exception) {}
+                    navigateDownWithScroll(listOf(hotTvShowsFocusRequester, bangumiFocusRequester))
                 },
                 onRetry = { loadHotShortDramas() },
                 onVideoClick = onVideoSelected
@@ -653,10 +677,10 @@ fun HomeTab(
                 errorMessage = errorTvShows,
                 firstCardFocusRequester = hotTvShowsFocusRequester,
                 onNavigateUp = {
-                    try { hotShortDramasFocusRequester.requestFocus() } catch (_: Exception) {}
+                    navigateUpWithScroll(listOf(hotShortDramasFocusRequester, hotMoviesFocusRequester), null)
                 },
                 onNavigateDown = {
-                    try { bangumiFocusRequester.requestFocus() } catch (_: Exception) {}
+                    navigateDownWithScroll(listOf(bangumiFocusRequester, hotShowsFocusRequester))
                 },
                 onRetry = { loadHotTvShows() },
                 onVideoClick = onVideoSelected
@@ -670,10 +694,10 @@ fun HomeTab(
                 errorMessage = errorBangumi,
                 firstCardFocusRequester = bangumiFocusRequester,
                 onNavigateUp = {
-                    try { hotTvShowsFocusRequester.requestFocus() } catch (_: Exception) {}
+                    navigateUpWithScroll(listOf(hotTvShowsFocusRequester, hotShortDramasFocusRequester), null)
                 },
                 onNavigateDown = {
-                    try { hotShowsFocusRequester.requestFocus() } catch (_: Exception) {}
+                    navigateDownWithScroll(listOf(hotShowsFocusRequester))
                 },
                 onRetry = { loadBangumi() },
                 onVideoClick = onVideoSelected
@@ -687,7 +711,7 @@ fun HomeTab(
                 errorMessage = errorShows,
                 firstCardFocusRequester = hotShowsFocusRequester,
                 onNavigateUp = {
-                    try { bangumiFocusRequester.requestFocus() } catch (_: Exception) {}
+                    navigateUpWithScroll(listOf(bangumiFocusRequester, hotTvShowsFocusRequester), null)
                 },
                 onNavigateDown = null,
                 onRetry = { loadHotShows() },
@@ -752,4 +776,14 @@ fun HomeTab(
 @Composable
 fun HomeTabPreview() {
     HomeTab()
+}
+
+/**
+ * 安全请求焦点扩展函数：若组件当前未挂载或不在视口内导致抛异常，安全捕获并返回 false，绝不抛出崩溃
+ */
+private fun FocusRequester.safeRequestFocus(): Boolean = try {
+    requestFocus()
+    true
+} catch (_: Exception) {
+    false
 }

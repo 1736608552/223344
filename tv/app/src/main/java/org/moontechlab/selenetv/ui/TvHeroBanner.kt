@@ -77,7 +77,7 @@ fun TvHeroBanner(
     modifier: Modifier = Modifier,
     bannerFocusRequester: FocusRequester = remember { FocusRequester() },
     onNavigateUp: (() -> Unit)? = null,
-    onNavigateDown: (() -> Unit)? = null,
+    onNavigateDown: (() -> Boolean)? = null,
     onBannerFocused: (() -> Unit)? = null,
 ) {
     if (items.isEmpty()) return
@@ -411,8 +411,7 @@ fun TvHeroBanner(
                                         onNavigateUp != null
                                     }
                                     Key.DirectionDown -> {
-                                        onNavigateDown?.invoke()
-                                        onNavigateDown != null
+                                        onNavigateDown?.invoke() ?: false
                                     }
                                     Key.DirectionLeft -> {
                                         true // 左边界锁定防脱焦
@@ -443,8 +442,7 @@ fun TvHeroBanner(
                                     onNavigateUp != null
                                 }
                                 Key.DirectionDown -> {
-                                    onNavigateDown?.invoke()
-                                    onNavigateDown != null
+                                    onNavigateDown?.invoke() ?: false
                                 }
                                 Key.DirectionRight -> {
                                     true // 阻断向右进入盲区，杜绝失焦

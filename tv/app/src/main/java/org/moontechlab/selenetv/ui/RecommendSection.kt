@@ -66,8 +66,8 @@ fun RecommendSection(
     // 长按某张卡片的回调，为 null 时该区块卡片不响应长按
     onVideoLongClick: ((VideoInfo) -> Unit)? = null,
     firstCardFocusRequester: FocusRequester? = null,
-    onNavigateUp: (() -> Unit)? = null,
-    onNavigateDown: (() -> Unit)? = null,
+    onNavigateUp: (() -> Boolean)? = null,
+    onNavigateDown: (() -> Boolean)? = null,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -256,26 +256,26 @@ private fun handleVerticalNavigation(
     keyEvent: KeyEvent,
     listState: LazyListState,
     coroutineScope: kotlinx.coroutines.CoroutineScope,
-    onNavigateUp: (() -> Unit)? = null,
-    onNavigateDown: (() -> Unit)? = null
+    onNavigateUp: (() -> Boolean)? = null,
+    onNavigateDown: (() -> Boolean)? = null
 ): Boolean {
     if (keyEvent.type == KeyEventType.KeyDown) {
         when (keyEvent.key) {
             Key.DirectionUp -> {
                 if (onNavigateUp != null) {
-                    onNavigateUp.invoke()
-                    return true
+                    val handled = onNavigateUp.invoke()
+                    if (handled) return true
                 }
             }
             Key.DirectionDown -> {
                 if (onNavigateDown != null) {
-                    onNavigateDown.invoke()
-                    return true
+                    val handled = onNavigateDown.invoke()
+                    if (handled) return true
                 }
             }
         }
     }
-    return false // 不阻止默认导航行为
+    return false // 未成功处理时放行给原生焦点树，绝不盲目吃键
 }
 
 /**
