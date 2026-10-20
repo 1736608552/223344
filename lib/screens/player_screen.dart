@@ -3807,24 +3807,28 @@ class _PlayerScreenState extends State<PlayerScreen>
   // 改用 M3U8Service 测速 + _stateFromSpeed. 老方法没人调, 留在这里只是 dead code.
   // 如需 HEAD ping fallback, 看 _fallbackHeadPing.
 
-  /// position stream 触发的检查: 仅当真正播完到达末尾 (remainMs <= 1200ms 或 position >= duration) 时兜底自动切下一集
-  /// 彻底解决之前由于 100ms 阈值过小导致部分切片视频提前停顿漏触发播完弹窗的缺陷
+  /// position stream 触发的检查: 仅当真正播完到达末尾 (视频完全播到最后一刻) 时兜底自动切下一集
+  /// 彻底解决短剧及传统影视提前两秒截断画面与台词的缺陷
   void _maybeAutoPlayNext() {
     if (_autoPlayedThisEpisode) return;
     final dur = _currentDuration;
     if (dur <= Duration.zero) return; // 时长还没拿到, 不要误判
+    final isShortDrama = _isCurrentShortDrama ||
+        _selectedSource?.source == 'hongguo' ||
+        _selectedSource?.source == 'shortdrama' ||
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama';
+
     final remainMs = dur.inMilliseconds - _currentPosition.inMilliseconds;
-    if (remainMs > 1200) return; // 必须真正到达视频末尾才兜底切集
+    // 短剧节奏快、每集结尾多为反转与关键悬念，严禁提前截断，必须真正播放至最后 200ms 内才触发切集；
+    // 电视剧/电影同样收紧为最后 300ms 兜底，绝不提前 2 秒掐断剧情
+    final endThresholdMs = isShortDrama ? 200 : 300;
+    if (remainMs > endThresholdMs && _currentPosition < dur) return;
     _autoPlayNextEpisode();
   }
 
   /// 切到下一集: 只有在「还有下一集」时才自动播放
   /// 最后一集或电影播完触发下一季/推荐连播弹窗
-  ///
-  /// v1.0.55: 加 pos + dur 兜底守门
-  /// 之前没守门, 走 streams.completed listener 直接调本函数时
-  /// 不经过守门, 一发就切
-  /// 修法: pos 必须接近末尾 (dur - 2500ms) 才允许切, 防止起播阶段误报 completed
   void _autoPlayNextEpisode({bool fromCompletedStream = false}) {
     final now = DateTime.now().millisecondsSinceEpoch;
     if (_isEpisodeSwitching || _isTransitioningEpisode || _autoPlayedThisEpisode) return;
@@ -3839,7 +3843,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       return;
     }
 
-    final isShortDrama = source.source == 'hongguo' ||
+    final isShortDrama = _isCurrentShortDrama ||
+        source.source == 'hongguo' ||
         source.source == 'shortdrama' ||
         widget.videoInfo.source == 'hongguo' ||
         widget.videoInfo.source == 'shortdrama';
@@ -3847,12 +3852,16 @@ class _PlayerScreenState extends State<PlayerScreen>
     // 短剧通过 getPlaybackPlan 动态取流与获取解密密钥，非短剧才需校验预填充直链
     if (!isShortDrama && source.episodes[nextIndex].isEmpty) return; // 下一集没 url
 
-    // 兜底守门 (堵 streams.completed 误触发)
+    // 兜底守门 (堵底层 streams.completed 提前误报导致早切)
     final dur = _currentDuration;
     if (dur <= Duration.zero) return; // 时长还没拿到
     if (!isShortDrama && dur < const Duration(seconds: 30)) return; // 传统影视时长太短防异常，短剧不拦截
-    if (_currentPosition < dur - const Duration(milliseconds: 2500)) {
-      // pos 还没到结尾附近, completed 误触发, 不切
+
+    // 严谨阈值防早切：
+    // 短剧严格要求播放进度到达最后 300ms 内；传统影视要求在最后 500ms 内，杜绝提前 2 秒切走
+    final guardThresholdMs = isShortDrama ? 300 : 500;
+    if (_currentPosition < dur - Duration(milliseconds: guardThresholdMs)) {
+      // pos 还没真正到达末尾, completed 提前误触发, 不切
       return;
     }
 
@@ -7716,7 +7725,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (!fromCompletedStream) {
       if (dur <= Duration.zero) return;
       if (!isShortDrama && dur < const Duration(seconds: 30)) return;
-      if (_currentPosition < dur - const Duration(milliseconds: 3500)) {
+      // 电影/全剧完结：收紧为最后 300~500ms，杜绝提前 3.5 秒打断结尾画面与彩蛋
+      final lastGuardMs = isShortDrama ? 300 : 500;
+      if (_currentPosition < dur - Duration(milliseconds: lastGuardMs)) {
         return;
       }
     }
