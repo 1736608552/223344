@@ -109,9 +109,13 @@ object AppDataService {
         // 上次非 off 区域：优先取已存值，否则回落到当前区域（非 off）或 full。
         danmakuLastAreaCache = prefs.getString(KEY_DANMAKU_LAST_AREA, null)
             ?: danmakuAreaCache.takeIf { it != "off" } ?: "third"
-        danmakuSourcesCache = prefs.getString(KEY_DANMAKU_SOURCES, null)
+        val savedSources = prefs.getString(KEY_DANMAKU_SOURCES, null)
             ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet()
-            ?: org.moontechlab.selenetv.service.danmaku.DanmakuSources.defaultEnabledKeys
+        danmakuSourcesCache = if (savedSources == null) {
+            org.moontechlab.selenetv.service.danmaku.DanmakuSources.defaultEnabledKeys
+        } else {
+            savedSources + org.moontechlab.selenetv.service.danmaku.DanmakuSources.defaultEnabledKeys
+        }
         val d = org.moontechlab.selenetv.service.danmaku.DanmakuRenderSettings()
         danmakuRenderCache = d.copy(
             opacity = prefs.getFloat(KEY_DANMAKU_OPACITY, d.opacity),

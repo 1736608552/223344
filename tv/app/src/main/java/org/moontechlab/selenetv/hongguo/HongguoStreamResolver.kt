@@ -16,6 +16,7 @@ object HongguoStreamResolver {
         .build()
 
     private val signer = Signer()
+    private val episodeVidsCache = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
 
     /**
      * 官方 App 分集详情接口 (作为 Web 页面 404 或失效时的顶级原生兜底)
@@ -26,6 +27,8 @@ object HongguoStreamResolver {
         if (!cleanId.matches(Regex("[0-9]{1,32}"))) {
             throw IllegalArgumentException("Invalid seriesId: $seriesId")
         }
+
+        episodeVidsCache[cleanId]?.let { return it }
 
         val payload = """{"series_id":"$cleanId"}""".toByteArray()
         var lastErr: Exception? = null
@@ -80,6 +83,7 @@ object HongguoStreamResolver {
                 pairs.sortBy { it.first }
                 val vids = pairs.map { it.second }.distinct()
                 if (vids.isNotEmpty()) {
+                    episodeVidsCache[cleanId] = vids
                     return vids
                 }
             } catch (e: Exception) {

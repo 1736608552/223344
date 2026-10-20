@@ -22,6 +22,7 @@ object DanmakuSources {
         Def("youku", "优酷", true, ::YoukuDanmakuSource),
         Def("mgtv", "芒果TV", true, ::MgtvDanmakuSource),
         Def("letv", "乐视视频", true, ::LetvDanmakuSource),
+        Def("hongguo", "红果短剧", true, ::HongguoDanmakuSource),
     )
 
     val byKey: Map<String, Def> = ALL.associateBy { it.key }

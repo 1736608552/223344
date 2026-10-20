@@ -534,13 +534,33 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             danmakuLoadedChunks.clear(); danmakuSeen.clear()
             return@LaunchedEffect
         }
-        val matches = runCatching {
+        val baseMatches = runCatching {
             org.moontechlab.selenetv.service.DanmakuService.probe(context, launch.title)
         }.getOrDefault(emptyList())
+
+        // 短剧专属直通：直接绑定当前播放的红果短剧官方 ID 与剧名，置顶首选
+        val dramaSrc = launch.sources.firstOrNull { it.source == "hongguo" || it.source == "shortdrama" } ?: launch.selectedSource
+        val matches = if (isShortDrama && dramaSrc != null && dramaSrc.id.isNotEmpty()) {
+            val cleanDramaId = dramaSrc.id.trim().removePrefix("hongguo:").trim()
+            val shortDramaMatch = org.moontechlab.selenetv.service.DanmakuService.SourceMatch(
+                key = "hongguo",
+                display = "红果短剧",
+                candidates = listOf(org.moontechlab.selenetv.service.DanmakuService.Candidate(cleanDramaId, launch.title, 10000)),
+                activeMediaId = cleanDramaId
+            )
+            listOf(shortDramaMatch) + baseMatches.filterNot { it.key == "hongguo" }
+        } else {
+            baseMatches
+        }
+
         danmakuMatches = matches
         matches.forEach { danmakuActiveMediaByKey[it.key] = it.activeMediaId }
         if (matches.isEmpty()) {
             selectedDanmakuKey = null
+        } else if (isShortDrama && matches.any { it.key == "hongguo" } && (selectedDanmakuKey == null || selectedDanmakuKey == "hongguo" || danmakuMode == "auto")) {
+            // 短剧播放时：只要弹幕激活（非 off），默认直连「红果短剧」官方真实弹幕
+            selectedDanmakuKey = "hongguo"
+            loadNearChunks("hongguo")
         } else if (danmakuMode != "auto") {
             // 手动模式：probe 完不自动选源；但若用户已在播放页选过源（切源/切集前已开启弹幕），
             // 只要该源在新一集仍命中就保持选中并立即续上新集分块——不回到「未选」。未选过则维持空等用户在弹窗里挑。
