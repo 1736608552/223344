@@ -75,10 +75,21 @@ object SearchService {
     val sourceErrors: Map<String, String> get() = _sourceErrors.toMap()
 
     /**
+     * 别名与口语化搜词智能纠偏字典（自动对齐 CMS 官方入库剧名）
+     */
+    private fun resolveSearchAlias(raw: String): String {
+        var q = raw.trim()
+        if (q.contains("欢迎光临龙餐馆")) {
+            q = q.replace("欢迎光临龙餐馆", "欢迎来龙餐馆")
+        }
+        return q
+    }
+
+    /**
      * 开始搜索
      */
     suspend fun startSearch(query: String) {
-        val trimmedQuery = query.trim()
+        val trimmedQuery = resolveSearchAlias(query.trim())
         if (trimmedQuery.isEmpty()) {
             throw IllegalArgumentException("搜索查询不能为空")
         }

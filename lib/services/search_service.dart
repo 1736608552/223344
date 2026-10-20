@@ -89,10 +89,20 @@ class SearchService {
     return all.where((r) => !r.disabled && r.api.trim().isNotEmpty).toList();
   }
 
+  /// 别名与口语化搜词智能纠偏字典（自动对齐 CMS 官方入库剧名）
+  static String resolveSearchAlias(String query) {
+    var q = query.trim();
+    if (q.contains('欢迎光临龙餐馆')) {
+      q = q.replaceAll('欢迎光临龙餐馆', '欢迎来龙餐馆');
+    }
+    return q;
+  }
+
   /// 搜索推荐（只搜索第一个资源）
   /// 用于快速获取搜索建议
   static Future<List<String>> searchRecommand(String query) async {
     try {
+      final effectiveQuery = resolveSearchAlias(query);
       // 获取搜索资源列表（使用缓存）
       final allResources = await _getSearchResourcesWithCache();
 
@@ -107,7 +117,7 @@ class SearchService {
       // 只搜索第一个资源，设置 5 秒超时
       final firstResource = resources.first;
       final results =
-          await DownstreamService.searchFromApi(firstResource, query)
+          await DownstreamService.searchFromApi(firstResource, effectiveQuery)
               .timeout(const Duration(seconds: 5))
               .catchError((error) {
         // 捕获错误，返回空列表
@@ -126,6 +136,7 @@ class SearchService {
   /// 并发调用所有资源的搜索，返回所有结果
   static Future<List<SearchResult>> searchSync(String query) async {
     try {
+      final effectiveQuery = resolveSearchAlias(query);
       // 获取搜索资源列表（使用缓存）
       final allResources = await _getSearchResourcesWithCache();
 
@@ -139,7 +150,7 @@ class SearchService {
 
       // 并发调用所有资源的搜索，每个调用增加 20 秒超时
       final searchFutures = resources.map((resource) {
-        return DownstreamService.searchFromApi(resource, query)
+        return DownstreamService.searchFromApi(resource, effectiveQuery)
             .timeout(const Duration(seconds: 20))
             .catchError((error) {
           // 捕获错误，返回空列表

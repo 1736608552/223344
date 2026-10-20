@@ -18,7 +18,12 @@ object SourceFilter {
     ): Boolean {
         val resultDoubanId = result.doubanId?.toString()
         return when {
-            resultDoubanId == doubanId -> true
+            resultDoubanId == doubanId -> {
+                // 双重保险：doubanId 一致时仍需做标题宽松校验，防止采集站误填豆瓣 ID 导致串片（如把扫黑风暴错配给龙餐馆）
+                titlesMatch(result.title, title) || 
+                title.contains(result.title) || 
+                result.title.contains(title)
+            }
             resultDoubanId == null -> {
                 val titleOk = titlesMatch(result.title, title)
                 val yearOk = result.year == year || year.isEmpty() || result.year.isEmpty()

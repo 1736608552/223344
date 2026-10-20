@@ -218,12 +218,15 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
                             is SearchEvent.Complete -> {
                                 // 播放记录/收藏夹（带 source+id）：标题搜索未命中该具体源时，
                                 // 用 source+id 精确补齐这一条加入结果集，保证保存的源始终可播。
+                                // 必须校验标题一致性，防止拉入完全无关的片源（如把扫黑风暴补齐到龙餐馆中）
                                 if (entry is DetailEntry.History &&
                                     rawResults.none { it.source == entry.source && it.id == entry.id }
                                 ) {
                                     val detail = DownstreamService.getDetailBySourceId(entry.source, entry.id)
                                     Log.d("DetailFallback", "补齐 source=${entry.source} id=${entry.id} -> ${detail?.let { "${it.title}(${it.episodes.size}集)" } ?: "null"}")
-                                    if (detail != null && detail.episodes.isNotEmpty()) {
+                                    if (detail != null && detail.episodes.isNotEmpty() &&
+                                        SourceFilter.matchesByTitleYear(detail, entry.title, entry.year)
+                                    ) {
                                         rawResults = SearchService.deduplicateResults(rawResults + detail)
                                     }
                                 }
@@ -239,6 +242,7 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
     // 2) 由 rawResults 派生展示源：History 收敛到包含 source+id 的聚合组。
     //    组未识别到之前展示空（此时仍在加载页，不暴露会「广→窄」收缩的全集，避免跳变）；
     //    搜索结束仍未识别到组，则回退展示全部命中结果。
+    //    必须严格过滤标题，杜绝与当前剧目无关的异质源混入（如扫黑风暴混入龙餐馆）
     LaunchedEffect(rawResults, state.sourcesComplete, entry) {
         val displayed = when (entry) {
             is DetailEntry.History -> {
@@ -246,9 +250,16 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
                     ?: if (state.sourcesComplete) rawResults else emptyList()
                 // 从播放记录/收藏夹进入：把入口对应的源(source+id)排到首位（稳定排序，其余顺序不变）
                 val entryKey = "${entry.source}+${entry.id}"
-                group.sortedByDescending { sourceKey(it) == entryKey }
+                group.filter { SourceFilter.matchesByTitleYear(it, entry.title, entry.year) }
+                    .sortedByDescending { sourceKey(it) == entryKey }
             }
-            else -> rawResults
+            else -> rawResults.filter {
+                when (entry) {
+                    is DetailEntry.Douban -> SourceFilter.matchesContent(it, entry.doubanId, entry.title, entry.year)
+                    is DetailEntry.Bangumi -> SourceFilter.matchesByTitleYear(it, entry.title, entry.year)
+                    else -> true
+                }
+            }
         }
         // 统一按 source+id 去重：SearchAggregate 快照与 History 回退未经搜索流的去重，
         // 同一源可能重复出现；distinctBy 幂等，对已去重的搜索结果无副作用。
