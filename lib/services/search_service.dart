@@ -207,9 +207,9 @@ class SearchService {
         return [result];
       }
 
-      // 构建详情请求 URL
-      // v2.4.5: 用 HttpShared.buildUrl 检查 api 是否已带 `?`.
-      final detailUrl = HttpShared.buildUrl(apiSite.api, 'ac=videolist&ids=$id');
+      // 构建详情请求 URL (支持咕噜专线映射与带参URL安全构建)
+      final effectiveApi = DownstreamService.resolveEffectiveApi(apiSite);
+      final detailUrl = HttpShared.buildUrl(effectiveApi, 'ac=videolist&ids=$id');
 
       // v2.4.5: UA Chrome 122 → 147 (HttpShared.jsonHeaders),
       //   timeout 10s → 8s (HttpShared.timeoutDefault, 跟 SourceBrowser.getDetail 1:1)

@@ -69,6 +69,85 @@ object DownstreamService {
     }
 
     /**
+     * 咕噜咕噜官方专线映射表 (对齐 Web 端 downstream.ts 与官方 GuluGuluTV 架构)
+     * 将代理解析接口（如 1ljx.com/?url=、jx.playerjy.com/?url=、jx.xmflv.com/?url= 等）
+     * 自动映射为对应高可用直连秒播切片 CMS 接口
+     */
+    private data class GuluMapping(
+        val match: (key: String, name: String, api: String) -> Boolean,
+        val targetApi: String
+    )
+
+    private val GULUGULU_MAPPINGS = listOf(
+        // 01_glgl_live: 咕噜直连切片代理 / glgl.tv (Live M3U8) -> 光速专线 (高并发节点)
+        GuluMapping(
+            match = { key, name, api ->
+                api.contains("glgl.tv") || key.contains("glgl") ||
+                name.contains("咕噜专线代理解析") || name.contains("咕噜直连切片")
+            },
+            targetApi = "https://api.guangsuapi.com/api.php/provide/vod/"
+        ),
+        // 02_1ljx_main & 03_1ljx_api: 咕噜1号官方专线 / 1ljx.com 主力解析及 API 直连 -> 量子专线 (秒播切片 / 新咕噜4K)
+        GuluMapping(
+            match = { key, name, api ->
+                api.contains("1ljx.com") || key.contains("1ljx") ||
+                name.contains("1号线路") || name.contains("咕噜1号")
+            },
+            targetApi = "https://cj.lziapi.com/api.php/provide/vod/"
+        ),
+        // 04_xmflv_jx: 虾米极速秒播解析 / xmflv.com -> 红牛资源 (超清综合 / 鲸宝4K)
+        GuluMapping(
+            match = { key, name, api ->
+                api.contains("xmflv.com") || key.contains("xmflv") ||
+                name.contains("虾米") || name.contains("极速秒播解析")
+            },
+            targetApi = "https://www.hongniuzy2.com/api.php/provide/vod/"
+        ),
+        // 05_playerjy_jx: 金鹰蓝光大片解析 / playerjy.com -> 金鹰影视 (蓝光大片 / VIP4K)
+        GuluMapping(
+            match = { key, name, api ->
+                api.contains("playerjy.com") || key.contains("playerjy") ||
+                name.contains("金鹰") || name.contains("优质蓝光解析")
+            },
+            targetApi = "https://jyzyapi.com/api.php/provide/vod/"
+        ),
+        // UC影音加速专线 / ucyy.cn -> 暴风专线 (高速秒播)
+        GuluMapping(
+            match = { key, name, api ->
+                api.contains("ucyy.cn") || key.contains("ucyy") ||
+                name.contains("uc影音") || name.contains("uc_speed")
+            },
+            targetApi = "https://bfzyapi.com/api.php/provide/vod/"
+        )
+    )
+
+    /**
+     * 获取资源真实生效的 API 基础地址（支持专线映射解析）
+     */
+    fun resolveEffectiveApi(resource: SearchResource): String {
+        val rawApi = resource.api.trim()
+        val key = resource.key.lowercase()
+        val name = resource.name.lowercase()
+        val apiLower = rawApi.lowercase()
+
+        for (m in GULUGULU_MAPPINGS) {
+            if (m.match(key, name, apiLower)) {
+                return m.targetApi
+            }
+        }
+        return rawApi
+    }
+
+    /**
+     * 安全构建请求 URL，避免 ?url= 或已含 ? 时拼出畸形 URL
+     */
+    private fun buildSafeUrl(api: String, queryParam: String): String {
+        val trimmed = api.trim()
+        val sep = if (trimmed.contains("?")) "&" else "?"
+        return "$trimmed$sep$queryParam"
+    }
+
+    /**
      * 从指定的搜索资源API搜索
      */
     suspend fun searchFromApi(
@@ -76,8 +155,8 @@ object DownstreamService {
         query: String
     ): List<SearchResult> = withContext(Dispatchers.IO) {
         try {
-            val apiBaseUrl = resource.api
-            val apiUrl = "$apiBaseUrl?ac=videolist&wd=${URLEncoder.encode(query, "UTF-8")}"
+            val apiBaseUrl = resolveEffectiveApi(resource)
+            val apiUrl = buildSafeUrl(apiBaseUrl, "ac=videolist&wd=${URLEncoder.encode(query, "UTF-8")}")
 
             // 搜索第一页
             val firstPageResult = searchPage(resource, query, 1, apiUrl)
@@ -91,7 +170,7 @@ object DownstreamService {
             if (pagesToFetch > 0) {
                 val additionalResults = (2..pagesToFetch + 1).map { page ->
                     async {
-                        val pageUrl = "$apiBaseUrl?ac=videolist&wd=${URLEncoder.encode(query, "UTF-8")}&pg=$page"
+                        val pageUrl = buildSafeUrl(apiBaseUrl, "ac=videolist&wd=${URLEncoder.encode(query, "UTF-8")}&pg=$page")
                         searchPage(resource, query, page, pageUrl).results
                     }
                 }.awaitAll()
@@ -276,22 +355,43 @@ object DownstreamService {
         val vodPlayUrl = item["vod_play_url"]?.jsonPrimitive?.contentOrNull
         if (!vodPlayUrl.isNullOrBlank()) {
             val vodPlayUrlArray = vodPlayUrl.split("$$$")
-            for (url in vodPlayUrlArray) {
+            var bestScore = -1
+
+            for (group in vodPlayUrlArray) {
                 val matchEpisodes = mutableListOf<String>()
                 val matchTitles = mutableListOf<String>()
-                val titleUrlArray = url.split("#")
-                
+                val titleUrlArray = group.split("#")
+
                 for (titleUrl in titleUrlArray) {
                     val episodeTitleUrl = titleUrl.split("$")
-                    if (episodeTitleUrl.size == 2 && episodeTitleUrl[1].endsWith(".m3u8")) {
-                        matchTitles.add(episodeTitleUrl[0])
-                        matchEpisodes.add(episodeTitleUrl[1])
+                    val epUrl = if (episodeTitleUrl.size >= 2) episodeTitleUrl.last().trim() else ""
+                    val epTitle = if (episodeTitleUrl.size >= 2) episodeTitleUrl.first().trim() else "第${matchEpisodes.size + 1}集"
+
+                    if (epUrl.startsWith("http://") || epUrl.startsWith("https://")) {
+                        matchTitles.add(epTitle)
+                        matchEpisodes.add(epUrl)
                     }
                 }
-                
-                if (matchEpisodes.size > episodes.size) {
-                    episodes = matchEpisodes
-                    titles = matchTitles
+
+                if (matchEpisodes.isNotEmpty()) {
+                    // 画质加权选择：集数基础分 + 4K/原画/蓝光 极高加权 (对齐 Web 与手机端)
+                    var score = matchEpisodes.size * 10
+                    val groupText = group.take(300).lowercase()
+                    if (groupText.contains("4k") || groupText.contains("2160") ||
+                        groupText.contains("原画") || groupText.contains("蓝光") ||
+                        groupText.contains("uhd")) {
+                        score += 500
+                    } else if (groupText.contains("2k") || groupText.contains("1440")) {
+                        score += 200
+                    } else if (groupText.contains("1080") || groupText.contains("超清") || groupText.contains("fhd")) {
+                        score += 50
+                    }
+
+                    if (score > bestScore) {
+                        bestScore = score
+                        episodes = matchEpisodes
+                        titles = matchTitles
+                    }
                 }
             }
         }
@@ -363,7 +463,8 @@ object DownstreamService {
      * 标准 JSON 详情接口（?ac=videolist&ids=）解析为单条 SearchResult。无果返回 null。
      */
     private fun fetchJsonDetail(id: String, resource: SearchResource): SearchResult? {
-        val detailUrl = "${resource.api}?ac=videolist&ids=$id"
+        val effectiveApi = resolveEffectiveApi(resource)
+        val detailUrl = buildSafeUrl(effectiveApi, "ac=videolist&ids=$id")
         val body = httpGet(detailUrl, "application/json") ?: return null
 
         val list = try {

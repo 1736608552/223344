@@ -27,13 +27,60 @@ class SearchPageResult {
 ///   .endsWith('.m3u8') 过滤, 跟 SourceBrowserService 配置分叉, 导致同一个源
 ///   「源浏览器能开但全局搜索搜不到」「点开视频没集数」.
 class DownstreamService {
+  /// 咕噜咕噜官方专线映射表 (对齐 Web 端 downstream.ts 与官方 GuluGuluTV 架构)
+  /// 将代理解析接口（如 1ljx.com/?url=、jx.playerjy.com/?url=、jx.xmflv.com/?url= 等）
+  /// 自动映射为对应高可用直连秒播切片 CMS 接口
+  static String resolveEffectiveApi(SearchResource resource) {
+    final rawApi = resource.api.trim();
+    final key = resource.key.toLowerCase();
+    final name = resource.name.toLowerCase();
+    final apiLower = rawApi.toLowerCase();
+
+    // 01_glgl_live: 咕噜直连切片代理 / glgl.tv (Live M3U8) -> 光速专线 (高并发节点)
+    if (apiLower.contains('glgl.tv') ||
+        key.contains('glgl') ||
+        name.contains('咕噜专线代理解析') ||
+        name.contains('咕噜直连切片')) {
+      return 'https://api.guangsuapi.com/api.php/provide/vod/';
+    }
+    // 02_1ljx_main & 03_1ljx_api: 咕噜1号官方专线 / 1ljx.com 主力解析及 API 直连 -> 量子专线 (秒播切片 / 新咕噜4K)
+    if (apiLower.contains('1ljx.com') ||
+        key.contains('1ljx') ||
+        name.contains('1号线路') ||
+        name.contains('咕噜1号')) {
+      return 'https://cj.lziapi.com/api.php/provide/vod/';
+    }
+    // 04_xmflv_jx: 虾米极速秒播解析 / xmflv.com -> 红牛资源 (超清综合 / 鲸宝4K)
+    if (apiLower.contains('xmflv.com') ||
+        key.contains('xmflv') ||
+        name.contains('虾米') ||
+        name.contains('极速秒播解析')) {
+      return 'https://www.hongniuzy2.com/api.php/provide/vod/';
+    }
+    // 05_playerjy_jx: 金鹰蓝光大片解析 / playerjy.com -> 金鹰影视 (蓝光大片 / VIP4K)
+    if (apiLower.contains('playerjy.com') ||
+        key.contains('playerjy') ||
+        name.contains('金鹰') ||
+        name.contains('优质蓝光解析')) {
+      return 'https://jyzyapi.com/api.php/provide/vod/';
+    }
+    // UC影音加速专线 / ucyy.cn -> 暴风专线 (高速秒播)
+    if (apiLower.contains('ucyy.cn') ||
+        key.contains('ucyy') ||
+        name.contains('uc影音') ||
+        name.contains('uc_speed')) {
+      return 'https://bfzyapi.com/api.php/provide/vod/';
+    }
+    return rawApi;
+  }
+
   /// 从指定的搜索资源API搜索
   static Future<List<SearchResult>> searchFromApi(
     SearchResource resource,
     String query,
   ) async {
     try {
-      final apiBaseUrl = resource.api;
+      final apiBaseUrl = resolveEffectiveApi(resource);
       // v2.4.5: 用 HttpShared.buildUrl 检查 api 是否已带 `?`.
       final apiUrl = HttpShared.buildUrl(
           apiBaseUrl, 'ac=videolist&wd=${Uri.encodeComponent(query)}');
