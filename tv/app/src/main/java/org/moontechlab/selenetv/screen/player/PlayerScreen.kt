@@ -557,13 +557,9 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         matches.forEach { danmakuActiveMediaByKey[it.key] = it.activeMediaId }
         if (matches.isEmpty()) {
             selectedDanmakuKey = null
-        } else if (isShortDrama && matches.any { it.key == "hongguo" } && (selectedDanmakuKey == null || selectedDanmakuKey == "hongguo" || danmakuMode == "auto")) {
-            // 短剧播放时：只要弹幕激活（非 off），默认直连「红果短剧」官方真实弹幕
-            selectedDanmakuKey = "hongguo"
-            loadNearChunks("hongguo")
         } else if (danmakuMode != "auto") {
-            // 手动模式：probe 完不自动选源；但若用户已在播放页选过源（切源/切集前已开启弹幕），
-            // 只要该源在新一集仍命中就保持选中并立即续上新集分块——不回到「未选」。未选过则维持空等用户在弹窗里挑。
+            // 手动模式：probe 完不自动选源（与爱奇艺、腾讯等所有源一致，需用户手动选择弹幕源才开始播放）；
+            // 若用户在播放页已手动选过源，在新一集仍命中则保持选中并续上新集分块。
             val prev = selectedDanmakuKey
             if (prev != null && matches.any { it.key == prev }) {
                 selectedDanmakuKey = prev
