@@ -361,9 +361,7 @@ class NextSeasonService {
       seasonLabel: seasonLabel,
       poster: currentVideoInfo.cover,
       year: currentVideoInfo.year,
-      desc: (currentVideoInfo.desc?.trim().isNotEmpty == true)
-          ? currentVideoInfo.desc!.trim()
-          : '全集播放完毕，感谢您的观看与陪伴。点击可重新播放，或切换线路重温。',
+      desc: '全集播放完毕，感谢您的观看与陪伴。点击可重新播放，或返回选集重温。',
       totalEpisodes: currentVideoInfo.totalEpisodes > 0 ? currentVideoInfo.totalEpisodes : 1,
       source: currentSource ?? currentVideoInfo.source,
       sourceName: sourceName ?? currentVideoInfo.sourceName,

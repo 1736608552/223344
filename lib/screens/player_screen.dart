@@ -7764,7 +7764,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         _nextSeasonCandidate ??= NextSeasonService.buildFallbackCompletionCandidate(
           currentVideoInfo: widget.videoInfo,
           currentSource: _selectedSource?.source,
-          sourceName: _selectedSource?.name,
+          sourceName: _selectedSource?.sourceName,
         );
         if (mounted && !_nextSeasonDismissedThisEp) {
           _autoPlayedThisEpisode = true;
@@ -7861,6 +7861,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (candidate == null || !_showNextSeasonOverlay) return const SizedBox.shrink();
 
     final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final isRepeatSelf = candidate.nextVideoInfo.title == widget.videoInfo.title;
 
     return Positioned.fill(
       child: Material(
@@ -8049,7 +8050,6 @@ class _PlayerScreenState extends State<PlayerScreen>
                           ),
                         ],
                       ),
-                      final isRepeatSelf = candidate.nextVideoInfo.title == widget.videoInfo.title;
 
                       // 5秒动态进度条 (重温本剧不自动连播倒计时)
                       if (!isRepeatSelf) ...[
