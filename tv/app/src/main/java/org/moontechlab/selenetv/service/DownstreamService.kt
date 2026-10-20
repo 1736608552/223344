@@ -364,7 +364,7 @@ object DownstreamService {
 
                 for (titleUrl in titleUrlArray) {
                     val episodeTitleUrl = titleUrl.split("$")
-                    val epUrl = if (episodeTitleUrl.size >= 2) episodeTitleUrl.last().trim() else ""
+                    val epUrl = if (episodeTitleUrl.size >= 2) episodeTitleUrl.last().trim() else titleUrl.trim()
                     val epTitle = if (episodeTitleUrl.size >= 2) episodeTitleUrl.first().trim() else "第${matchEpisodes.size + 1}集"
 
                     if (epUrl.startsWith("http://") || epUrl.startsWith("https://")) {
@@ -374,9 +374,12 @@ object DownstreamService {
                 }
 
                 if (matchEpisodes.isNotEmpty()) {
-                    // 画质加权选择：集数基础分 + 4K/原画/蓝光 极高加权 (对齐 Web 与手机端)
+                    // 画质加权选择：集数基础分 + m3u8直链加权 + 4K/原画/蓝光 极高加权 (对齐 Web 与手机端)
                     var score = matchEpisodes.size * 10
                     val groupText = group.take(300).lowercase()
+                    if (groupText.contains(".m3u8")) {
+                        score += 100 // 优先原生 m3u8 切片，防止误选 /share/ 网页
+                    }
                     if (groupText.contains("4k") || groupText.contains("2160") ||
                         groupText.contains("原画") || groupText.contains("蓝光") ||
                         groupText.contains("uhd")) {
