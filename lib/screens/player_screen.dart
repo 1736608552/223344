@@ -2577,6 +2577,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     });
     _onDanmakuSeek(newMs);
     _updateSkipButtonVisibility();
+    _maybeAutoPlayNext();
     if (_isPlaying) _scheduleHideControls();
   }
 
@@ -2760,6 +2761,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     });
     _onDanmakuSeek(finalMs);
     _updateSkipButtonVisibility();
+    _maybeAutoPlayNext();
     if (_isPlaying) _scheduleHideControls();
   }
 
@@ -3807,8 +3809,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   // 改用 M3U8Service 测速 + _stateFromSpeed. 老方法没人调, 留在这里只是 dead code.
   // 如需 HEAD ping fallback, 看 _fallbackHeadPing.
 
-  /// position stream 触发的检查: 仅当真正播完到达末尾 (视频完全播到最后一刻) 时兜底自动切下一集
-  /// 彻底解决短剧及传统影视提前两秒截断画面与台词的缺陷
+  /// position stream 触发的检查:
+  /// - 中间集数切集：短剧最后 200ms 内，传统影视最后 300ms 内，严禁提前两秒掐断画面与台词；
+  /// - 最后一集完结：短剧最后 300ms，长剧/电影放宽为最后 1500ms（或已到达时长），确保片尾自然呼出海报推荐大卡片，杜绝因微秒卡顿漏弹
   void _maybeAutoPlayNext() {
     if (_autoPlayedThisEpisode) return;
     final dur = _currentDuration;
@@ -3819,10 +3822,16 @@ class _PlayerScreenState extends State<PlayerScreen>
         widget.videoInfo.source == 'hongguo' ||
         widget.videoInfo.source == 'shortdrama';
 
+    final source = _selectedSource;
+    final isLastEpisode = source != null &&
+        source.episodes.isNotEmpty &&
+        _currentEpisodeIndex >= source.episodes.length - 1;
+
     final remainMs = dur.inMilliseconds - _currentPosition.inMilliseconds;
-    // 短剧节奏快、每集结尾多为反转与关键悬念，严禁提前截断，必须真正播放至最后 200ms 内才触发切集；
-    // 电视剧/电影同样收紧为最后 300ms 兜底，绝不提前 2 秒掐断剧情
-    final endThresholdMs = isShortDrama ? 200 : 300;
+    // 关键双轨阈值：
+    // 如果是最后一集完结，长剧正片早已结束进入滚动片尾，1500ms 兜底自然呼出推荐海报；
+    // 如果是中间集数，严格收紧为 200ms~300ms，绝不提前掐断剧情
+    final endThresholdMs = isLastEpisode ? (isShortDrama ? 300 : 1500) : (isShortDrama ? 200 : 300);
     if (remainMs > endThresholdMs && _currentPosition < dur) return;
     _autoPlayNextEpisode();
   }
@@ -4567,6 +4576,20 @@ class _PlayerScreenState extends State<PlayerScreen>
           autofocus: true,
           onKeyEvent: (node, event) {
             if (event is KeyDownEvent) {
+              if (_showNextSeasonOverlay) {
+                if (event.logicalKey == LogicalKeyboardKey.select ||
+                    event.logicalKey == LogicalKeyboardKey.enter ||
+                    event.logicalKey == LogicalKeyboardKey.space) {
+                  _playNextSeasonNow();
+                  return KeyEventResult.handled;
+                }
+                if (event.logicalKey == LogicalKeyboardKey.escape ||
+                    event.logicalKey == LogicalKeyboardKey.backspace ||
+                    event.logicalKey == LogicalKeyboardKey.goBack) {
+                  _dismissNextSeasonOverlay();
+                  return KeyEventResult.handled;
+                }
+              }
               if (event.logicalKey == LogicalKeyboardKey.escape && _isFullscreen) {
                 _onExitFullscreen();
                 return KeyEventResult.handled;
@@ -7725,8 +7748,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (!fromCompletedStream) {
       if (dur <= Duration.zero) return;
       if (!isShortDrama && dur < const Duration(seconds: 30)) return;
-      // 电影/全剧完结：收紧为最后 300~500ms，杜绝提前 3.5 秒打断结尾画面与彩蛋
-      final lastGuardMs = isShortDrama ? 300 : 500;
+      // 电影/全剧完结：短剧最后 300ms，传统影视最后 1500ms 自然呼出
+      final lastGuardMs = isShortDrama ? 300 : 1500;
       if (_currentPosition < dur - Duration(milliseconds: lastGuardMs)) {
         return;
       }
@@ -7737,7 +7760,13 @@ class _PlayerScreenState extends State<PlayerScreen>
       _triggerNextSeasonOverlay();
     } else {
       _checkAndPreloadNextSeason().then((_) {
-        if (_nextSeasonCandidate != null && mounted && !_nextSeasonDismissedThisEp) {
+        // 关键防御：无论异步检索是否命中，立刻调用保底构造器，确保 100% 弹出海报大卡片
+        _nextSeasonCandidate ??= NextSeasonService.buildFallbackCompletionCandidate(
+          currentVideoInfo: widget.videoInfo,
+          currentSource: _selectedSource?.source,
+          sourceName: _selectedSource?.name,
+        );
+        if (mounted && !_nextSeasonDismissedThisEp) {
           _autoPlayedThisEpisode = true;
           _triggerNextSeasonOverlay();
         }
@@ -7758,25 +7787,30 @@ class _PlayerScreenState extends State<PlayerScreen>
     } catch (_) {}
 
     _nextSeasonTimer?.cancel();
+    final isRepeatSelf = candidate.nextVideoInfo.title == widget.videoInfo.title;
+
     setState(() {
       _showNextSeasonOverlay = true;
       _nextSeasonCountdownSec = 5;
     });
 
-    _nextSeasonTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-      if (_nextSeasonCountdownSec > 1) {
-        setState(() {
-          _nextSeasonCountdownSec--;
-        });
-      } else {
-        timer.cancel();
-        _playNextSeasonNow();
-      }
-    });
+    // 若为重温本剧兜底，不自动 5 秒倒计时跳转，保留界面等待用户点击；若是下一季或推荐好剧，开启 5 秒平滑连播倒计时
+    if (!isRepeatSelf) {
+      _nextSeasonTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
+        if (_nextSeasonCountdownSec > 1) {
+          setState(() {
+            _nextSeasonCountdownSec--;
+          });
+        } else {
+          timer.cancel();
+          _playNextSeasonNow();
+        }
+      });
+    }
   }
 
   /// 用户主动取消下一季自动连播弹窗
@@ -7803,6 +7837,14 @@ class _PlayerScreenState extends State<PlayerScreen>
     try {
       _player?.pause();
     } catch (_) {}
+
+    // 若是重播本片/本剧第1集
+    final isRepeatSelf = candidate.nextVideoInfo.title == widget.videoInfo.title;
+    if (isRepeatSelf) {
+      _autoPlayedThisEpisode = false;
+      _playEpisode(0);
+      return;
+    }
 
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
@@ -8007,18 +8049,21 @@ class _PlayerScreenState extends State<PlayerScreen>
                           ),
                         ],
                       ),
-                      const SizedBox(height: 18),
+                      final isRepeatSelf = candidate.nextVideoInfo.title == widget.videoInfo.title;
 
-                      // 5秒动态进度条
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(4),
-                        child: LinearProgressIndicator(
-                          value: (5 - _nextSeasonCountdownSec) / 5.0,
-                          backgroundColor: Colors.white10,
-                          valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF38BDF8)),
-                          minHeight: 3,
+                      // 5秒动态进度条 (重温本剧不自动连播倒计时)
+                      if (!isRepeatSelf) ...[
+                        const SizedBox(height: 18),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: LinearProgressIndicator(
+                            value: (5 - _nextSeasonCountdownSec) / 5.0,
+                            backgroundColor: Colors.white10,
+                            valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF38BDF8)),
+                            minHeight: 3,
+                          ),
                         ),
-                      ),
+                      ],
                       const SizedBox(height: 14),
 
                       // 底部按钮栏
@@ -8031,14 +8076,22 @@ class _PlayerScreenState extends State<PlayerScreen>
                               foregroundColor: Colors.white70,
                               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                             ),
-                            child: const Text('取消', style: TextStyle(fontSize: 14)),
+                            child: Text(isRepeatSelf ? '返回' : '取消', style: const TextStyle(fontSize: 14)),
                           ),
                           const SizedBox(width: 8),
                           ElevatedButton.icon(
+                            autofocus: true,
                             onPressed: _playNextSeasonNow,
-                            icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                            icon: Icon(
+                              isRepeatSelf ? Icons.replay_rounded : Icons.play_arrow_rounded,
+                              size: 20,
+                            ),
                             label: Text(
-                              '立即播放 (${_nextSeasonCountdownSec}s)',
+                              isRepeatSelf
+                                  ? '重新播放第 1 集'
+                                  : (candidate.isNextSeason
+                                      ? '播放下一季 (${_nextSeasonCountdownSec}s)'
+                                      : '播放推荐 (${_nextSeasonCountdownSec}s)'),
                               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                             ),
                             style: ElevatedButton.styleFrom(
