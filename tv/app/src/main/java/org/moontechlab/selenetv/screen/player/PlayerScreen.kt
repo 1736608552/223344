@@ -281,6 +281,46 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         return if (rec.index - 1 == index) rec.playTime * 1000 else 0L
     }
 
+    // 下一季/连播推荐状态 (类似 YouTube / Netflix 风格居中海报弹层与 5 秒倒计时)
+    var nextSeasonCandidate by remember { mutableStateOf<NextSeasonCandidate?>(null) }
+    var showNextSeasonOverlay by remember { mutableStateOf(false) }
+    var nextSeasonCountdownSec by remember { mutableIntStateOf(5) }
+    var nextSeasonDismissedThisEp by remember { mutableStateOf(false) }
+    var nextSeasonTimerJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    val nextSeasonPlayFocus = remember { FocusRequester() }
+
+    // 预拉取下一季/推荐信息 (全分类支持：电影/电视剧/动漫/短剧)
+    fun preloadNextSeasonIfNeeded(epIdx: Int) {
+        val isLastOrMovie = epCount <= 1 || epIdx >= epCount - 1
+        if (!isLastOrMovie) {
+            nextSeasonCandidate = null
+            nextSeasonDismissedThisEp = false
+            return
+        }
+        if (nextSeasonCandidate != null) return
+        val isMovie = epCount <= 1 || launch.heroInfo?.genres?.any { it.contains("电影") } == true
+        val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
+        val srcName = src?.source ?: "hongguo"
+        val title = launch.title
+        val cover = src?.poster ?: launch.heroInfo?.backdrop ?: ""
+        val year = src?.year ?: "2026"
+        scope.launch(Dispatchers.IO) {
+            val cand = NextSeasonService.findNextSeason(
+                title = title,
+                currentSource = srcName,
+                doubanId = null,
+                isMovie = isMovie,
+                cover = cover,
+                year = year,
+            )
+            if (cand != null) {
+                withContext(Dispatchers.Main) {
+                    nextSeasonCandidate = cand
+                }
+            }
+        }
+    }
+
     // 载入指定集；startMs 为续播位置（切集默认 0，进入时用 launch.startPositionMs）
     fun playEpisode(index: Int, startMs: Long) {
         preloadNextSeasonIfNeeded(index)
@@ -347,46 +387,6 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             panelOpen = false
             playEpisode(currentEpisode, 0)
             wake()
-        }
-    }
-
-    // 下一季/连播推荐状态 (类似 YouTube / Netflix 风格居中海报弹层与 5 秒倒计时)
-    var nextSeasonCandidate by remember { mutableStateOf<NextSeasonCandidate?>(null) }
-    var showNextSeasonOverlay by remember { mutableStateOf(false) }
-    var nextSeasonCountdownSec by remember { mutableIntStateOf(5) }
-    var nextSeasonDismissedThisEp by remember { mutableStateOf(false) }
-    var nextSeasonTimerJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
-    val nextSeasonPlayFocus = remember { FocusRequester() }
-
-    // 预拉取下一季/推荐信息 (全分类支持：电影/电视剧/动漫/短剧)
-    fun preloadNextSeasonIfNeeded(epIdx: Int) {
-        val isLastOrMovie = epCount <= 1 || epIdx >= epCount - 1
-        if (!isLastOrMovie) {
-            nextSeasonCandidate = null
-            nextSeasonDismissedThisEp = false
-            return
-        }
-        if (nextSeasonCandidate != null) return
-        val isMovie = epCount <= 1 || launch.heroInfo?.genres?.any { it.contains("电影") } == true
-        val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
-        val srcName = src?.source ?: "hongguo"
-        val title = launch.title
-        val cover = src?.poster ?: launch.heroInfo?.backdrop ?: ""
-        val year = src?.year ?: "2026"
-        scope.launch(Dispatchers.IO) {
-            val cand = NextSeasonService.findNextSeason(
-                title = title,
-                currentSource = srcName,
-                doubanId = null,
-                isMovie = isMovie,
-                cover = cover,
-                year = year,
-            )
-            if (cand != null) {
-                withContext(Dispatchers.Main) {
-                    nextSeasonCandidate = cand
-                }
-            }
         }
     }
 

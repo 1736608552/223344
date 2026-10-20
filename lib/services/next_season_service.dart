@@ -189,7 +189,7 @@ class NextSeasonService {
       '$baseTitle：第$nextSeason季',
       '$baseTitle Season $nextSeason',
       '$baseTitle 2',
-      '$baseTitle2',
+      '${baseTitle}2',
     ];
 
     for (final q in searchQueries) {
@@ -210,7 +210,7 @@ class NextSeasonService {
                     dTitle.contains('第2部') ||
                     dTitle.endsWith('2') ||
                     dTitle.contains('$baseTitle 2') ||
-                    dTitle.contains('$baseTitle2')
+                    dTitle.contains('${baseTitle}2')
                 ));
 
             if (baseMatch && seasonMatch) {
@@ -271,7 +271,7 @@ class NextSeasonService {
       '$baseTitle Season $nextSeason',
       '$baseTitle S$nextSeason',
       '$baseTitle 2',
-      '$baseTitle2',
+      '${baseTitle}2',
     ];
 
     for (final q in searchQueries) {
@@ -304,7 +304,7 @@ class NextSeasonService {
                     resTitle.contains('第2部') ||
                     resTitle.endsWith('2') ||
                     resTitle.contains('$baseTitle 2') ||
-                    resTitle.contains('$baseTitle2')
+                    resTitle.contains('${baseTitle}2')
                 ));
 
             if (baseMatch && seasonMatch && res.episodes.isNotEmpty) {
