@@ -69,13 +69,13 @@ class NextSeasonService {
     int season = 1;
     String base = title;
 
-    // 1. 中文第X季/部
-    final zhMatch = RegExp(r'第\s*([0-9一二三四五六七八九十]+)\s*[季部]').firstMatch(title);
+    // 1. 中文第X季/部/期
+    final zhMatch = RegExp(r'第\s*([0-9一二三四五六七八九十]+)\s*[季部期]').firstMatch(title);
     if (zhMatch != null) {
       final sStr = zhMatch.group(1)!;
       final parsed = int.tryParse(sStr) ?? _cnNumberMap[sStr] ?? 1;
       season = parsed;
-      base = title.replaceAll(RegExp(r'[:：\s]*第\s*[0-9一二三四五六七八九十]+\s*[季部]'), '').trim();
+      base = title.replaceAll(RegExp(r'[:：\s]*第\s*[0-9一二三四五六七八九十]+\s*[季部期]'), '').trim();
     } else {
       // 2. 英文 Season X / S X
       final enMatch = RegExp(r'(?:season|\bS)\s*(\d+)', caseSensitive: false).firstMatch(title);
@@ -84,6 +84,16 @@ class NextSeasonService {
         if (parsed != null && parsed > 0) {
           season = parsed;
           base = title.replaceAll(RegExp(r'[:：\s]*(?:season|\bS)\s*\d+', caseSensitive: false), '').trim();
+        }
+      } else {
+        // 3. 标题末尾纯数字季数（如 "庆余年2", "大江大河 2"）
+        final tailNumMatch = RegExp(r'[:：\s]*([2-9])\s*$').firstMatch(title);
+        if (tailNumMatch != null) {
+          final parsed = int.tryParse(tailNumMatch.group(1)!);
+          if (parsed != null && parsed > 1) {
+            season = parsed;
+            base = title.replaceAll(RegExp(r'[:：\s]*[2-9]\s*$'), '').trim();
+          }
         }
       }
     }
@@ -169,9 +179,17 @@ class NextSeasonService {
     final searchQueries = [
       '$baseTitle：第$nextSeasonCn季',
       '$baseTitle 第$nextSeasonCn季',
+      '$baseTitle第$nextSeasonCn季',
+      '$baseTitle 第二季',
+      '$baseTitle第二季',
+      '$baseTitle 第$nextSeasonCn部',
+      '$baseTitle 第二部',
+      '$baseTitle第$nextSeasonCn部',
       '$baseTitle 第$nextSeason季',
       '$baseTitle：第$nextSeason季',
       '$baseTitle Season $nextSeason',
+      '$baseTitle 2',
+      '$baseTitle2',
     ];
 
     for (final q in searchQueries) {
@@ -184,7 +202,16 @@ class NextSeasonService {
 
             // 严格验证：核心剧名一致，且季数精确匹配下一季
             final baseMatch = dParsed.baseTitle.contains(baseTitle) || baseTitle.contains(dParsed.baseTitle);
-            final seasonMatch = dParsed.currentSeason == nextSeason;
+            final seasonMatch = dParsed.currentSeason == nextSeason ||
+                (nextSeason == 2 && (
+                    dTitle.contains('第二季') ||
+                    dTitle.contains('第二部') ||
+                    dTitle.contains('第2季') ||
+                    dTitle.contains('第2部') ||
+                    dTitle.endsWith('2') ||
+                    dTitle.contains('$baseTitle 2') ||
+                    dTitle.contains('$baseTitle2')
+                ));
 
             if (baseMatch && seasonMatch) {
               final dramaId = (d['id'] ?? '').toString().trim();
@@ -238,8 +265,13 @@ class NextSeasonService {
     final searchQueries = [
       '$baseTitle 第$nextSeasonCn季',
       '$baseTitle 第$nextSeason季',
+      '$baseTitle 第二季',
+      '$baseTitle 第二部',
+      '$baseTitle 第$nextSeasonCn部',
       '$baseTitle Season $nextSeason',
       '$baseTitle S$nextSeason',
+      '$baseTitle 2',
+      '$baseTitle2',
     ];
 
     for (final q in searchQueries) {
@@ -263,8 +295,17 @@ class NextSeasonService {
                 resParsed.baseTitle.contains(baseTitle) ||
                 baseTitle.contains(resParsed.baseTitle);
 
-            // 必须严格等于目标季数，绝不等于当前季
-            final seasonMatch = resParsed.currentSeason == nextSeason;
+            // 严格等于目标季数，或为第二部/2 变体
+            final seasonMatch = resParsed.currentSeason == nextSeason ||
+                (nextSeason == 2 && (
+                    resTitle.contains('第二季') ||
+                    resTitle.contains('第二部') ||
+                    resTitle.contains('第2季') ||
+                    resTitle.contains('第2部') ||
+                    resTitle.endsWith('2') ||
+                    resTitle.contains('$baseTitle 2') ||
+                    resTitle.contains('$baseTitle2')
+                ));
 
             if (baseMatch && seasonMatch && res.episodes.isNotEmpty) {
               final poster = res.poster.isNotEmpty ? res.poster : currentVideoInfo.cover;

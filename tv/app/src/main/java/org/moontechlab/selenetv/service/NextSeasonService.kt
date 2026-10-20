@@ -2,6 +2,8 @@ package org.moontechlab.selenetv.service
 
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.moontechlab.selenetv.model.SearchResult
@@ -51,13 +53,20 @@ object NextSeasonService {
 
     fun parseSeason(title: String): ParsedSeason {
         val t = title.trim()
-        val seasonRegex = Regex("""(?:第\s*([0-9]+|[一二三四五六七八九十]+)\s*季)|(?:Season\s*([0-9]+))|(?:S([0-9]+))""", RegexOption.IGNORE_CASE)
+        val seasonRegex = Regex("""(?:第\s*([0-9]+|[一二三四五六七八九十]+)\s*[季部期])|(?:Season\s*([0-9]+))|(?:S([0-9]+))""", RegexOption.IGNORE_CASE)
         val match = seasonRegex.find(t)
         if (match != null) {
             val numStr = match.groupValues[1].ifEmpty { match.groupValues[2] }.ifEmpty { match.groupValues[3] }
             val currentSeason = numStr.toIntOrNull() ?: cnNumMap[numStr] ?: 1
             val base = t.replace(match.value, "").trim()
             return ParsedSeason(base, currentSeason, currentSeason + 1)
+        }
+        val tailNumRegex = Regex("""[:：\s]*([2-9])\s*$""")
+        val tailMatch = tailNumRegex.find(t)
+        if (tailMatch != null) {
+            val s = tailMatch.groupValues[1].toIntOrNull() ?: 2
+            val base = t.replace(tailNumRegex, "").trim()
+            return ParsedSeason(base, s, s + 1)
         }
         return ParsedSeason(t, 1, 2)
     }
@@ -84,7 +93,7 @@ object NextSeasonService {
             val isShortDrama = currentSource == "hongguo" || currentSource == "shortdrama"
             var candidate: NextSeasonCandidate? = null
 
-            // 1. 若非单集电影，优先尝试查找真实的下一季
+            // 1. 若非单集电影，严谨多通道穷尽检索真实的下一季
             if (!isMovie) {
                 val parsed = parseSeason(cleanTitle)
                 val base = parsed.baseTitle
@@ -99,7 +108,7 @@ object NextSeasonService {
                 }
             }
 
-            // 2. 若无下一季或电影场景，智能推导同类高分好片/爆款推荐
+            // 2. ★ 只有在完全没有下一季的前提下，才智能推导同类高分好片/爆款推荐
             if (candidate == null) {
                 candidate = findRecommendation(cleanTitle, isShortDrama, isMovie, doubanId, cover, year)
             }
@@ -123,22 +132,29 @@ object NextSeasonService {
     ): NextSeasonCandidate? = withContext(Dispatchers.IO) {
         val queries = listOf(
             "${baseTitle}第${nextSeasonCn}季",
+            "${baseTitle} 第${nextSeasonCn}季",
             "${baseTitle}第二季",
+            "${baseTitle} 第二季",
+            "${baseTitle}第${nextSeasonCn}部",
             "${baseTitle}第${nextSeasonNum}季",
-            "${baseTitle}2"
+            "${baseTitle}2",
+            "${baseTitle} 2"
         ).distinct()
 
         for (q in queries) {
             try {
                 val results = withTimeoutOrNull(4000) { ShortDramaService.searchDramas(q) } ?: emptyList()
                 val matched = results.firstOrNull { r ->
-                    r.title.contains(baseTitle) && (
-                        r.title.contains("第${nextSeasonCn}季") ||
-                        r.title.contains("第${nextSeasonNum}季") ||
-                        (nextSeasonNum == 2 && r.title.contains("第二季"))
-                    )
+                    val t = r.title.trim()
+                    if (t.contains("预告") || t.contains("花絮") || t.contains("解说")) return@firstOrNull false
+                    val p = parseSeason(t)
+                    val baseMatch = p.baseTitle == baseTitle || p.baseTitle.contains(baseTitle) || baseTitle.contains(p.baseTitle)
+                    val seasonMatch = p.currentSeason == nextSeasonNum ||
+                        (nextSeasonNum == 2 && (t.contains("第二季") || t.contains("第二部") || t.contains("第2季") || t.contains("第2部") || t.endsWith("2") || t.contains("${baseTitle}2") || t.contains("${baseTitle} 2")))
+
+                    baseMatch && seasonMatch && r.episodes.isNotEmpty()
                 }
-                if (matched != null && matched.episodes.isNotEmpty()) {
+                if (matched != null) {
                     return@withContext NextSeasonCandidate(
                         title = matched.title,
                         seasonNumber = nextSeasonNum,
@@ -163,38 +179,76 @@ object NextSeasonService {
     }
 
     /**
-     * 通用全网检索推导下一季
+     * 通用全网检索推导下一季 (电视剧 / 动漫 / 综艺等长视频全网多源聚合)
      */
     private suspend fun findNextSeasonGeneral(
         baseTitle: String,
         nextSeasonNum: Int,
         nextSeasonCn: String,
     ): NextSeasonCandidate? = withContext(Dispatchers.IO) {
-        val targetQuery = "${baseTitle} 第${nextSeasonCn}季"
-        try {
-            // 通过 ShortDramaService/通用搜索单精准词拉取
-            val candidates = withTimeoutOrNull(4000) {
-                ShortDramaService.searchDramas(targetQuery)
-            } ?: emptyList()
-            val matched = candidates.firstOrNull { it.episodes.isNotEmpty() }
-            if (matched != null) {
-                return@withContext NextSeasonCandidate(
-                    title = matched.title,
-                    seasonNumber = nextSeasonNum,
-                    seasonLabel = "第${nextSeasonCn}季",
-                    poster = matched.poster,
-                    year = matched.year,
-                    desc = matched.desc.ifBlank { "即将为您连播下一季第一集" },
-                    totalEpisodes = matched.episodes.size,
-                    source = matched.source,
-                    sourceName = matched.sourceName,
-                    isNextSeason = true,
-                    bannerTitle = "即将播放下一季 · 第 ${nextSeasonNum} 季",
-                    bannerSubtitle = "为您连播下一季第一集，5秒后自动开播",
-                    targetSource = matched,
-                )
+        val queries = listOf(
+            "$baseTitle 第${nextSeasonCn}季",
+            "$baseTitle 第${nextSeasonNum}季",
+            "$baseTitle 第二季",
+            "$baseTitle 第${nextSeasonCn}部",
+            "$baseTitle 2",
+            "$baseTitle Season $nextSeasonNum",
+            "$baseTitle S$nextSeasonNum"
+        ).distinct()
+
+        val allResources = runCatching {
+            org.moontechlab.selenetv.data.Repositories.sources().getSearchResources().filter { !it.disabled }
+        }.getOrDefault(emptyList())
+        val topResources = allResources.take(6)
+
+        if (topResources.isNotEmpty()) {
+            for (q in queries) {
+                try {
+                    val deferredList = topResources.map { res ->
+                        async {
+                            runCatching {
+                                withTimeoutOrNull(3500) {
+                                    DownstreamService.searchFromApi(res, q)
+                                }
+                            }.getOrNull() ?: emptyList()
+                        }
+                    }
+                    val allResults = deferredList.awaitAll().flatten()
+                    if (allResults.isNotEmpty()) {
+                        for (r in allResults) {
+                            val rTitle = r.title.trim()
+                            if (rTitle.contains("预告") || rTitle.contains("花絮") || rTitle.contains("解说") || rTitle.contains("看点")) {
+                                continue
+                            }
+                            val p = parseSeason(rTitle)
+                            val baseMatch = p.baseTitle == baseTitle || p.baseTitle.contains(baseTitle) || baseTitle.contains(p.baseTitle)
+                            val seasonMatch = p.currentSeason == nextSeasonNum ||
+                                (nextSeasonNum == 2 && (rTitle.contains("第二季") || rTitle.contains("第二部") || rTitle.endsWith("2") || rTitle.contains("${baseTitle}2") || rTitle.contains("${baseTitle} 2")))
+
+                            if (baseMatch && seasonMatch && r.episodes.isNotEmpty()) {
+                                return@withContext NextSeasonCandidate(
+                                    title = rTitle,
+                                    seasonNumber = nextSeasonNum,
+                                    seasonLabel = "第${nextSeasonCn}季",
+                                    poster = r.poster,
+                                    year = r.year,
+                                    desc = r.desc.ifBlank { "即将为您连播《$rTitle》第一集，精彩不断档。" },
+                                    totalEpisodes = r.episodes.size,
+                                    source = r.source,
+                                    sourceName = r.sourceName,
+                                    isNextSeason = true,
+                                    bannerTitle = "即将播放下一季 · 第 ${nextSeasonNum} 季",
+                                    bannerSubtitle = "为您连播下一季第一集，5秒后自动开播",
+                                    targetSource = r,
+                                )
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.d(TAG, "通用长剧下一季检索跳过: ${e.message}")
+                }
             }
-        } catch (_: Exception) {}
+        }
         null
     }
 
