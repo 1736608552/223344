@@ -44,6 +44,8 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import org.moontechlab.selenetv.service.NextSeasonService
+import org.moontechlab.selenetv.service.NextSeasonCandidate
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -281,6 +283,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
 
     // 载入指定集；startMs 为续播位置（切集默认 0，进入时用 launch.startPositionMs）
     fun playEpisode(index: Int, startMs: Long) {
+        preloadNextSeasonIfNeeded(index)
         val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
         val raw = src?.episodes?.getOrNull(index) ?: return
         scope.launch {
@@ -344,6 +347,108 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             panelOpen = false
             playEpisode(currentEpisode, 0)
             wake()
+        }
+    }
+
+    // 下一季/连播推荐状态 (类似 YouTube / Netflix 风格居中海报弹层与 5 秒倒计时)
+    var nextSeasonCandidate by remember { mutableStateOf<NextSeasonCandidate?>(null) }
+    var showNextSeasonOverlay by remember { mutableStateOf(false) }
+    var nextSeasonCountdownSec by remember { mutableIntStateOf(5) }
+    var nextSeasonDismissedThisEp by remember { mutableStateOf(false) }
+    var nextSeasonTimerJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    val nextSeasonPlayFocus = remember { FocusRequester() }
+
+    // 预拉取下一季/推荐信息 (全分类支持：电影/电视剧/动漫/短剧)
+    fun preloadNextSeasonIfNeeded(epIdx: Int) {
+        val isLastOrMovie = epCount <= 1 || epIdx >= epCount - 1
+        if (!isLastOrMovie) {
+            nextSeasonCandidate = null
+            nextSeasonDismissedThisEp = false
+            return
+        }
+        if (nextSeasonCandidate != null) return
+        val isMovie = epCount <= 1 || launch.heroInfo?.genres?.any { it.contains("电影") } == true
+        val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
+        val srcName = src?.source ?: "hongguo"
+        val title = launch.title
+        val cover = src?.poster ?: launch.heroInfo?.backdrop ?: ""
+        val year = src?.year ?: "2026"
+        scope.launch(Dispatchers.IO) {
+            val cand = NextSeasonService.findNextSeason(
+                title = title,
+                currentSource = srcName,
+                doubanId = null,
+                isMovie = isMovie,
+                cover = cover,
+                year = year,
+            )
+            if (cand != null) {
+                withContext(Dispatchers.Main) {
+                    nextSeasonCandidate = cand
+                }
+            }
+        }
+    }
+
+    // 播放下一季/推荐候选目标
+    fun playNextSeason(cand: NextSeasonCandidate) {
+        nextSeasonTimerJob?.cancel()
+        nextSeasonTimerJob = null
+        showNextSeasonOverlay = false
+        saveProgress(force = true)
+        reporter.resetThrottle()
+
+        val target = cand.targetSource
+        val targetKey = "${target.source}+${target.id}"
+        currentSourceKey = targetKey
+        currentEpisode = 0
+        playEpisode(0, 0L)
+        wake()
+    }
+
+    // 激活下一季/推荐连播弹层与 5s 倒计时
+    fun triggerNextSeasonOverlay() {
+        if (showNextSeasonOverlay || nextSeasonDismissedThisEp) return
+        val cand = nextSeasonCandidate ?: return
+        showNextSeasonOverlay = true
+        nextSeasonCountdownSec = 5
+        nextSeasonTimerJob?.cancel()
+        nextSeasonTimerJob = scope.launch {
+            while (nextSeasonCountdownSec > 1) {
+                kotlinx.coroutines.delay(1000)
+                nextSeasonCountdownSec--
+            }
+            // 5s 到期自动连播下一季或推荐影片
+            playNextSeason(cand)
+        }
+    }
+
+    // 最后一集或电影播放完成
+    fun onPlayCompleted() {
+        if (hasNext) {
+            goNext()
+        } else {
+            if (nextSeasonCandidate != null) {
+                triggerNextSeasonOverlay()
+            } else {
+                scope.launch(Dispatchers.IO) {
+                    val isMovie = epCount <= 1 || launch.heroInfo?.genres?.any { it.contains("电影") } == true
+                    val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
+                    val cand = NextSeasonService.findNextSeason(
+                        title = launch.title,
+                        currentSource = src?.source ?: "hongguo",
+                        isMovie = isMovie,
+                        cover = src?.poster ?: "",
+                        year = src?.year ?: "2026",
+                    )
+                    withContext(Dispatchers.Main) {
+                        if (cand != null && !nextSeasonDismissedThisEp) {
+                            nextSeasonCandidate = cand
+                            triggerNextSeasonOverlay()
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -488,9 +593,11 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         }
     }
 
-    // 播放自然结束 → 自动下一集（最后一集则停止）
+    // 播放自然结束 → 自动下一集（最后一集或电影则触发居中连播/推荐弹层）
     DisposableEffect(currentEpisode, currentSourceKey, hasNext) {
-        controller.onEnded = { if (hasNext) goNext() }
+        controller.onEnded = {
+            if (hasNext) goNext() else onPlayCompleted()
+        }
         onDispose { controller.onEnded = {} }
     }
 
@@ -601,10 +708,16 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             backExitArmed = false
         }
     }
+    // 下一季/连播推荐浮层打开时优先响应返回键关闭浮层
+    BackHandler(enabled = showNextSeasonOverlay) {
+        showNextSeasonOverlay = false
+        nextSeasonDismissedThisEp = true
+        nextSeasonTimerJob?.cancel()
+    }
     // 倍速/比例/弹幕弹窗自有 dismissOnBackPress（独立 Popup window），这里全线让位
-    BackHandler(enabled = panelOpen && !speedPopupOpen && !aspectPopupOpen && !danmakuMenuOpen) { panelOpen = false }
-    BackHandler(enabled = !panelOpen && controlsVisible && !speedPopupOpen && !aspectPopupOpen && !danmakuMenuOpen) { controlsVisible = false }
-    BackHandler(enabled = !panelOpen && !controlsVisible && !speedPopupOpen && !aspectPopupOpen && !danmakuMenuOpen) {
+    BackHandler(enabled = !showNextSeasonOverlay && panelOpen && !speedPopupOpen && !aspectPopupOpen && !danmakuMenuOpen) { panelOpen = false }
+    BackHandler(enabled = !showNextSeasonOverlay && !panelOpen && controlsVisible && !speedPopupOpen && !aspectPopupOpen && !danmakuMenuOpen) { controlsVisible = false }
+    BackHandler(enabled = !showNextSeasonOverlay && !panelOpen && !controlsVisible && !speedPopupOpen && !aspectPopupOpen && !danmakuMenuOpen) {
         if (backExitArmed) {
             saveProgress(force = true)
             onExit()
@@ -1123,6 +1236,21 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         }
 
 
+
+        // v2.7.5: 类似 YouTube / Netflix 风格的居中下一季/推荐内容连播大卡片浮层
+        if (showNextSeasonOverlay && nextSeasonCandidate != null) {
+            NextSeasonCenterOverlay(
+                candidate = nextSeasonCandidate!!,
+                countdownSec = nextSeasonCountdownSec,
+                playFocusRequester = nextSeasonPlayFocus,
+                onPlayNow = { playNextSeason(nextSeasonCandidate!!) },
+                onDismiss = {
+                    showNextSeasonOverlay = false
+                    nextSeasonDismissedThisEp = true
+                    nextSeasonTimerJob?.cancel()
+                }
+            )
+        }
 
         // 二次返回退出提示（自绘，不用系统 Toast）
         BackExitHint(

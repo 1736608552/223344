@@ -345,16 +345,22 @@ class NextSeasonService {
       } catch (_) {}
     } else {
       // 长剧/电影/动漫场景: 优先通过豆瓣电影推荐
+      final isMovie = currentVideoInfo.totalEpisodes <= 1;
+      final categoryLabel = isMovie ? '本片已完结 · 为你推荐精彩好片' : '本剧已完结 · 为你推荐精彩好剧';
+      final categorySub = isMovie ? '为您精选同类高分好片，5秒后自动连播' : '为您精选同类高分好剧，5秒后自动连播';
+
       try {
         final doubanId = currentVideoInfo.doubanId;
         if (doubanId != null && doubanId.isNotEmpty) {
-          final resDetails = await DoubanService.getDoubanDetails(null, doubanId: doubanId);
+          final resDetails = await DoubanService.getDoubanDetails(null, doubanId: doubanId)
+              .timeout(const Duration(seconds: 4));
           final detail = resDetails.data;
           if (detail != null && detail.recommends.isNotEmpty) {
             for (final rec in detail.recommends) {
               final recTitle = rec.title.trim();
               if (recTitle.isNotEmpty && recTitle != curTitle) {
-                final results = await SearchService.searchSync(recTitle);
+                final results = await SearchService.searchSync(recTitle)
+                    .timeout(const Duration(seconds: 4));
                 if (results.isNotEmpty) {
                   final best = results.firstWhere((r) => r.episodes.isNotEmpty, orElse: () => results.first);
                   if (best.episodes.isNotEmpty) {
@@ -365,14 +371,14 @@ class NextSeasonService {
                       seasonLabel: '为你推荐',
                       poster: best.poster.isNotEmpty ? best.poster : (rec.poster.isNotEmpty ? rec.poster : currentVideoInfo.cover),
                       year: best.year.isNotEmpty ? best.year : currentVideoInfo.year,
-                      desc: (best.desc?.isNotEmpty == true) ? best.desc! : '本剧已完结，为您精选同类高分好剧，5秒后自动开播',
+                      desc: (best.desc?.isNotEmpty == true) ? best.desc! : '$categoryLabel，5秒后自动开播',
                       totalEpisodes: best.episodes.length,
                       source: best.source,
                       sourceName: best.sourceName,
                       nextVideoInfo: nextInfo,
                       isNextSeason: false,
-                      bannerTitle: '本剧已完结 · 为你推荐精彩好剧',
-                      bannerSubtitle: '为您精选同类高分好剧，5秒后自动连播',
+                      bannerTitle: categoryLabel,
+                      bannerSubtitle: categorySub,
                     );
                   }
                 }
@@ -382,9 +388,10 @@ class NextSeasonService {
         }
       } catch (_) {}
 
-      // 兜底通用热门检索
+      // 兜底通用热门检索 (限制4秒超时，防止网络卡顿)
       try {
-        final results = await SearchService.searchSync('热播');
+        final results = await SearchService.searchSync('热播')
+            .timeout(const Duration(seconds: 4));
         if (results.isNotEmpty) {
           for (final res in results) {
             final resTitle = res.title.trim();
@@ -396,14 +403,14 @@ class NextSeasonService {
                 seasonLabel: '热门推荐',
                 poster: res.poster.isNotEmpty ? res.poster : currentVideoInfo.cover,
                 year: res.year.isNotEmpty ? res.year : currentVideoInfo.year,
-                desc: (res.desc?.isNotEmpty == true) ? res.desc! : '本剧已完结，为您推荐全网高分力作，5秒后自动开播',
+                desc: (res.desc?.isNotEmpty == true) ? res.desc! : '$categoryLabel，5秒后自动开播',
                 totalEpisodes: res.episodes.length,
                 source: res.source,
                 sourceName: res.sourceName,
                 nextVideoInfo: nextInfo,
                 isNextSeason: false,
-                bannerTitle: '本剧已完结 · 为你推荐精彩好剧',
-                bannerSubtitle: '为您精选全网高分力作，5秒后自动开播',
+                bannerTitle: categoryLabel,
+                bannerSubtitle: isMovie ? '为您精选全网高分力作，5秒后自动开播' : '为您精选全网高分好剧，5秒后自动开播',
               );
             }
           }

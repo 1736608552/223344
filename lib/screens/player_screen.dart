@@ -647,7 +647,7 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     _completedSub = _player!.completedStream.listen((_) {
       if (_isDisposing) return;
-      _autoPlayNextEpisode();
+      _autoPlayNextEpisode(fromCompletedStream: true);
     });
 
     _playingSub = _player!.playingStream.listen((playing) {
@@ -1024,13 +1024,16 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (_nextSeasonCandidate != null && !_nextSeasonDismissedThisEp) {
           _triggerNextSeasonOverlay();
         } else {
-          if (!isSilent) {
-            _toast('本剧已是最后一集');
-          }
-          final dur = _currentDuration.inSeconds;
-          if (dur > 0) {
-            _player?.seek(Duration(seconds: dur));
-          }
+          _checkAndPreloadNextSeason().then((_) {
+            if (_nextSeasonCandidate != null && mounted && !_nextSeasonDismissedThisEp) {
+              _triggerNextSeasonOverlay();
+            } else {
+              final dur = _currentDuration.inSeconds;
+              if (dur > 0) {
+                _player?.seek(Duration(seconds: dur));
+              }
+            }
+          });
         }
       }
     } else {
@@ -3804,35 +3807,35 @@ class _PlayerScreenState extends State<PlayerScreen>
   // 改用 M3U8Service 测速 + _stateFromSpeed. 老方法没人调, 留在这里只是 dead code.
   // 如需 HEAD ping fallback, 看 _fallbackHeadPing.
 
-  /// position stream 触发的检查: 仅当真正播完到达末尾 (remainMs <= 100ms 或 position >= duration) 时兜底自动切下一集
-  /// 彻底解决之前由于 1500ms 阈值过大导致视频提前 1~2 秒被掐断切集的缺陷
+  /// position stream 触发的检查: 仅当真正播完到达末尾 (remainMs <= 1200ms 或 position >= duration) 时兜底自动切下一集
+  /// 彻底解决之前由于 100ms 阈值过小导致部分切片视频提前停顿漏触发播完弹窗的缺陷
   void _maybeAutoPlayNext() {
     if (_autoPlayedThisEpisode) return;
     final dur = _currentDuration;
     if (dur <= Duration.zero) return; // 时长还没拿到, 不要误判
     final remainMs = dur.inMilliseconds - _currentPosition.inMilliseconds;
-    if (remainMs > 100) return; // 必须真正到达视频末尾才兜底切集
+    if (remainMs > 1200) return; // 必须真正到达视频末尾才兜底切集
     _autoPlayNextEpisode();
   }
 
   /// 切到下一集: 只有在「还有下一集」时才自动播放
-  /// 最后一集播完就停在播放页, 不再继续
+  /// 最后一集或电影播完触发下一季/推荐连播弹窗
   ///
   /// v1.0.55: 加 pos + dur 兜底守门
   /// 之前没守门, 走 streams.completed listener 直接调本函数时
   /// 不经过守门, 一发就切
   /// 修法: pos 必须接近末尾 (dur - 2500ms) 才允许切, 防止起播阶段误报 completed
-  void _autoPlayNextEpisode() {
+  void _autoPlayNextEpisode({bool fromCompletedStream = false}) {
     final now = DateTime.now().millisecondsSinceEpoch;
     if (_isEpisodeSwitching || _isTransitioningEpisode || _autoPlayedThisEpisode) return;
     if (now - _lastEpisodeSwitchTimeMs < 2500) return; // 2.5s 硬防抖拦截
-    if (_phase != 'playing') return;
+    if (!fromCompletedStream && _phase != 'playing') return;
     final source = _selectedSource;
     if (source == null) return;
     final nextIndex = _currentEpisodeIndex + 1;
     if (nextIndex >= source.episodes.length) {
-      // 本季最后一集播完！触发居中连播/推荐弹层
-      _handleLastEpisodeCompletion();
+      // 本季最后一集或电影播完！触发居中连播/推荐弹层
+      _handleLastEpisodeCompletion(fromCompletedStream: fromCompletedStream);
       return;
     }
 
@@ -4312,8 +4315,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
     // v2.6.92: 加载当前集的智能跳过片段 (TheIntroDB + TMDB 代理)
     _loadSmartSkipSegmentsForCurrentEpisode();
-    // 若当前播放的是本季最后一集，静默预拉取下一季候选信息
-    if (source.episodes.isNotEmpty && index >= source.episodes.length - 1) {
+    // 若当前播放的是本季最后一集或单集电影，静默预拉取下一季/推荐候选信息
+    final isLastOrMovie = source.episodes.isEmpty || index >= source.episodes.length - 1;
+    if (isLastOrMovie) {
       _nextSeasonDismissedThisEp = false;
       _checkAndPreloadNextSeason();
     } else {
@@ -7696,8 +7700,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
-  /// 最后一集播放结束/片尾时触发判定
-  void _handleLastEpisodeCompletion() {
+  /// 最后一集或电影播放结束/片尾时触发判定
+  void _handleLastEpisodeCompletion({bool fromCompletedStream = false}) {
     if (_autoPlayedThisEpisode) return;
     if (_showNextSeasonOverlay) return;
     if (_nextSeasonDismissedThisEp) return;
@@ -7708,10 +7712,13 @@ class _PlayerScreenState extends State<PlayerScreen>
         widget.videoInfo.source == 'shortdrama';
 
     final dur = _currentDuration;
-    if (dur <= Duration.zero) return;
-    if (!isShortDrama && dur < const Duration(seconds: 30)) return;
-    if (_currentPosition < dur - const Duration(milliseconds: 2500)) {
-      return;
+    // 若来自 completedStream，说明播放器底层已物理完成解码，直接放行触发连播弹窗
+    if (!fromCompletedStream) {
+      if (dur <= Duration.zero) return;
+      if (!isShortDrama && dur < const Duration(seconds: 30)) return;
+      if (_currentPosition < dur - const Duration(milliseconds: 3500)) {
+        return;
+      }
     }
 
     if (_nextSeasonCandidate != null) {
