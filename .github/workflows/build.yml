@@ -2,7 +2,6 @@ name: Build Android APK, iOS IPA & Windows PC
 
 on:
   push:
-    branches: [ main, 'trae/**' ]
     tags: [ 'v*.*.*' ]
   workflow_dispatch:
 

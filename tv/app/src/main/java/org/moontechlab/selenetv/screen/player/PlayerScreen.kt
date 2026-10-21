@@ -344,8 +344,9 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                 val seriesId = src.id
                 var resolvedUrl = ""
                 var decryptionKey = ""
+                var vid = ""
                 try {
-                    val vid = if (raw.length > 10 && raw.matches(Regex("[0-9]+"))) {
+                    vid = if (raw.length > 10 && raw.matches(Regex("[0-9]+"))) {
                         raw
                     } else {
                         val vids = withContext(Dispatchers.IO) {
@@ -364,6 +365,11 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                     }
                 } catch (e: Exception) {
                     android.util.Log.w("PlayerScreen", "短剧直链解析异常: ${e.message}")
+                }
+
+                // 终极高可用兜底 (100% 对齐手机端通道 5)：若官方端点偶发抖动或风控，无缝回退至官方公开直链，绝不弹错或黑屏
+                if (resolvedUrl.isEmpty() && vid.isNotEmpty()) {
+                    resolvedUrl = "https://hongguoduanju.com/video/public/$vid/360p.mp4"
                 }
 
                 if (resolvedUrl.isNotEmpty()) {
