@@ -27,6 +27,9 @@ data class SearchResult(
     val doubanId: Long? = null
 )
 
+val SearchResult.isShortDrama: Boolean
+    get() = source == "hongguo" || source == "shortdrama" || typeName == "短剧" || sourceName.contains("精品短剧")
+
 /**
  * 聚合搜索结果
  * 将相同标题、年份、类型的结果聚合到一起

@@ -49,6 +49,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.moontechlab.selenetv.model.PlayRecord
 import org.moontechlab.selenetv.model.SearchResult
+import org.moontechlab.selenetv.model.isShortDrama
 import org.moontechlab.selenetv.model.SourceSpeed
 import org.moontechlab.selenetv.model.SpeedTestState
 import org.moontechlab.selenetv.screen.detail.DetailSourceResolver
