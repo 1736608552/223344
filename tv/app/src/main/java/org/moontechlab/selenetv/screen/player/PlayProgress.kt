@@ -53,4 +53,19 @@ object PlayProgress {
         if (positionMs == lastSavedPositionMs) return false
         return true
     }
+
+    /**
+     * 智能规整跨端播放记录的时间戳（秒 vs 毫秒）：
+     * 手机端存入的是毫秒 (如 70000ms)，TV 端此前存入的是秒 (如 70s)。
+     * 短剧单集一般 1~3 分钟 (60~180s)，若大于 600 则必定已经是毫秒；
+     * 传统影视单集很少超过 4 小时 (14400s)，若大于 20000 则必定已经是毫秒。
+     * 防止对已经是毫秒的数据再次 ×1000 放大导致起播越界挂死与 -19:15:34 倒数异常。
+     */
+    fun normalizePlayTimeMs(rawTime: Long, isShortDrama: Boolean): Long {
+        if (rawTime <= 0L) return 0L
+        val isAlreadyMs = if (isShortDrama) rawTime > 600L else rawTime > 20_000L
+        val ms = if (isAlreadyMs) rawTime else rawTime * 1000L
+        val maxLimit = if (isShortDrama) 10 * 60 * 1000L else 8 * 3600 * 1000L
+        return ms.coerceIn(0L, maxLimit)
+    }
 }

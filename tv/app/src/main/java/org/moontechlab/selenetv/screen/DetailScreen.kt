@@ -586,6 +586,8 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
     fun launchPlayer(source: SearchResult, episode: Int, startMs: Long, totalMs: Long) {
         playerEverOpened = true
         val epIndex = episode.coerceIn(0, source.episodes.lastIndex.coerceAtLeast(0))
+        val isShortDrama = source.isShortDrama || source.source == "hongguo" || source.source == "shortdrama"
+        val defaultDurationMs = if (isShortDrama) 120_000L else 45 * 60 * 1000L
         playerLaunch = PlayerLaunch(
             title = state.heroInfo?.title?.takeIf { it.isNotBlank() } ?: state.entry.title,
             heroInfo = state.heroInfo,
@@ -593,7 +595,7 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
             selectedSourceKey = sourceKey(source),
             episodeIndex = epIndex,
             startPositionMs = startMs.coerceAtLeast(0),
-            durationMs = if (totalMs > 0L) totalMs else 45 * 60 * 1000L,
+            durationMs = if (totalMs > 0L) totalMs else defaultDurationMs,
             tmdbRef = state.tmdbRef,
         )
     }
@@ -661,11 +663,15 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
     val onContinue: () -> Unit = lam@{
         val source = state.selectedSource ?: return@lam
         val rec = state.selectedPlayRecord
+        val isShortDrama = source.isShortDrama || source.source == "hongguo" || source.source == "shortdrama"
         // PlayRecord.index 为 1 基集号（与详情按钮/卡片 "N/总" 显示一致）；
         // 播放页 episodeIndex 为 0 基数组下标，故 -1。
         val epIndex = ((rec?.index ?: 1) - 1).coerceAtLeast(0)
-        // PlayRecord.playTime/totalTime 单位为秒（MoonTV 约定），播放页用毫秒，故 ×1000。
-        launchPlayer(source, epIndex, (rec?.playTime ?: 0L) * 1000, (rec?.totalTime ?: 0L) * 1000)
+        // 使用 PlayProgress.normalizePlayTimeMs 智能规整跨端进度单位 (兼容手机端毫秒与旧版TV秒)，
+        // 彻底根除乘以 1000 放大导致起播越界挂死与 -19:15:34 倒数畸形。
+        val startMs = org.moontechlab.selenetv.screen.player.PlayProgress.normalizePlayTimeMs(rec?.playTime ?: 0L, isShortDrama)
+        val totalMs = org.moontechlab.selenetv.screen.player.PlayProgress.normalizePlayTimeMs(rec?.totalTime ?: 0L, isShortDrama)
+        launchPlayer(source, epIndex, startMs, totalMs)
     }
 
     val onPlay: () -> Unit = lam@{
@@ -910,8 +916,12 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
                                 sourcesLoading = !hasSource && !noSources,
                                 // 续看：集数（总集>1 才显示）+ 进度，嵌进「继续播放」按钮
                                 continueEpisode = if (record != null && epCount > 1 && record.index > 0) record.index else null,
-                                continueProgress = if (record != null && record.totalTime > 0L)
-                                    (record.playTime.toFloat() / record.totalTime.toFloat()).coerceIn(0f, 1f) else 0f,
+                                continueProgress = if (record != null && record.totalTime > 0L) {
+                                    val isShort = (state.selectedSource?.isShortDrama == true) || state.selectedSource?.source == "hongguo"
+                                    val play = org.moontechlab.selenetv.screen.player.PlayProgress.normalizePlayTimeMs(record.playTime, isShort).toFloat()
+                                    val total = org.moontechlab.selenetv.screen.player.PlayProgress.normalizePlayTimeMs(record.totalTime, isShort).toFloat()
+                                    if (total > 0f) (play / total).coerceIn(0f, 1f) else 0f
+                                } else 0f,
                                 // 当前源无记录、且本片其他源有可迁移记录时显示「迁移记录」
                                 showMigrate = hasSource && !hasRecord && migrateCandidates.isNotEmpty(),
                                 onMigrate = { migratePickerEverOpened = true; migratePickerVisible = true },
@@ -1107,8 +1117,9 @@ private fun ScrollDownHint(alpha: Float, modifier: Modifier = Modifier) {
     }
 }
 
-// 秒 → 时钟文案：<1h 显示 m:ss，≥1h 显示 h:mm:ss（迁移记录候选行的已看/总时长）
-private fun formatClock(seconds: Long): String {
+// 智能转换时钟文案：<1h 显示 m:ss，≥1h 显示 h:mm:ss（自动规整毫秒与秒）
+private fun formatClock(rawTime: Long): String {
+    val seconds = if (rawTime > 20_000L) rawTime / 1000 else rawTime
     val s = seconds.coerceAtLeast(0)
     val h = s / 3600
     val m = (s % 3600) / 60

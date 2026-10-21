@@ -151,7 +151,15 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     // 播放状态全部来自播放器后端（VideoPlayer）
     val isPlaying = controller.isPlaying
     val positionMs = controller.positionMs
-    val durationMs = if (controller.durationMs > 0) controller.durationMs else launch.durationMs
+    val durationMs = if (controller.durationMs > 0) {
+        controller.durationMs
+    } else {
+        if (isShortDrama) {
+            if (launch.durationMs > 0 && launch.durationMs <= 10 * 60 * 1000L) launch.durationMs else 120_000L
+        } else {
+            launch.durationMs
+        }
+    }
     val currentSource = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
     val episodes = currentSource?.episodes ?: emptyList()
     val episodesTitles = currentSource?.episodesTitles
@@ -326,6 +334,9 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         preloadNextSeasonIfNeeded(index)
         val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
         val raw = src?.episodes?.getOrNull(index) ?: return
+        val isShort = src.source == "hongguo" || src.source == "shortdrama" || isShortDrama
+        // 短剧起播位置保护：若起播位置 > 10 分钟 (明显是跨端脏数据或放大溢出)，安全归零从头播放，彻底杜绝越界黑屏
+        val safeStartMs = if (isShort && startMs > 10 * 60 * 1000L) 0L else startMs
         scope.launch {
             if (src.source == "hongguo" || src.source == "shortdrama") {
                 // 短剧专属直解：精准调用单集专属直链解析通道 (支持 1080P/720P/480P 超清直出 + CENC 硬件解密)
@@ -359,7 +370,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                         "User-Agent" to "Mozilla/5.0 (Linux; Android 16; 25053RT47C) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36",
                         "Referer" to "https://novel.snssdk.com/"
                     )
-                    controller.load(resolvedUrl, startMs, decryptionKey = decryptionKey, headers = dramaHeaders)
+                    controller.load(resolvedUrl, safeStartMs, decryptionKey = decryptionKey, headers = dramaHeaders)
                     return@launch
                 } else {
                     withContext(Dispatchers.Main) {
@@ -375,7 +386,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             } else {
                 org.moontechlab.selenetv.proxy.FastStreamProxy.getProxyUrl(raw)
             }
-            controller.load(playUrl, startMs)
+            controller.load(playUrl, safeStartMs)
         }
     }
 
@@ -609,12 +620,39 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         }
     }
 
+    // 自动切集防抖与去重锁，彻底根除偶发不切集与重入死锁
+    var autoSwitchedEpisode by remember { mutableIntStateOf(-1) }
+    var lastEpisodeSwitchTimeMs by remember { mutableLongStateOf(0L) }
+
+    fun triggerAutoNext() {
+        val now = System.currentTimeMillis()
+        if (now - lastEpisodeSwitchTimeMs < 2500L) return
+        if (autoSwitchedEpisode == currentEpisode) return
+        autoSwitchedEpisode = currentEpisode
+        lastEpisodeSwitchTimeMs = now
+        if (hasNext) goNext() else onPlayCompleted()
+    }
+
     // 播放自然结束 → 自动下一集（最后一集或电影则触发居中连播/推荐弹层）
     DisposableEffect(currentEpisode, currentSourceKey, hasNext) {
         controller.onEnded = {
-            if (hasNext) goNext() else onPlayCompleted()
+            triggerAutoNext()
         }
         onDispose { controller.onEnded = {} }
+    }
+
+    // 双轨进度守卫：针对某些短剧流尾部缺少 EOF 关键帧卡在最后一帧的场景，在末尾 350ms 内主动触发切集
+    LaunchedEffect(currentEpisode, currentSourceKey, isPlaying) {
+        while (true) {
+            kotlinx.coroutines.delay(200)
+            if (isPlaying && durationMs > 0) {
+                val remainMs = durationMs - positionMs
+                val endThresholdMs = if (isShortDrama) 350L else 400L
+                if (remainMs in 0..endThresholdMs && positionMs > 1000L) {
+                    triggerAutoNext()
+                }
+            }
+        }
     }
 
     // 播放出错：唤出换源面板让用户改选其他源

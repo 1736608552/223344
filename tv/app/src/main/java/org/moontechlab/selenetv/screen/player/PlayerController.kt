@@ -99,6 +99,11 @@ class PlayerController(
         VideoResizeMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_FILL
     }
 
+    private var lastUrl: String = ""
+    private var lastStartMs: Long = 0L
+    private var lastHeaders: Map<String, String>? = null
+    private var hasFallbackToRaw: Boolean = false
+
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
         override fun onPlaybackStateChanged(state: Int) {
@@ -106,7 +111,19 @@ class PlayerController(
             if (state == Player.STATE_READY) { hasStarted = true; val d = exo.duration; if (d > 0) durationMs = d }
             if (state == Player.STATE_ENDED) onEnded()
         }
-        override fun onPlayerError(e: PlaybackException) { error = e.errorCodeName }
+        override fun onPlayerError(e: PlaybackException) {
+            android.util.Log.e("PlayerController", "ExoPlayer 异常: ${e.errorCodeName}, msg=${e.message}")
+            // 核心自愈机制：若在 CENC 解密管道加载中抛出异常（如缺少 saio/saiz 索引或 moov 不在开头），
+            // 立即原地无缝回退到携带完整 headers (User-Agent + Referer) 的原生网络流播放，绝不黑屏挂死！
+            if (currentRemoteVideo != null && !hasFallbackToRaw && lastUrl.isNotEmpty()) {
+                android.util.Log.w("PlayerController", "短剧 CENC 解密源播放失败，原地自愈无缝降级到原生网络流: $lastUrl")
+                hasFallbackToRaw = true
+                releaseCurrentRemoteVideo()
+                loadDirect(lastUrl, lastStartMs, playWhenReady = true, lastHeaders)
+                return
+            }
+            error = e.errorCodeName
+        }
     }
 
     private var currentRemoteVideo: HongguoRemoteVideo? = null
@@ -125,15 +142,38 @@ class PlayerController(
     init { exo.addListener(listener) }
 
     @MainThread
-    override fun load(url: String, startMs: Long, playWhenReady: Boolean) {
+    fun loadDirect(
+        url: String,
+        startMs: Long,
+        playWhenReady: Boolean,
+        headers: Map<String, String>? = null,
+    ) {
         releaseCurrentRemoteVideo()
         error = null
         hasStarted = false
-        exo.setMediaItem(MediaItem.fromUri(url))
+        lastUrl = url
+        lastStartMs = startMs
+        lastHeaders = headers
+
+        val mediaItem = MediaItem.fromUri(url)
+        if (headers.isNullOrEmpty()) {
+            exo.setMediaItem(mediaItem)
+        } else {
+            val okHttpFactory = androidx.media3.datasource.okhttp.OkHttpDataSource.Factory(MediaHttp.httpClient).apply {
+                headers.forEach { (k, v) -> setDefaultRequestProperty(k, v) }
+            }
+            val mediaSource = DefaultMediaSourceFactory(okHttpFactory).createMediaSource(mediaItem)
+            exo.setMediaSource(mediaSource)
+        }
         exo.prepare()
         if (startMs > 0) exo.seekTo(startMs)
         exo.playWhenReady = playWhenReady
         syncProgress()
+    }
+
+    @MainThread
+    override fun load(url: String, startMs: Long, playWhenReady: Boolean) {
+        loadDirect(url, startMs, playWhenReady, null)
     }
 
     @MainThread
@@ -144,6 +184,10 @@ class PlayerController(
         decryptionKey: String?,
         headers: Map<String, String>?,
     ) {
+        lastUrl = url
+        lastStartMs = startMs
+        lastHeaders = headers
+        hasFallbackToRaw = false
         val rawKey = decryptionKey?.trim().orEmpty()
         if (rawKey.isNotEmpty()) {
             val keyBytes = MediaCrypto.resolveKeyBytes(rawKey)
@@ -170,13 +214,13 @@ class PlayerController(
                     android.util.Log.i("PlayerController", "短剧原生硬件解码引擎启动成功 (MediaCodec 硬解): $url")
                     return
                 } catch (e: Throwable) {
-                    android.util.Log.e("PlayerController", "短剧原生硬解媒体源初始化失败，回退默认播放", e)
+                    android.util.Log.e("PlayerController", "短剧原生硬解媒体源初始化失败，回退原生网络流播放", e)
                 }
             } else {
                 android.util.Log.w("PlayerController", "短剧解密 Key 校验未通过: $rawKey")
             }
         }
-        load(url, startMs, playWhenReady)
+        loadDirect(url, startMs, playWhenReady, headers)
     }
 
     @MainThread
