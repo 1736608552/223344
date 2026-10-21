@@ -160,7 +160,7 @@ class PlayerController(
             exo.setMediaItem(mediaItem)
         } else {
             val okHttpFactory = androidx.media3.datasource.okhttp.OkHttpDataSource.Factory(MediaHttp.httpClient).apply {
-                headers.forEach { (k, v) -> setDefaultRequestProperty(k, v) }
+                setDefaultRequestProperties(headers)
             }
             val mediaSource = DefaultMediaSourceFactory(okHttpFactory).createMediaSource(mediaItem)
             exo.setMediaSource(mediaSource)
