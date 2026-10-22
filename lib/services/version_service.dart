@@ -14,12 +14,12 @@ class VersionService {
 
   // 极速高可用国内直连 CDN 镜像源列表（毫秒级响应，杜绝 GFW 阻断）
   static const List<String> _cdnPubspecMirrors = [
-    'https://fastly.jsdelivr.net/gh/1736608552/LunaTV-Mobile@main/pubspec.yaml',
-    'https://testingcf.jsdelivr.net/gh/1736608552/LunaTV-Mobile@main/pubspec.yaml',
-    'https://cdn.jsdelivr.net/gh/1736608552/LunaTV-Mobile@main/pubspec.yaml',
-    'https://raw.gitmirror.com/1736608552/LunaTV-Mobile/main/pubspec.yaml',
-    'https://ghfast.top/https://raw.githubusercontent.com/1736608552/LunaTV-Mobile/main/pubspec.yaml',
-    'https://raw.githubusercontent.com/1736608552/LunaTV-Mobile/main/pubspec.yaml',
+    'https://fastly.jsdelivr.net/gh/1736608552/223344@main/pubspec.yaml',
+    'https://testingcf.jsdelivr.net/gh/1736608552/223344@main/pubspec.yaml',
+    'https://cdn.jsdelivr.net/gh/1736608552/223344@main/pubspec.yaml',
+    'https://raw.gitmirror.com/1736608552/223344/main/pubspec.yaml',
+    'https://ghfast.top/https://raw.githubusercontent.com/1736608552/223344/main/pubspec.yaml',
+    'https://raw.githubusercontent.com/1736608552/223344/main/pubspec.yaml',
   ];
 
   /// 检查是否有新版本（启动自动调用）
