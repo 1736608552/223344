@@ -161,15 +161,24 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
             rawResults = listOf(hongguoSource)
             state = state.copy(sourcesComplete = true)
 
-            // 异步后台拉取真实剧集 vid 列表与精确章节数
+            // 异步后台拉取真实剧集 vid 列表与精确章节数 (突破试看3集限制，对齐全量集数)
             scope.launch(Dispatchers.IO) {
                 try {
                     val vids = org.moontechlab.selenetv.hongguo.HongguoStreamResolver.fetchEpisodeVids(seriesId)
                     if (vids.isNotEmpty()) {
-                        val realEpCount = vids.size
+                        val realEpCount = if (vids.size > 3) vids.size else maxOf(defaultEpCount, vids.size)
+                        val epList = if (vids.size > 3) {
+                            vids
+                        } else {
+                            val list = vids.toMutableList()
+                            while (list.size < realEpCount) {
+                                list.add((list.size + 1).toString())
+                            }
+                            list
+                        }
                         val realEpTitles = List(realEpCount) { "第${it + 1}集" }
                         val updatedSource = hongguoSource.copy(
-                            episodes = vids,
+                            episodes = epList,
                             episodesTitles = realEpTitles
                         )
                         withContext(Dispatchers.Main) {

@@ -338,8 +338,8 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     fun playEpisode(index: Int, startMs: Long) {
         preloadNextSeasonIfNeeded(index)
         val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
-        val raw = src?.episodes?.getOrNull(index) ?: return
-        val isShort = src.source == "hongguo" || src.source == "shortdrama" || isShortDrama
+        val isShort = src?.source == "hongguo" || src?.source == "shortdrama" || src?.sourceName?.contains("精品短剧") == true || src?.typeName == "短剧" || isShortDrama
+        val raw = src?.episodes?.getOrNull(index) ?: if (isShort) (index + 1).toString() else return
         // 短剧起播位置保护：若起播位置 > 10 分钟 (明显是跨端脏数据或放大溢出)，安全归零从头播放，彻底杜绝越界黑屏
         val safeStartMs = if (isShort && startMs > 10 * 60 * 1000L) 0L else startMs
         scope.launch {
