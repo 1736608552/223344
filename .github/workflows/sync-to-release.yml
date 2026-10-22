@@ -1,0 +1,52 @@
+name: Sync Assets to Release Repo
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release Tag to Sync'
+        required: true
+        default: 'v2.7.17'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync and Complement 12 Assets
+        env:
+          GH_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+          TAG: ${{ github.event.inputs.tag }}
+          SRC_REPO: ${{ github.repository }}
+          DST_REPO: "1736608552/LunaTV-Release"
+        run: |
+          set -euo pipefail
+          mkdir -p sync_dir
+          cd sync_dir
+
+          echo "从源仓库 $SRC_REPO 下载当前所有 Release 资产..."
+          gh release download "$TAG" --repo "$SRC_REPO" || true
+
+          # 补齐 TV 别名包
+          if [ -f "LunaTV-TV-${TAG}-arm64-v8a.apk" ]; then
+            cp "LunaTV-TV-${TAG}-arm64-v8a.apk" "LunaTV-TV-arm64-v8a.apk"
+          fi
+          if [ -f "LunaTV-TV-${TAG}-armeabi-v7a.apk" ]; then
+            cp "LunaTV-TV-${TAG}-armeabi-v7a.apk" "LunaTV-TV-armeabi-v7a.apk"
+          fi
+          if [ -f "LunaTV-TV-${TAG}-hisense.apk" ]; then
+            cp "LunaTV-TV-${TAG}-hisense.apk" "LunaTV-TV-hisense.apk"
+          fi
+
+          # 重新生成全量 12 包的校验清单
+          rm -f SHA256SUMS.txt
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+          echo "同步到源仓库 $SRC_REPO (补齐缺失的 3 个 TV 别名)..."
+          gh release upload "$TAG" * --clobber --repo "$SRC_REPO"
+
+          echo "同步上传全部 12+1 资产到目标发布中心 $DST_REPO ..."
+          gh release upload "$TAG" * --clobber --repo "$DST_REPO"
+
+          echo "验证目标仓库资产列表:"
+          gh release view "$TAG" --repo "$DST_REPO"
