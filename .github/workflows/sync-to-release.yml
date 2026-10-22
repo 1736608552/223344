@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release Tag to Sync'
-        required: true
-        default: 'v2.7.17'
+        description: 'Release Tag to Sync (留空自动获取最新Release)'
+        required: false
+        default: ''
 
 jobs:
   sync:
@@ -15,11 +15,16 @@ jobs:
       - name: Sync and Complement 12 Assets
         env:
           GH_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
-          TAG: ${{ github.event.inputs.tag }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
           SRC_REPO: ${{ github.repository }}
           DST_REPO: "1736608552/LunaTV-Release"
         run: |
           set -euo pipefail
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release list --repo "$SRC_REPO" --limit 1 --json tagName --jq '.[0].tagName')
+            echo "未指定 Tag，自动解析源仓库最新 Release: $TAG"
+          fi
           mkdir -p sync_dir
           cd sync_dir
 

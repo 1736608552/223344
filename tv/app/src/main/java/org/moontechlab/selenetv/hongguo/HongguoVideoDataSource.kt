@@ -56,15 +56,19 @@ class HongguoVideoDataSource(
         if (length == 0) return 0
         if (remaining == 0L) return C.RESULT_END_OF_INPUT
 
-        val toRead = minOf(length.toLong(), remaining).toInt()
-        val readBytes = video.read(position, toRead)
+        if (offset >= buffer.size) {
+            val toFetch = minOf(512 * 1024L, remaining).toInt()
+            buffer = video.read(position, toFetch)
+            offset = 0
+        }
 
-        if (readBytes.isEmpty()) {
+        if (buffer.isEmpty()) {
             throw EOFException("视频数据分段意外结束")
         }
 
-        readBytes.copyInto(target, targetOffset, 0, readBytes.size)
-        val count = readBytes.size
+        val count = minOf(length, buffer.size - offset, remaining.toInt())
+        buffer.copyInto(target, targetOffset, offset, offset + count)
+        offset += count
         position += count
         remaining -= count
         bytesTransferred(count)

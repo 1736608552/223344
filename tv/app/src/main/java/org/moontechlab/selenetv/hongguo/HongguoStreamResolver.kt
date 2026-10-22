@@ -274,13 +274,19 @@ object HongguoStreamResolver {
         val payload = """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$cleanVid"]}}""".toByteArray()
         var lastErr: Exception? = null
 
-        // 优先尝试官方 App 预加载高清端点 (带抖动重试最多 2 次)
+        val endpoints = listOf(
+            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/",
+            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/"
+        )
+
+        // 优先尝试官方 App 高清端点 (带抖动重试最多 2 次)
         for (attempt in 0..1) {
+            val endpoint = endpoints.getOrElse(attempt) { endpoints.first() }
             try {
                 val signed = try {
-                    signer.signStandard("https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/", VendorConstants.device, payload)
+                    signer.signStandard(endpoint, VendorConstants.device, payload)
                 } catch (_: Exception) {
-                    signer.sign("https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/", VendorConstants.device, payload)
+                    signer.sign(endpoint, VendorConstants.device, payload)
                 }
 
                 val reqBuilder = Request.Builder()
@@ -292,7 +298,7 @@ object HongguoStreamResolver {
                 }
 
                 val resp = client.newCall(reqBuilder.build()).execute()
-                val bodyStr = resp.body?.string() ?: throw IOException("Empty response from multi_video_model/preload")
+                val bodyStr = resp.body?.string() ?: throw IOException("Empty response from multi_video_model")
                 val data = JSONObject(bodyStr)
                 if (data.optInt("Code", data.optInt("code", 0)) != 0) {
                     throw IOException("Video model API returned error: " + data.optString("message"))
@@ -312,121 +318,128 @@ object HongguoStreamResolver {
                 }
 
                 val candidateList = mutableListOf<VideoCandidate>()
-                val rawVideoList = model.opt("video_list")
 
-                if (rawVideoList is org.json.JSONArray) {
-                    for (i in 0 until rawVideoList.length()) {
-                        val item = rawVideoList.optJSONObject(i) ?: continue
-                        val meta = item.optJSONObject("video_meta") ?: JSONObject()
-                        val codec = meta.optString("codec_type", item.optString("codec_type")).lowercase()
-                        if (codec == "bytevc2" || codec == "bvc2") continue
-
-                        val mainUrl = item.optString("main_url").ifEmpty {
-                            item.optString("backup_url_1").ifEmpty { item.optString("backup_url") }
-                        }
-                        if (mainUrl.isEmpty()) continue
-
-                        val defStr = meta.optString("definition").ifEmpty {
-                            meta.optString("quality_desc").ifEmpty {
-                                item.optString("quality_desc").ifEmpty {
-                                    meta.optString("vheight").ifEmpty {
-                                        meta.optString("height").ifEmpty { item.optString("height") }
-                                    }
-                                }
-                            }
-                        }
-                        var qNum = Regex("(\\d+)").find(defStr)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                        if (qNum == 0) {
-                            val vh = meta.optInt("vheight", 0)
-                            val vw = meta.optInt("vwidth", 0)
-                            qNum = if (vw > 0 && (vh == 0 || vw < vh)) vw else vh
-                        }
-                        if (qNum == 0) qNum = 720
-
-                        val encInfo = item.optJSONObject("encrypt_info")
-                        val spadeA = encInfo?.optString("spade_a")?.ifEmpty { item.optString("spade_a") } ?: item.optString("spade_a")
-                        candidateList.add(VideoCandidate(qNum, mainUrl, spadeA))
-                    }
-                } else if (rawVideoList is JSONObject) {
-                    val keys = rawVideoList.keys()
-                    while (keys.hasNext()) {
-                        val k = keys.next()
-                        val item = rawVideoList.optJSONObject(k) ?: continue
-                        val meta = item.optJSONObject("video_meta") ?: JSONObject()
-                        val codec = meta.optString("codec_type", item.optString("codec_type")).lowercase()
-                        if (codec == "bytevc2" || codec == "bvc2") continue
-
-                        val mainUrl = item.optString("main_url").ifEmpty {
-                            item.optString("backup_url_1").ifEmpty { item.optString("backup_url") }
-                        }
-                        if (mainUrl.isEmpty()) continue
-
-                        val defStr = meta.optString("definition").ifEmpty {
-                            item.optString("quality_desc").ifEmpty {
-                                item.optString("height").ifEmpty {
-                                    item.optString("vheight").ifEmpty {
-                                        item.optString("quality").ifEmpty { k }
-                                    }
-                                }
-                            }
-                        }
-                        var qNum = Regex("(\\d+)").find(defStr)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                        if (qNum == 0) {
-                            val vh = meta.optInt("vheight", item.optInt("vheight", 0))
-                            val vw = meta.optInt("vwidth", item.optInt("vwidth", 0))
-                            qNum = if (vw > 0 && (vh == 0 || vw < vh)) vw else vh
-                        }
-                        if (qNum == 0) qNum = 720
-
-                        val encInfo = item.optJSONObject("encrypt_info")
-                        val spadeA = encInfo?.optString("spade_a")?.ifEmpty { item.optString("spade_a") } ?: item.optString("spade_a")
-                        candidateList.add(VideoCandidate(qNum, mainUrl, spadeA))
-                    }
+                // 通道 A (最高优先级，100% 对齐 hongguoTV 标杆工业级实践):
+                // 优先请求 fallback_api 获取字节跳动火山点播官方正式分发直链与全套 CENC 解密 Key
+                val rawFallback = model.opt("fallback_api")
+                val fallback = when (rawFallback) {
+                    is JSONObject -> rawFallback.optString("fallback_api")
+                    is org.json.JSONArray -> rawFallback.optString(0)
+                    else -> runCatching { JSONObject(rawFallback.toString()).optString("fallback_api") }.getOrDefault(rawFallback?.toString() ?: "")
                 }
 
-                // 兜底情况: 若 video_model 缺少 video_list，尝试 fallback_api
-                if (candidateList.isEmpty()) {
-                    val rawFallback = model.opt("fallback_api")
-                    val fallback = when (rawFallback) {
-                        is JSONObject -> rawFallback.optString("fallback_api")
-                        is org.json.JSONArray -> rawFallback.optString(0)
-                        else -> runCatching { JSONObject(rawFallback.toString()).optString("fallback_api") }.getOrDefault(rawFallback?.toString() ?: "")
-                    }
-
-                    if (fallback.startsWith("https://") || fallback.startsWith("http://")) {
+                if (fallback.startsWith("https://") || fallback.startsWith("http://")) {
+                    try {
                         val fbReq = Request.Builder()
                             .url(fallback)
                             .header("User-Agent", VendorConstants.VIDEO_UA)
                             .build()
                         val fbResp = client.newCall(fbReq).execute()
-                        val fbBody = fbResp.body?.string() ?: throw IOException("Empty response from fallback_api")
+                        val fbBody = fbResp.body?.string() ?: ""
+                        if (fbBody.isNotEmpty()) {
+                            val info = JSONObject(fbBody).optJSONObject("video_info")?.optJSONObject("data")
+                            val fbList = info?.optJSONObject("video_list")
+                            if (fbList != null) {
+                                val seedFb = info.optString("key_seed")
+                                if (seedFb.isNotEmpty()) {
+                                    seed = try { decode64(seedFb) } catch (_: Exception) { seed }
+                                }
+                                val fKeys = fbList.keys()
+                                while (fKeys.hasNext()) {
+                                    val k = fKeys.next()
+                                    val item = fbList.optJSONObject(k) ?: continue
+                                    val mainUrl = item.optString("main_url")
+                                    val codec = item.optString("codec_type").lowercase()
+                                    if (mainUrl.isEmpty() || codec == "bytevc2" || codec == "bvc2") continue
 
-                        val info = JSONObject(fbBody).optJSONObject("video_info")?.optJSONObject("data")
-                            ?: throw IOException("No video_info in fallback_api")
-                        val fbList = info.optJSONObject("video_list")
-                        if (fbList != null) {
-                            val seedFb = info.optString("key_seed")
-                            if (seedFb.isNotEmpty()) {
-                                seed = try { decode64(seedFb) } catch (_: Exception) { seed }
+                                    val qDesc = item.optString("quality_desc").ifEmpty {
+                                        item.optString("height").ifEmpty {
+                                            item.optString("vheight").ifEmpty {
+                                                item.optString("quality").ifEmpty { k }
+                                            }
+                                        }
+                                    }
+                                    val qNum = Regex("(\\d+)").find(qDesc)?.groupValues?.get(1)?.toIntOrNull() ?: 720
+                                    val spadeA = item.optString("spade_a")
+                                    candidateList.add(VideoCandidate(qNum, mainUrl, spadeA))
+                                }
                             }
-                            val fKeys = fbList.keys()
-                            while (fKeys.hasNext()) {
-                                val k = fKeys.next()
-                                val item = fbList.optJSONObject(k) ?: continue
-                                val mainUrl = item.optString("main_url")
-                                val codec = item.optString("codec_type").lowercase()
-                                if (mainUrl.isEmpty() || codec == "bytevc2" || codec == "bvc2") continue
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.w("HongguoStreamResolver", "fallback_api 请求异常，回退 video_list: ${e.message}")
+                    }
+                }
 
-                                val qDesc = item.optString("quality_desc").ifEmpty {
+                // 通道 B (平滑降级): 若 fallback_api 未能提取到直链，从 video_model 中的 video_list 提取
+                if (candidateList.isEmpty()) {
+                    val rawVideoList = model.opt("video_list")
+                    if (rawVideoList is org.json.JSONArray) {
+                        for (i in 0 until rawVideoList.length()) {
+                            val item = rawVideoList.optJSONObject(i) ?: continue
+                            val meta = item.optJSONObject("video_meta") ?: JSONObject()
+                            val codec = meta.optString("codec_type", item.optString("codec_type")).lowercase()
+                            if (codec == "bytevc2" || codec == "bvc2") continue
+
+                            val mainUrl = item.optString("main_url").ifEmpty {
+                                item.optString("backup_url_1").ifEmpty { item.optString("backup_url") }
+                            }
+                            if (mainUrl.isEmpty()) continue
+
+                            val defStr = meta.optString("definition").ifEmpty {
+                                meta.optString("quality_desc").ifEmpty {
+                                    item.optString("quality_desc").ifEmpty {
+                                        meta.optString("vheight").ifEmpty {
+                                            meta.optString("height").ifEmpty { item.optString("height") }
+                                        }
+                                    }
+                                }
+                            }
+                            var qNum = Regex("(\\d+)").find(defStr)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                            if (qNum == 0) {
+                                val vh = meta.optInt("vheight", 0)
+                                val vw = meta.optInt("vwidth", 0)
+                                qNum = if (vw > 0 && (vh == 0 || vw < vh)) vw else vh
+                            }
+                            if (qNum == 0) qNum = 720
+
+                            val encInfo = item.optJSONObject("encrypt_info")
+                            val spadeA = encInfo?.optString("spade_a")?.ifEmpty { item.optString("spade_a") } ?: item.optString("spade_a")
+                            candidateList.add(VideoCandidate(qNum, mainUrl, spadeA))
+                        }
+                    } else if (rawVideoList is JSONObject) {
+                        val keys = rawVideoList.keys()
+                        while (keys.hasNext()) {
+                            val k = keys.next()
+                            val item = rawVideoList.optJSONObject(k) ?: continue
+                            val meta = item.optJSONObject("video_meta") ?: JSONObject()
+                            val codec = meta.optString("codec_type", item.optString("codec_type")).lowercase()
+                            if (codec == "bytevc2" || codec == "bvc2") continue
+
+                            val mainUrl = item.optString("main_url").ifEmpty {
+                                item.optString("backup_url_1").ifEmpty { item.optString("backup_url") }
+                            }
+                            if (mainUrl.isEmpty()) continue
+
+                            val defStr = meta.optString("definition").ifEmpty {
+                                item.optString("quality_desc").ifEmpty {
                                     item.optString("height").ifEmpty {
                                         item.optString("vheight").ifEmpty {
                                             item.optString("quality").ifEmpty { k }
                                         }
                                     }
                                 }
-                                val qNum = Regex("(\\d+)").find(qDesc)?.groupValues?.get(1)?.toIntOrNull() ?: 720
-                                candidateList.add(VideoCandidate(qNum, mainUrl, item.optString("spade_a")))
                             }
+                            var qNum = Regex("(\\d+)").find(defStr)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                            if (qNum == 0) {
+                                val vh = meta.optInt("vheight", item.optInt("vheight", 0))
+                                val vw = meta.optInt("vwidth", item.optInt("vwidth", 0))
+                                qNum = if (vw > 0 && (vh == 0 || vw < vh)) vw else vh
+                            }
+                            if (qNum == 0) qNum = 720
+
+                            val encInfo = item.optJSONObject("encrypt_info")
+                            val spadeA = encInfo?.optString("spade_a")?.ifEmpty { item.optString("spade_a") } ?: item.optString("spade_a")
+                            candidateList.add(VideoCandidate(qNum, mainUrl, spadeA))
                         }
                     }
                 }

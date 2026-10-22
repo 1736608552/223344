@@ -111,7 +111,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         launch.sources.any { it.source == "hongguo" || it.source == "shortdrama" || it.sourceName.contains("精品短剧") || it.typeName == "短剧" } ||
         launch.selectedSourceKey.startsWith("hongguo") ||
         launch.selectedSourceKey.startsWith("shortdrama")
-    val controller: VideoPlayer = remember { PlayerFactory.create(context, preferMpv = isShortDrama) }
+    val controller: VideoPlayer = remember { PlayerFactory.create(context, preferMpv = false, isShortDrama = isShortDrama) }
     val reporter = remember { PlayProgressReporter() }
 
     // 播放页处于独立 Dialog 窗口（见 DetailScreen 用 Dialog 隔离焦点域）。Compose Dialog 在

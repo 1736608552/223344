@@ -190,10 +190,40 @@ class PlayerController(
         lastHeaders = headers
         hasFallbackToRaw = false
 
-        // 核心直愈架构 (对齐手机端 ExoPlayerBackend 100% 稳定运行实践)：
-        // 实测证实红果短剧（如《雾锁情迷》、《烛九阴第二季》）均为火山 CDN 原生明文 MP4 (ftyp isom)。
-        // 绝不强行进行 CENC 逐 sample 异或篡改破坏视频帧，杜绝海信电视 MediaCodec 因损坏帧黑屏卡在 00:00！
-        // 直接使用带 headers (User-Agent + Referer) 的原生网络流秒开播放，画质最高 1080P 原画直出！
+        val rawKey = decryptionKey?.trim().orEmpty()
+        if (rawKey.isNotEmpty()) {
+            val keyBytes = MediaCrypto.resolveKeyBytes(rawKey)
+            if (keyBytes != null && keyBytes.size == 16) {
+                releaseCurrentRemoteVideo()
+                error = null
+                hasStarted = false
+                try {
+                    val remote = HongguoRemoteVideo(MediaHttp.httpClient, url, keyBytes, headers)
+                    currentRemoteVideo = remote
+                    val mediaSource = ProgressiveMediaSource.Factory(HongguoVideoDataSource.Factory(remote))
+                        .createMediaSource(
+                            MediaItem.Builder()
+                                .setMediaId(url)
+                                .setUri(Uri.parse(url))
+                                .setMimeType(MimeTypes.VIDEO_MP4)
+                                .build()
+                        )
+                    exo.setMediaSource(mediaSource)
+                    exo.prepare()
+                    if (startMs > 0) exo.seekTo(startMs)
+                    exo.playWhenReady = playWhenReady
+                    syncProgress()
+                    android.util.Log.i("PlayerController", "短剧原生硬件解码引擎启动成功 (MediaCodec 硬解): $url")
+                    return
+                } catch (e: Throwable) {
+                    android.util.Log.e("PlayerController", "短剧原生硬解媒体源初始化失败，回退原生网络流播放", e)
+                }
+            } else {
+                android.util.Log.w("PlayerController", "短剧解密 Key 校验未通过: $rawKey")
+            }
+        }
+
+        // 无解密 Key 或解密管线回退：直接使用带 Headers 的原生网络流秒开播放
         loadDirect(url, startMs, playWhenReady, headers)
     }
 

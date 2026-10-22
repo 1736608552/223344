@@ -19,15 +19,28 @@ fun resolveEffectivePlayerType(requested: PlayerType, sdkInt: Int): PlayerType =
  */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 object PlayerFactory {
-    fun create(context: Context, userAgent: String? = null, preferMpv: Boolean = false): VideoPlayer {
+    fun create(
+        context: Context,
+        userAgent: String? = null,
+        preferMpv: Boolean = false,
+        isShortDrama: Boolean = false,
+    ): VideoPlayer {
         val decode = AppDataService.getDecodeModeSync()
-        val userType = resolveEffectivePlayerType(AppDataService.getPlayerTypeSync(), Build.VERSION.SDK_INT)
-        val type = if (preferMpv && Build.VERSION.SDK_INT >= MPV_MIN_SDK) PlayerType.MPV else userType
         fun exo(): VideoPlayer {
             val ds: DataSource.Factory =
                 if (userAgent != null) MediaHttp.dataSourceFactory(userAgent) else MediaHttp.dataSourceFactory
             return PlayerController(context, ds, decode)
         }
+
+        // 短剧架构守则 (100% 遵照标杆项目 hongguoTV 工业级实践)：
+        // 电视端短剧必须依托 HongguoVideoDataSource + MediaCrypto 内存透明解密管线直接喂给 ExoPlayer，
+        // 触发底层 MediaCodec 芯片硬件解码零拷贝秒开播放。MPV 缺乏 CENC 透明解密数据源，严禁路由至 MPV。
+        if (isShortDrama) {
+            return exo()
+        }
+
+        val userType = resolveEffectivePlayerType(AppDataService.getPlayerTypeSync(), Build.VERSION.SDK_INT)
+        val type = if (preferMpv && Build.VERSION.SDK_INT >= MPV_MIN_SDK) PlayerType.MPV else userType
         return when (type) {
             PlayerType.MPV -> try {
                 MpvPlayerController(context, userAgent, decode)
