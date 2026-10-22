@@ -81,13 +81,34 @@ class VersionService {
         String? apkDownloadUrl;
         final assets = data['assets'] as List<dynamic>?;
         if (assets != null) {
+          // 优先精准匹配手机端专用包（包含 mobile 或名为 app-release.apk），严格排除电视端包（包含 tv、hisense 或 selenetv）
           for (final asset in assets) {
             if (asset is Map<String, dynamic>) {
-              final name = (asset['name'] as String?) ?? '';
+              final name = ((asset['name'] as String?) ?? '').toLowerCase();
               final url = (asset['browser_download_url'] as String?) ?? '';
-              if (name.toLowerCase().endsWith('.apk') && url.isNotEmpty) {
-                apkDownloadUrl = UserDataService.buildGithubReleaseAssetUrl(url);
-                break;
+              if (name.endsWith('.apk') && url.isNotEmpty) {
+                final isTv = name.contains('-tv-') || name.contains('tv-') || name.contains('hisense') || name.contains('selenetv');
+                final isMobile = name.contains('mobile') || name == 'app-release.apk';
+                if (isMobile && !isTv) {
+                  apkDownloadUrl = UserDataService.buildGithubReleaseAssetUrl(url);
+                  break;
+                }
+              }
+            }
+          }
+          // 次选：若无 mobile 显式标识，挑选任意非 TV 端的通用 APK
+          if (apkDownloadUrl == null) {
+            for (final asset in assets) {
+              if (asset is Map<String, dynamic>) {
+                final name = ((asset['name'] as String?) ?? '').toLowerCase();
+                final url = (asset['browser_download_url'] as String?) ?? '';
+                if (name.endsWith('.apk') && url.isNotEmpty) {
+                  final isTv = name.contains('-tv-') || name.contains('tv-') || name.contains('hisense') || name.contains('selenetv');
+                  if (!isTv) {
+                    apkDownloadUrl = UserDataService.buildGithubReleaseAssetUrl(url);
+                    break;
+                  }
+                }
               }
             }
           }
