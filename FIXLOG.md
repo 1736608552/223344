@@ -1,5 +1,20 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.16 (2026-10-21)
+
+### 紧急修复TV端Kotlin编译类型引用 (ProgressiveMediaSource与private context作用域) + 彻底打通TV端短剧全平台编译与极速直播发布
+
+#### 核心突破与深度自愈
+1. **紧急修复 TV 端编译异常 (`:app:compileStandardReleaseKotlin`)**：
+   - **深层原因排查**：`PlayerController` 构造入参 `context: Context` 缺少 `private val` 修饰，导致成员函数引用 `context` 时被 Kotlin 误判为 `context(...)` receiver 语法报错；同时调用了 `DefaultMediaSourceFactory(context, okHttpFactory)` 不存在的构造重载；
+   - **规范修复**：显式声明 `private val context: Context`，媒体源工厂严格对齐 Media3 原生标准渐进式工厂 `ProgressiveMediaSource.Factory(okHttpFactory).createMediaSource(mediaItem)`，彻底消除所有符号与类型编译错误；
+2. **单条编译进程守护**：
+   - 保持 `build.yml` 纯标签触发机制，保障全网仅有一条流水线运行，不浪费任何 Actions 额度。
+3. **版本号与版本码单调递增**：
+   - 版本更新至 `v2.7.16`（versionCode: `20816`），平滑覆盖安装升级。
+
+---
+
 ## v2.7.15 (2026-10-21)
 
 ### 彻底根治TV端红果短剧黑屏无法起播 (全面对齐手机端原生直通流式播放 + 杜绝明文MP4被误解密破坏) + 终极高可用公开直链双保险兜底 + 彻底锁定CI仅单条运行杜绝额度浪费

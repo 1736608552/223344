@@ -32,7 +32,7 @@ import java.util.concurrent.Executors
  */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlayerController(
-    context: Context,
+    private val context: Context,
     dataSourceFactory: androidx.media3.datasource.DataSource.Factory = MediaHttp.dataSourceFactory,
     decodeMode: AppDataService.DecodeMode = AppDataService.DecodeMode.HARDWARE,
 ) : VideoPlayer {
@@ -159,11 +159,11 @@ class PlayerController(
         if (headers.isNullOrEmpty()) {
             exo.setMediaItem(mediaItem)
         } else {
-            // 绑定 context 构建原生媒体源工厂，确保海信等国产电视硬件解码器 (MediaCodec) 正常绑定 Surface 渲染
+            // 使用 ProgressiveMediaSource 原生渐进式媒体源工厂，确保 MP4 硬件直连并带上防盗链 Headers
             val okHttpFactory = androidx.media3.datasource.okhttp.OkHttpDataSource.Factory(MediaHttp.httpClient).apply {
                 setDefaultRequestProperties(headers)
             }
-            val mediaSource = DefaultMediaSourceFactory(context, okHttpFactory).createMediaSource(mediaItem)
+            val mediaSource = ProgressiveMediaSource.Factory(okHttpFactory).createMediaSource(mediaItem)
             exo.setMediaSource(mediaSource)
         }
         exo.prepare()
