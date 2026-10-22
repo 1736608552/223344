@@ -146,6 +146,11 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
             val defaultEpCount = dramaSourceFromSearch?.episodes?.size?.coerceAtLeast(80) ?: 80
             val initialEps = List(defaultEpCount) { (it + 1).toString() }
             val initialTitles = List(defaultEpCount) { "第${it + 1}集" }
+            val cachedIntro = org.moontechlab.selenetv.hongguo.HongguoStreamResolver.getCachedSeriesIntro(seriesId)
+            val searchDesc = dramaSourceFromSearch?.desc?.takeIf {
+                it.isNotBlank() && it != "精品短剧官方原画，多清晰度极速秒开"
+            }
+            val initialDesc = cachedIntro.ifEmpty { searchDesc ?: "精品短剧官方原画，多清晰度极速秒开" }
             val hongguoSource = SearchResult(
                 id = seriesId,
                 title = title,
@@ -155,38 +160,44 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
                 source = "hongguo",
                 sourceName = "精品短剧",
                 year = year,
-                desc = "精品短剧官方原画，多清晰度极速秒开",
+                desc = initialDesc,
                 typeName = "短剧"
             )
             rawResults = listOf(hongguoSource)
             state = state.copy(sourcesComplete = true)
 
-            // 异步后台拉取真实剧集 vid 列表与精确章节数 (突破试看3集限制，对齐全量集数)
+            // 异步后台拉取真实剧集 vid 列表与精确章节数 (突破试看3集限制，对齐全量集数) 以及短剧剧情简介
             scope.launch(Dispatchers.IO) {
                 try {
                     val vids = org.moontechlab.selenetv.hongguo.HongguoStreamResolver.fetchEpisodeVids(seriesId)
-                    if (vids.isNotEmpty()) {
-                        val realEpCount = if (vids.size > 3) vids.size else maxOf(defaultEpCount, vids.size)
-                        val epList = if (vids.size > 3) {
-                            vids
-                        } else {
-                            val list = vids.toMutableList()
-                            while (list.size < realEpCount) {
-                                list.add((list.size + 1).toString())
-                            }
-                            list
+                    val realIntro = org.moontechlab.selenetv.hongguo.HongguoStreamResolver.getCachedSeriesIntro(seriesId).ifEmpty {
+                        org.moontechlab.selenetv.hongguo.HongguoStreamResolver.fetchSeriesIntro(seriesId)
+                    }.takeIf { it.isNotBlank() }
+
+                    val realEpCount = if (vids.size > 3) vids.size else maxOf(defaultEpCount, vids.size)
+                    val epList = if (vids.size > 3) {
+                        vids
+                    } else if (vids.isNotEmpty()) {
+                        val list = vids.toMutableList()
+                        while (list.size < realEpCount) {
+                            list.add((list.size + 1).toString())
                         }
-                        val realEpTitles = List(realEpCount) { "第${it + 1}集" }
-                        val updatedSource = hongguoSource.copy(
-                            episodes = epList,
-                            episodesTitles = realEpTitles
-                        )
-                        withContext(Dispatchers.Main) {
-                            rawResults = listOf(updatedSource)
-                        }
+                        list
+                    } else {
+                        initialEps
+                    }
+                    val realEpTitles = List(realEpCount) { "第${it + 1}集" }
+                    val finalDesc = realIntro ?: hongguoSource.desc
+                    val updatedSource = hongguoSource.copy(
+                        desc = finalDesc,
+                        episodes = epList,
+                        episodesTitles = realEpTitles
+                    )
+                    withContext(Dispatchers.Main) {
+                        rawResults = listOf(updatedSource)
                     }
                 } catch (e: Exception) {
-                    Log.w("DetailScreen", "异步拉取短剧章节异常: ${e.message}")
+                    Log.w("DetailScreen", "异步拉取短剧章节与简介异常: ${e.message}")
                 }
             }
             return@LaunchedEffect

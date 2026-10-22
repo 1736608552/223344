@@ -17,6 +17,59 @@ object HongguoStreamResolver {
 
     private val signer = Signer()
     private val episodeVidsCache = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
+    private val seriesIntroCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /**
+     * 获取已缓存的短剧简介 (在 fetchEpisodeVids 解析 Web SSR 时自动提取并缓存)
+     */
+    fun getCachedSeriesIntro(seriesId: String): String {
+        val cleanId = seriesId.trim().removePrefix("hongguo:").trim()
+        return seriesIntroCache[cleanId] ?: ""
+    }
+
+    /**
+     * 获取短剧剧情简介 (若缓存未命中则自动请求解析)
+     */
+    fun fetchSeriesIntro(seriesId: String): String {
+        val cleanId = seriesId.trim().removePrefix("hongguo:").trim()
+        val cached = seriesIntroCache[cleanId]
+        if (!cached.isNullOrEmpty()) return cached
+        try {
+            fetchEpisodeVids(cleanId)
+        } catch (_: Exception) {}
+        return seriesIntroCache[cleanId] ?: ""
+    }
+
+    /**
+     * 深度括号匹配解析 Web 页面中的 _ROUTER_DATA JSON (对齐 hongguoTV 工业级实践，比单纯正则更抗复杂嵌套)
+     */
+    private fun extractRouter(html: String): JSONObject? {
+        val marker = html.indexOf("_ROUTER_DATA")
+        if (marker < 0) return null
+        val first = html.indexOf('{', marker)
+        if (first < 0) return null
+        var depth = 0
+        var quoted = false
+        var escaped = false
+        for (i in first until html.length) {
+            val ch = html[i]
+            if (quoted) {
+                if (escaped) escaped = false else if (ch == '\\') escaped = true else if (ch == '"') quoted = false
+                continue
+            }
+            when (ch) {
+                '"' -> quoted = true
+                '{', '[' -> depth++
+                '}', ']' -> {
+                    depth--
+                    if (depth == 0) {
+                        return try { JSONObject(html.substring(first, i + 1)) } catch (_: Exception) { null }
+                    }
+                }
+            }
+        }
+        return null
+    }
 
     /**
      * 短剧全集分集 VID 列表拉取 (Web 官网 SSR 详情页优先保证全量 80~100+ 集 + 官方 App 签名兜底)
@@ -46,12 +99,15 @@ object HongguoStreamResolver {
                 val html = webResp.body?.string() ?: ""
                 val vids = mutableListOf<String>()
 
-                // 策略 A: 基于 _ROUTER_DATA JSON 树深度提取
-                val regex = Regex("""_ROUTER_DATA\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL)
-                val match = regex.find(html)
-                if (match != null) {
+                // 策略 A: 基于 _ROUTER_DATA 深度提取 (括号栈解析优先，正则兜底)
+                val root = extractRouter(html) ?: run {
+                    val regex = Regex("""_ROUTER_DATA\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL)
+                    val match = regex.find(html)
+                    match?.let { try { JSONObject(it.groupValues[1]) } catch (_: Exception) { null } }
+                }
+
+                if (root != null) {
                     try {
-                        val root = JSONObject(match.groupValues[1])
                         val loaderData = root.optJSONObject("loaderData")
                         if (loaderData != null) {
                             val keys = loaderData.keys()
@@ -59,6 +115,19 @@ object HongguoStreamResolver {
                                 val key = keys.next()
                                 val page = loaderData.optJSONObject(key) ?: continue
                                 val sd = page.optJSONObject("seriesDetail")
+                                    ?: page.optJSONObject("video_data")
+                                    ?: page.optJSONObject("detail")
+
+                                // 提取剧情简介 (series_intro / intro / video_desc)
+                                val intro = (sd?.optString("series_intro") ?: "")
+                                    .ifEmpty { sd?.optString("intro") ?: "" }
+                                    .ifEmpty { sd?.optString("video_desc") ?: "" }
+                                    .ifEmpty { sd?.optString("abstract_text") ?: "" }
+                                    .trim()
+                                if (intro.isNotEmpty() && !seriesIntroCache.containsKey(cleanId)) {
+                                    seriesIntroCache[cleanId] = intro
+                                }
+
                                 val vList = sd?.optJSONArray("vid_list") ?: page.optJSONArray("vid_list") ?: page.optJSONArray("video_list")
                                 if (vList != null && vList.length() > 0) {
                                     for (i in 0 until vList.length()) {
@@ -74,7 +143,7 @@ object HongguoStreamResolver {
                     } catch (_: Exception) {}
                 }
 
-                // 策略 B: 正则快速扫描 vid_list 数组兜底
+                // 策略 B: 正则快速扫描 vid_list 数组与 series_intro 兜底
                 if (vids.isEmpty()) {
                     val rawListMatch = Regex("\"vid_list\"\\s*:\\s*\\[(.*?)\\]").find(html)
                     if (rawListMatch != null) {
@@ -83,6 +152,17 @@ object HongguoStreamResolver {
                         for (m in matches) {
                             val v = m.groupValues[1].trim()
                             if (v.isNotEmpty()) vids.add(v)
+                        }
+                    }
+                }
+                if (!seriesIntroCache.containsKey(cleanId)) {
+                    val rawIntroMatch = Regex("\"series_intro\"\\s*:\\s*\"(.*?)(?<!\\\\)\"").find(html)
+                        ?: Regex("\"video_desc\"\\s*:\\s*\"(.*?)(?<!\\\\)\"").find(html)
+                    if (rawIntroMatch != null) {
+                        val rawIntro = rawIntroMatch.groupValues[1]
+                        val unescaped = rawIntro.replace("\\\"", "\"").replace("\\n", "\n").replace("\\\\", "\\").trim()
+                        if (unescaped.isNotEmpty()) {
+                            seriesIntroCache[cleanId] = unescaped
                         }
                     }
                 }
@@ -125,6 +205,19 @@ object HongguoStreamResolver {
 
                 val videoData = json.optJSONObject("data")?.optJSONObject("video_data")
                     ?: throw IOException("No video_data in video_detail response")
+
+                // 兜底提取剧情简介
+                if (!seriesIntroCache.containsKey(cleanId)) {
+                    val appIntro = (videoData.optString("series_intro"))
+                        .ifEmpty { videoData.optString("video_desc") }
+                        .ifEmpty { videoData.optString("intro") }
+                        .ifEmpty { videoData.optString("abstract_text") }
+                        .trim()
+                    if (appIntro.isNotEmpty()) {
+                        seriesIntroCache[cleanId] = appIntro
+                    }
+                }
+
                 val videoList = videoData.optJSONArray("video_list")
                     ?: throw IOException("No video_list in video_detail response")
 
