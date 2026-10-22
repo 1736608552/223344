@@ -257,7 +257,6 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
     }
 
     fun sign(base: String, values: Map<String, String>, body: ByteArray? = null): Request {
-        VendorConstants.regenerate()
         val now = clock()
         val ts = (now / 1000).toInt()
         var ticket = now

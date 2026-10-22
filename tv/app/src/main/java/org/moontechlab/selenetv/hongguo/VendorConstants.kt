@@ -1,7 +1,6 @@
 // Derived from drpys 22261ad; GPL-3.0.
 package org.moontechlab.selenetv.hongguo
 
-import java.util.Base64
 import kotlin.random.Random
 
 internal object VendorConstants {
@@ -21,15 +20,18 @@ internal object VendorConstants {
         processStarted = System.currentTimeMillis()
     }
 
-    private fun randomInstallId(): String = buildString(16) {
+    private fun randomInstallId(): String = buildString {
         append('1')
         repeat(15) { append(Random.nextInt(10)) }
     }
 
     private fun randomNonce(): String =
-        Base64.getUrlEncoder().withoutPadding().encodeToString(Random.nextBytes(18))
+        android.util.Base64.encodeToString(
+            Random.nextBytes(18),
+            android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING
+        )
 
-    val device: Map<String, String>
+    val device: java.util.LinkedHashMap<String, String>
         get() = linkedMapOf(
             "iid" to installIid,
             "device_id" to installDeviceId,

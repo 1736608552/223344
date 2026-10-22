@@ -76,10 +76,10 @@ object HongguoStreamResolver {
 
                 // 策略 B: 正则快速扫描 vid_list 数组兜底
                 if (vids.isEmpty()) {
-                    val rawListMatch = Regex(""""vid_list"\s*:\s*\[(.*?)\]""").find(html)
+                    val rawListMatch = Regex("\"vid_list\"\\s*:\\s*\\[(.*?)\\]").find(html)
                     if (rawListMatch != null) {
                         val inner = rawListMatch.groupValues[1]
-                        val matches = Regex(""""([0-9]{1,32})"""").findAll(inner)
+                        val matches = Regex("\"([0-9]{1,32})\"").findAll(inner)
                         for (m in matches) {
                             val v = m.groupValues[1].trim()
                             if (v.isNotEmpty()) vids.add(v)
@@ -98,6 +98,7 @@ object HongguoStreamResolver {
         }
 
         // 通道 2 (官方 App 原生接口抖动重试兜底)
+        VendorConstants.regenerate()
         val payload = """{"series_id":"$cleanId"}""".toByteArray()
         for (attempt in 0..1) {
             try {
@@ -292,6 +293,8 @@ object HongguoStreamResolver {
         if (!cleanVid.matches(Regex("[0-9]{1,32}"))) {
             throw IllegalArgumentException("Invalid vid: $vid")
         }
+
+        VendorConstants.regenerate()
 
         val payload = """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$cleanVid"]}}""".toByteArray()
         var lastErr: Exception? = null
