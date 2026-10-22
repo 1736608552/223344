@@ -16,7 +16,7 @@ import java.io.File
 object UpdateService {
     private const val TAG = "UpdateService"
     private const val LATEST_URL =
-        "https://api.github.com/repos/djseven/LunaTV-Mobile/releases/latest"
+        "https://api.github.com/repos/1736608552/LunaTV-Release/releases/latest"
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 

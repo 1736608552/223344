@@ -371,30 +371,34 @@ jobs:
 
           TITLE="LunaTV Mobile ${TAG}"
 
-          # 重试循环确保网络波动下稳定发布至公开仓库
-          for i in 1 2 3 4 5; do
-            echo "::group::Release attempt $i"
-            if gh release view "$TAG" --repo "$PUBLIC_REPO" >/dev/null 2>&1; then
-              echo "公开仓库 Release $TAG 已存在，更新产物附件与发布说明..."
-              if gh release upload "$TAG" release_dist/* --clobber --repo "$PUBLIC_REPO" && \
-                 gh release edit "$TAG" --title "$TITLE" --notes-file release_notes.md --repo "$PUBLIC_REPO"; then
-                echo "Release 资源更新成功 (attempt $i)"
-                break
+          # 自动双轨分发：同时同步发布至当前仓库与专用在线更新分发中心 (LunaTV-Release)
+          TARGET_REPOS=("${PUBLIC_REPO}" "1736608552/LunaTV-Release")
+
+          for REPO_TARGET in "${TARGET_REPOS[@]}"; do
+            echo "::group::Publishing to $REPO_TARGET ..."
+            for i in 1 2 3 4 5; do
+              echo "Release attempt $i for $REPO_TARGET"
+              if gh release view "$TAG" --repo "$REPO_TARGET" >/dev/null 2>&1; then
+                echo "目标仓库 $REPO_TARGET 的 Release $TAG 已存在，更新产物附件与发布说明..."
+                if gh release upload "$TAG" release_dist/* --clobber --repo "$REPO_TARGET" && \
+                   gh release edit "$TAG" --title "$TITLE" --notes-file release_notes.md --repo "$REPO_TARGET"; then
+                  echo "[$REPO_TARGET] Release 资源更新成功 (attempt $i)"
+                  break
+                fi
+              else
+                echo "向 $REPO_TARGET 创建全新 Release $TAG..."
+                if gh release create "$TAG" release_dist/* \
+                  --repo "$REPO_TARGET" \
+                  --title "$TITLE" \
+                  --notes-file release_notes.md; then
+                  echo "[$REPO_TARGET] Release 创建成功 (attempt $i)"
+                  break
+                fi
               fi
-            else
-              echo "向公开仓库创建全新 Release $TAG..."
-              if gh release create "$TAG" release_dist/* \
-                --repo "$PUBLIC_REPO" \
-                --title "$TITLE" \
-                --notes-file release_notes.md; then
-                echo "Release 创建成功 (attempt $i)"
-                break
+              if [ "$i" -eq 5 ]; then
+                echo "::warning::[$REPO_TARGET] 发布尝试均失败，继续后续目标"
               fi
-            fi
+              sleep 10
+            done
             echo "::endgroup::"
-            if [ "$i" -eq 5 ]; then
-              echo "::error::gh release create/upload 5次重试均失败"
-              exit 1
-            fi
-            sleep 15
           done
