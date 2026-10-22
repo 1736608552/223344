@@ -87,6 +87,7 @@ class MpvPlayerController(
     init {
         mpv.setOptionString("vo", "gpu")
         mpv.setOptionString("gpu-context", "android")
+        mpv.setOptionString("force-window", "yes")
         mpv.setOptionString("tls-verify", "no")
         mpv.setOptionString("ytdl", "no")
         when (decodeMode) {
@@ -184,12 +185,8 @@ class MpvPlayerController(
                 val activeDecodeMode = org.moontechlab.selenetv.service.AppDataService.getDecodeModeSync()
                 when (activeDecodeMode) {
                     org.moontechlab.selenetv.service.AppDataService.DecodeMode.HARDWARE -> {
-                        // 硬解模式：优先 mediacodec-copy（规避机顶盒 Direct Surface 零拷贝竖屏黑屏故障），再回退 mediacodec
-                        if (android.os.Build.VERSION.SDK_INT >= 26) {
-                            mpv.setPropertyString("hwdec", "mediacodec-copy,mediacodec")
-                        } else {
-                            mpv.setPropertyString("hwdec", "mediacodec-copy")
-                        }
+                        // 100% 对齐手机端短剧成熟方案：统一采用 auto-safe，硬件零拷贝优先，异常自动回退软解
+                        mpv.setPropertyString("hwdec", "auto-safe")
                         mpv.setPropertyString("hwdec-codecs", "all")
                     }
                     org.moontechlab.selenetv.service.AppDataService.DecodeMode.SOFTWARE -> {
@@ -202,8 +199,8 @@ class MpvPlayerController(
                         mpv.setPropertyString("vd-lavc-skiploopfilter", "nonkey")
                     }
                 }
-                // 核心音画同步保障：必须设为 vo 允许丢弃过期视频帧以严格追赶音频时钟，杜绝画面慢放与音画失步
-                mpv.setPropertyString("framedrop", "vo")
+                // 核心音画同步保障：设为 no 防止强制丢帧，音画双时钟对齐
+                mpv.setPropertyString("framedrop", "no")
                 mpv.setPropertyString("video-sync", "audio")
                 mpv.setPropertyString("scale", "bilinear")
                 mpv.setPropertyString("audio-pitch-correction", "no")
@@ -217,11 +214,7 @@ class MpvPlayerController(
                 val activeDecodeMode = org.moontechlab.selenetv.service.AppDataService.getDecodeModeSync()
                 when (activeDecodeMode) {
                     AppDataService.DecodeMode.HARDWARE -> {
-                        if (android.os.Build.VERSION.SDK_INT >= 26) {
-                            mpv.setPropertyString("hwdec", "mediacodec-copy,mediacodec")
-                        } else {
-                            mpv.setPropertyString("hwdec", "mediacodec-copy")
-                        }
+                        mpv.setPropertyString("hwdec", "auto-safe")
                         mpv.setPropertyString("hwdec-codecs", "h264,hevc,vp9,av1")
                     }
                     AppDataService.DecodeMode.SOFTWARE -> {
@@ -235,18 +228,23 @@ class MpvPlayerController(
         }
 
         if (!headers.isNullOrEmpty()) {
-            val headerLines = headers.entries.joinToString("\r\n") { "${it.key}: ${it.value}" }
+            headers["User-Agent"]?.let { try { mpv.setPropertyString("user-agent", it) } catch (_: Exception) {} }
+            headers["user-agent"]?.let { try { mpv.setPropertyString("user-agent", it) } catch (_: Exception) {} }
+            headers["Referer"]?.let { try { mpv.setPropertyString("referrer", it) } catch (_: Exception) {} }
+            headers["referer"]?.let { try { mpv.setPropertyString("referrer", it) } catch (_: Exception) {} }
+            val commaHeaders = headers.entries.joinToString(",") { "${it.key}: ${it.value}" }
             try {
-                mpv.setPropertyString("http-header-fields", headerLines)
+                mpv.setPropertyString("http-header-fields", commaHeaders)
             } catch (_: Exception) {}
         }
 
         val startSec = (startMs / 1000.0).coerceAtLeast(0.0)
         if (startSec > 0) {
-            mpv.command(arrayOf("loadfile", url, "replace", "0", "start=$startSec"))
+            try { mpv.setPropertyString("start", startSec.toString()) } catch (_: Exception) {}
         } else {
-            mpv.command(arrayOf("loadfile", url, "replace"))
+            try { mpv.setPropertyString("start", "none") } catch (_: Exception) {}
         }
+        mpv.command(arrayOf("loadfile", url, "replace"))
         mpv.setPropertyString("pause", if (playWhenReady) "no" else "yes")
     }
 
@@ -326,9 +324,10 @@ class MpvPlayerController(
                     holder.addCallback(object : SurfaceHolder.Callback {
                         override fun surfaceCreated(holder: SurfaceHolder) {
                             if (released) return
-                            mpv.attachSurface(holder.surface)
-                            mpv.setOptionString("force-window", "yes")
-                            mpv.setPropertyString("vo", "gpu")
+                            try {
+                                mpv.attachSurface(holder.surface)
+                                mpv.setPropertyString("vo", "gpu")
+                            } catch (_: Throwable) {}
                             surfaceAttached = true
                             pendingUrl?.let {
                                 doLoad(it, pendingStartMs, pendingPlayWhenReady, pendingDecryptionKey, pendingHeaders)
@@ -339,14 +338,12 @@ class MpvPlayerController(
                         }
                         override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) {
                             if (released) return
-                            mpv.setPropertyString("android-surface-size", "${w}x$ht")
+                            try { mpv.setPropertyString("android-surface-size", "${w}x$ht") } catch (_: Throwable) {}
                         }
                         override fun surfaceDestroyed(holder: SurfaceHolder) {
                             if (released) return
                             surfaceAttached = false
-                            mpv.setPropertyString("vo", "null")
-                            mpv.setOptionString("force-window", "no")
-                            mpv.detachSurface()
+                            try { mpv.detachSurface() } catch (_: Throwable) {}
                         }
                     })
                 }

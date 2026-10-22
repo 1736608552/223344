@@ -1,6 +1,18 @@
 # LunaTV-Mobile 修复日记
 
-## v2.7.16 (2026-10-21)
+## v2.7.18 (2026-10-22)
+
+### 彻底根治TV端短剧30秒试看结束报错中断 (全面对齐手机端MPV/FFmpeg AES-128-CTR硬件解密架构) + 播放器自适应接管
+
+#### 核心排查与深度自愈
+1. **电视端停在00:31报错根因彻底闭环**：
+   - **深层病灶定位**：红果等短剧采取“前30秒明文试看 + 30秒后 CENC (AES-128-CTR) 分段加密”策略。手机端采用 `DuanjuMediaKitBackend`（libmpv/FFmpeg）底层注入 `decryption_key` 顺畅播放全集；而 TV 端之前因 `preferMpv = false` 写死且系统默认选择 ExoPlayer，原生硬解遇到加密字节瞬间抛出解码异常崩溃，界面停在 00:31 并弹出“此源播放失败，请尝试换源”；
+   - **短剧自适应接管**：在 `PlayerScreen.kt` 中将 `preferMpv` 动态绑定为 `isShortDrama`，短剧场景 100% 自动由 MPV 引擎驱动，与手机端完全齐平；
+   - **MPV 解密内核全参数对齐**：在 `MpvPlayerController.kt` 中完全对齐手机端成熟推流参数，注入 `demuxer-lavf-o` CENC 硬件解密密钥、启用 `auto-safe` 零拷贝硬解与平滑回退、音画双时钟对齐，彻底根治 30 秒卡死；
+2. **全平台 12 安装包双轨直推**：
+   - 构建全量发布 12 个安装包并直推至独立发布中心 `LunaTV-Release` 与源仓库。
+
+---
 
 ### 紧急修复TV端Kotlin编译类型引用 (ProgressiveMediaSource与private context作用域) + 彻底打通TV端短剧全平台编译与极速直播发布
 

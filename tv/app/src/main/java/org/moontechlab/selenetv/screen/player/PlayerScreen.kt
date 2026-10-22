@@ -106,8 +106,12 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     val backDispatcher = androidx.activity.compose.LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
     val isShortDrama = launch.selectedSource?.source == "hongguo" ||
         launch.selectedSource?.source == "shortdrama" ||
-        launch.sources.any { it.source == "hongguo" || it.source == "shortdrama" }
-    val controller: VideoPlayer = remember { PlayerFactory.create(context, preferMpv = false) }
+        launch.selectedSource?.sourceName?.contains("精品短剧") == true ||
+        launch.selectedSource?.typeName == "短剧" ||
+        launch.sources.any { it.source == "hongguo" || it.source == "shortdrama" || it.sourceName.contains("精品短剧") || it.typeName == "短剧" } ||
+        launch.selectedSourceKey.startsWith("hongguo") ||
+        launch.selectedSourceKey.startsWith("shortdrama")
+    val controller: VideoPlayer = remember { PlayerFactory.create(context, preferMpv = isShortDrama) }
     val reporter = remember { PlayProgressReporter() }
 
     // 播放页处于独立 Dialog 窗口（见 DetailScreen 用 Dialog 隔离焦点域）。Compose Dialog 在
@@ -339,7 +343,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         // 短剧起播位置保护：若起播位置 > 10 分钟 (明显是跨端脏数据或放大溢出)，安全归零从头播放，彻底杜绝越界黑屏
         val safeStartMs = if (isShort && startMs > 10 * 60 * 1000L) 0L else startMs
         scope.launch {
-            if (src.source == "hongguo" || src.source == "shortdrama") {
+            if (isShort || src.source == "hongguo" || src.source == "shortdrama" || src.sourceName.contains("精品短剧") || src.typeName == "短剧") {
                 // 短剧专属直解：精准调用单集专属直链解析通道 (支持 1080P/720P/480P 超清直出 + CENC 硬件解密)
                 val seriesId = src.id
                 var resolvedUrl = ""
