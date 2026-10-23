@@ -348,7 +348,7 @@ jobs:
             TAG="v${BASE_VERSION}"
           fi
 
-          echo "准备发布版本: $TAG (pubspec: $VERSION) 至公开仓库: $PUBLIC_REPO"
+          echo "准备发布版本: $TAG (pubspec: $VERSION) 至独立分发仓库: 1736608552/LunaTV-Release"
 
           # 准备发布产物目录 (防御性创建 downloaded_artifacts 避免 find 报错)
           mkdir -p downloaded_artifacts
@@ -374,8 +374,8 @@ jobs:
 
           TITLE="LunaTV Mobile ${TAG}"
 
-          # 自动双轨分发：同时同步发布至当前仓库与专用在线更新分发中心 (LunaTV-Release)
-          TARGET_REPOS=("${PUBLIC_REPO}" "1736608552/LunaTV-Release")
+          # 专用在线更新分发中心：构建产物仅发布至 1736608552/LunaTV-Release，源仓库 223344 不发布
+          TARGET_REPOS=("1736608552/LunaTV-Release")
 
           for REPO_TARGET in "${TARGET_REPOS[@]}"; do
             echo "::group::Publishing to $REPO_TARGET ..."

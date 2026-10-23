@@ -47,10 +47,7 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-          echo "同步到源仓库 $SRC_REPO (补齐缺失的 3 个 TV 别名)..."
-          gh release upload "$TAG" * --clobber --repo "$SRC_REPO"
-
-          echo "同步上传全部 12+1 资产到目标发布中心 $DST_REPO ..."
+          echo "同步上传全部 12+1 资产到目标发布中心 $DST_REPO (源仓库 223344 不发布)..."
           gh release upload "$TAG" * --clobber --repo "$DST_REPO"
 
           echo "验证目标仓库资产列表:"
