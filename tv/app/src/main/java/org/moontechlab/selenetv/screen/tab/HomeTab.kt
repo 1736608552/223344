@@ -358,11 +358,19 @@ fun HomeTab(
     val heroBannerItems = remember(hotMovies, hotTvShows, hotShortDramas) {
         val list = mutableListOf<TvHeroItem>()
         hotMovies.take(2).forEach { v ->
+            val cachedIntro = if (!v.doubanId.isNullOrEmpty()) {
+                doubanCacheService.get("${v.doubanId}_details") { raw ->
+                    try {
+                        kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString<org.moontechlab.selenetv.model.DoubanMovieDetails>(raw).summary
+                    } catch (_: Exception) { null }
+                }?.trim()
+            } else null
+
             list.add(
                 TvHeroItem(
                     id = v.id,
                     title = v.title,
-                    overview = "豆瓣高分佳作 · ${v.year} 华语精选 · 超清大屏视界",
+                    overview = cachedIntro.takeIf { !it.isNullOrEmpty() } ?: "豆瓣高分佳作 · ${v.year} 华语精选 · 超清大屏视界",
                     backdropUrl = v.cover,
                     posterUrl = v.cover,
                     typeLabel = "院线电影",
@@ -373,11 +381,12 @@ fun HomeTab(
             )
         }
         hotShortDramas.take(2).forEach { v ->
+            val cachedIntro = org.moontechlab.selenetv.hongguo.HongguoStreamResolver.getCachedSeriesIntro(v.id).trim()
             list.add(
                 TvHeroItem(
                     id = v.id,
                     title = v.title,
-                    overview = "爆款独家短剧 · 全${v.totalEpisodes}集爽剧连播 · 精彩反转",
+                    overview = cachedIntro.takeIf { it.isNotEmpty() } ?: "爆款独家短剧 · 全${v.totalEpisodes}集爽剧连播 · 精彩反转",
                     backdropUrl = v.cover,
                     posterUrl = v.cover,
                     typeLabel = "热门短剧",
@@ -388,11 +397,19 @@ fun HomeTab(
             )
         }
         hotTvShows.take(2).forEach { v ->
+            val cachedIntro = if (!v.doubanId.isNullOrEmpty()) {
+                doubanCacheService.get("${v.doubanId}_details") { raw ->
+                    try {
+                        kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString<org.moontechlab.selenetv.model.DoubanMovieDetails>(raw).summary
+                    } catch (_: Exception) { null }
+                }?.trim()
+            } else null
+
             list.add(
                 TvHeroItem(
                     id = v.id,
                     title = v.title,
-                    overview = "全网热播黄金档 · 沉浸连播 · ${v.year} 必看佳作",
+                    overview = cachedIntro.takeIf { !it.isNullOrEmpty() } ?: "全网热播黄金档 · 沉浸连播 · ${v.year} 必看佳作",
                     backdropUrl = v.cover,
                     posterUrl = v.cover,
                     typeLabel = "热门剧集",
@@ -407,7 +424,7 @@ fun HomeTab(
 
     var enrichedBannerItems by remember { mutableStateOf<List<TvHeroItem>>(emptyList()) }
 
-    // 异步拉取 TMDB 高清大剧照 (w1280) 与高清大海报 (w780)，升级大屏视觉品质
+    // 异步拉取剧情简介 (电影、电视剧、短剧全覆盖) 与 TMDB 高清大剧照 (w1280)/海报 (w780)
     LaunchedEffect(heroBannerItems) {
         if (heroBannerItems.isEmpty()) {
             enrichedBannerItems = emptyList()
@@ -418,8 +435,37 @@ fun HomeTab(
         withContext(Dispatchers.IO) {
             val tmdbKey = AppDataService.getTmdbKeySync()
             val updated = heroBannerItems.map { item ->
-                if (item.videoInfo.source == "shortdrama" && item.backdropUrl.isNotEmpty()) {
-                    item
+                val isDrama = item.videoInfo.source == "shortdrama" ||
+                        item.videoInfo.source == "hongguo" ||
+                        item.typeLabel.contains("短剧")
+
+                // 1. 剧情简介异步补齐 (全品类支持：短剧调取短剧解析器，影视剧调取豆瓣详情)
+                var realOverview = item.overview
+                if (isDrama) {
+                    val dramaIntro = runCatching {
+                        org.moontechlab.selenetv.hongguo.HongguoStreamResolver.fetchSeriesIntro(item.videoInfo.id)
+                    }.getOrNull()?.trim()
+                    if (!dramaIntro.isNullOrEmpty()) {
+                        realOverview = dramaIntro
+                    }
+                } else if (!item.videoInfo.doubanId.isNullOrEmpty()) {
+                    val doubanResp = runCatching {
+                        doubanService.getDoubanDetails(item.videoInfo.doubanId)
+                    }.getOrNull()
+                    if (doubanResp is ApiResponse.Success && doubanResp.data != null) {
+                        val doubanSummary = doubanResp.data.summary?.trim()
+                        if (!doubanSummary.isNullOrEmpty()) {
+                            realOverview = doubanSummary
+                        }
+                    }
+                }
+
+                // 2. TMDB 高清大剧照与海报异步增强
+                val newBackdrop: String
+                val newPoster: String
+                if (isDrama && item.backdropUrl.isNotEmpty()) {
+                    newBackdrop = item.backdropUrl
+                    newPoster = item.posterUrl
                 } else {
                     val art = runCatching {
                         TmdbService.resolveArt(
@@ -430,14 +476,15 @@ fun HomeTab(
                         )
                     }.getOrNull()
 
-                    val newBackdrop = art?.backdropUrl ?: item.backdropUrl
-                    val newPoster = art?.posterUrl ?: item.posterUrl
-                    if (newBackdrop != item.backdropUrl || newPoster != item.posterUrl) {
-                        item.copy(backdropUrl = newBackdrop, posterUrl = newPoster)
-                    } else {
-                        item
-                    }
+                    newBackdrop = art?.backdropUrl ?: item.backdropUrl
+                    newPoster = art?.posterUrl ?: item.posterUrl
                 }
+
+                item.copy(
+                    overview = realOverview,
+                    backdropUrl = newBackdrop,
+                    posterUrl = newPoster
+                )
             }
             enrichedBannerItems = updated
         }

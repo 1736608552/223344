@@ -371,14 +371,14 @@ fun TvHeroBanner(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // 看点梗概（舒展行高与舒适对比度）
+                // 看点梗概与剧情简介（舒展行高与舒适对比度，最多3行）
                 if (currentItem.overview.isNotEmpty()) {
                     Text(
                         text = currentItem.overview,
                         color = Color(0xFFCCCCCC),
                         fontSize = 13.sp,
                         lineHeight = 19.sp,
-                        maxLines = 2,
+                        maxLines = 3,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
