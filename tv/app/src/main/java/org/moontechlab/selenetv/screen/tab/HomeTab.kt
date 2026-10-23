@@ -358,19 +358,11 @@ fun HomeTab(
     val heroBannerItems = remember(hotMovies, hotTvShows, hotShortDramas) {
         val list = mutableListOf<TvHeroItem>()
         hotMovies.take(2).forEach { v ->
-            val cachedIntro = if (!v.doubanId.isNullOrEmpty()) {
-                doubanCacheService.get("${v.doubanId}_details") { raw ->
-                    try {
-                        kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString<org.moontechlab.selenetv.model.DoubanMovieDetails>(raw).summary
-                    } catch (_: Exception) { null }
-                }?.trim()
-            } else null
-
             list.add(
                 TvHeroItem(
                     id = v.id,
                     title = v.title,
-                    overview = cachedIntro.takeIf { !it.isNullOrEmpty() } ?: "豆瓣高分佳作 · ${v.year} 华语精选 · 超清大屏视界",
+                    overview = "豆瓣高分佳作 · ${v.year} 华语精选 · 超清大屏视界",
                     backdropUrl = v.cover,
                     posterUrl = v.cover,
                     typeLabel = "院线电影",
@@ -397,19 +389,11 @@ fun HomeTab(
             )
         }
         hotTvShows.take(2).forEach { v ->
-            val cachedIntro = if (!v.doubanId.isNullOrEmpty()) {
-                doubanCacheService.get("${v.doubanId}_details") { raw ->
-                    try {
-                        kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString<org.moontechlab.selenetv.model.DoubanMovieDetails>(raw).summary
-                    } catch (_: Exception) { null }
-                }?.trim()
-            } else null
-
             list.add(
                 TvHeroItem(
                     id = v.id,
                     title = v.title,
-                    overview = cachedIntro.takeIf { !it.isNullOrEmpty() } ?: "全网热播黄金档 · 沉浸连播 · ${v.year} 必看佳作",
+                    overview = "全网热播黄金档 · 沉浸连播 · ${v.year} 必看佳作",
                     backdropUrl = v.cover,
                     posterUrl = v.cover,
                     typeLabel = "热门剧集",
