@@ -140,6 +140,8 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     var interactionTick by remember { mutableIntStateOf(0) }
     var flashTick by remember { mutableIntStateOf(0) }
     var flashVisible by remember { mutableStateOf(false) }
+    var activeTitle by remember { mutableStateOf(launch.title) }
+    var activeSource by remember { mutableStateOf<SearchResult?>(launch.selectedSource) }
     var sources by remember { mutableStateOf(launch.sources) }
     var speedTesting by remember { mutableStateOf(false) }
     var speedResults by remember { mutableStateOf<Map<String, org.moontechlab.selenetv.model.SourceSpeed>>(emptyMap()) }
@@ -165,7 +167,10 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             launch.durationMs
         }
     }
-    val currentSource = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
+    val currentSource = sources.firstOrNull { sourceKey(it) == currentSourceKey }
+        ?: activeSource
+        ?: launch.sources.firstOrNull { sourceKey(it) == currentSourceKey }
+        ?: launch.selectedSource
     val episodes = currentSource?.episodes ?: emptyList()
     val episodesTitles = currentSource?.episodesTitles
     val epCount = episodes.size.coerceAtLeast(1)
@@ -223,9 +228,12 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     // 统一保存入口：仅在本源成功起播过（hasStarted）时才落记录——死链/未起播不存。
     fun saveProgress(force: Boolean) {
         if (!controller.hasStarted) return
-        val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
+        val src = sources.firstOrNull { sourceKey(it) == currentSourceKey }
+            ?: activeSource
+            ?: launch.sources.firstOrNull { sourceKey(it) == currentSourceKey }
+            ?: launch.selectedSource
         val dur = if (controller.durationMs > 0) controller.durationMs else launch.durationMs
-        src?.let { reporter.save(it, launch.title, currentEpisode, controller.positionMs, dur, force = force) }
+        src?.let { reporter.save(it, activeTitle, currentEpisode, controller.positionMs, dur, force = force) }
     }
 
     fun togglePlay() {
@@ -278,7 +286,10 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     // 该 source+id 的播放记录（用于逐集续看：记录的 index 与目标集吻合时恢复其位置）
     var sourceRecord by remember { mutableStateOf<org.moontechlab.selenetv.model.PlayRecord?>(null) }
     LaunchedEffect(currentSourceKey) {
-        val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
+        val src = sources.firstOrNull { sourceKey(it) == currentSourceKey }
+            ?: activeSource
+            ?: launch.sources.firstOrNull { sourceKey(it) == currentSourceKey }
+            ?: launch.selectedSource
         sourceRecord = if (src != null) {
             try {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -314,9 +325,9 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         }
         if (nextSeasonCandidate != null) return
         val isMovie = epCount <= 1 || launch.heroInfo?.genres?.any { it.contains("电影") } == true
-        val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
+        val src = sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: activeSource ?: launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
         val srcName = src?.source ?: "hongguo"
-        val title = launch.title
+        val title = activeTitle
         val cover = src?.poster ?: launch.heroInfo?.backdrop ?: ""
         val year = src?.year ?: "2026"
         scope.launch(Dispatchers.IO) {
@@ -343,7 +354,10 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         controller.pause()
         controller.clearError()
 
-        val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
+        val src = sources.firstOrNull { sourceKey(it) == currentSourceKey }
+            ?: activeSource
+            ?: launch.sources.firstOrNull { sourceKey(it) == currentSourceKey }
+            ?: launch.selectedSource
         val isShort = src?.source == "hongguo" || src?.source == "shortdrama" || src?.sourceName?.contains("精品短剧") == true || src?.typeName == "短剧" || isShortDrama
         val raw = src?.episodes?.getOrNull(index) ?: run {
             if (!isShort) return
@@ -451,6 +465,11 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
 
         val target = cand.targetSource
         val targetKey = "${target.source}+${target.id}"
+        activeTitle = cand.title
+        activeSource = target
+        if (sources.none { sourceKey(it) == targetKey }) {
+            sources = sources + target
+        }
         currentSourceKey = targetKey
         currentEpisode = 0
         playEpisode(0, 0L)
@@ -484,9 +503,12 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             } else {
                 scope.launch(Dispatchers.IO) {
                     val isMovie = epCount <= 1 || launch.heroInfo?.genres?.any { it.contains("电影") } == true
-                    val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
+                    val src = sources.firstOrNull { sourceKey(it) == currentSourceKey }
+            ?: activeSource
+            ?: launch.sources.firstOrNull { sourceKey(it) == currentSourceKey }
+            ?: launch.selectedSource
                     val cand = NextSeasonService.findNextSeason(
-                        title = launch.title,
+                        title = activeTitle,
                         currentSource = src?.source ?: "hongguo",
                         isMovie = isMovie,
                         cover = src?.poster ?: "",
@@ -704,7 +726,10 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     LaunchedEffect(controller.error) {
         val err = controller.error
         if (err != null) {
-            val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
+            val src = sources.firstOrNull { sourceKey(it) == currentSourceKey }
+            ?: activeSource
+            ?: launch.sources.firstOrNull { sourceKey(it) == currentSourceKey }
+            ?: launch.selectedSource
             val isShort = src?.source == "hongguo" || src?.source == "shortdrama" || src?.sourceName?.contains("精品短剧") == true || src?.typeName == "短剧" || isShortDrama
             if (isShort && dramaAutoRetryCount < 2) {
                 dramaAutoRetryCount++
@@ -1021,7 +1046,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                         modifier = Modifier.onFocusChanged { controlsRowHasFocus = it.hasFocus },
                     ) {
                         Text(
-                            text = launch.title + (if (epCount > 1) "  ·  第 ${currentEpisode + 1} 集" else ""),
+                            text = activeTitle + (if (epCount > 1) "  ·  第 ${currentEpisode + 1} 集" else ""),
                             color = Color.White,
                             fontSize = 30.sp,
                             fontWeight = FontWeight.W700,
@@ -1283,7 +1308,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                         .clipToBounds(),
                 ) {
                 PlayerPanel(
-                    title = launch.title,
+                    title = activeTitle,
                     heroInfo = launch.heroInfo,
                     epCount = epCount,
                     episodes = episodes,
