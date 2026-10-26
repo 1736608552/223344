@@ -77,6 +77,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
+import org.moontechlab.selenetv.model.SearchResult
 import org.moontechlab.selenetv.screen.detail.sourceKey
 
 private const val SEEK_STEP_MS = 10_000L
