@@ -300,6 +300,8 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     var nextSeasonCountdownSec by remember { mutableIntStateOf(5) }
     var nextSeasonDismissedThisEp by remember { mutableStateOf(false) }
     var nextSeasonTimerJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var playEpisodeJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var dramaAutoRetryCount by remember { mutableIntStateOf(0) }
     val nextSeasonPlayFocus = remember { FocusRequester() }
 
     // 预拉取下一季/推荐信息 (全分类支持：电影/电视剧/动漫/短剧)
@@ -337,6 +339,10 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     // 载入指定集；startMs 为续播位置（切集默认 0，进入时用 launch.startPositionMs）
     fun playEpisode(index: Int, startMs: Long) {
         preloadNextSeasonIfNeeded(index)
+        playEpisodeJob?.cancel()
+        controller.pause()
+        controller.clearError()
+
         val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
         val isShort = src?.source == "hongguo" || src?.source == "shortdrama" || src?.sourceName?.contains("精品短剧") == true || src?.typeName == "短剧" || isShortDrama
         val raw = src?.episodes?.getOrNull(index) ?: run {
@@ -345,33 +351,51 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         }
         // 短剧起播位置保护：若起播位置 > 10 分钟 (明显是跨端脏数据或放大溢出)，安全归零从头播放，彻底杜绝越界黑屏
         val safeStartMs = if (isShort && startMs > 10 * 60 * 1000L) 0L else startMs
-        scope.launch {
+        playEpisodeJob = scope.launch {
             if (isShort || src?.source == "hongguo" || src?.source == "shortdrama" || src?.sourceName?.contains("精品短剧") == true || src?.typeName == "短剧") {
                 // 短剧专属直解：精准调用单集专属直链解析通道 (支持 1080P/720P/480P 超清直出 + CENC 硬件解密)
                 val seriesId = src?.id ?: ""
                 var resolvedUrl = ""
                 var decryptionKey = ""
                 var vid = ""
-                try {
-                    vid = if (raw.length > 10 && raw.matches(Regex("[0-9]+"))) {
-                        raw
-                    } else {
-                        val vids = withContext(Dispatchers.IO) {
-                            org.moontechlab.selenetv.hongguo.HongguoStreamResolver.fetchEpisodeVids(seriesId)
+
+                // 分集 vid 解析（带网络抖动自愈重试）
+                for (vAttempt in 0..1) {
+                    try {
+                        vid = if (raw.length > 10 && raw.matches(Regex("[0-9]+"))) {
+                            raw
+                        } else {
+                            val vids = withContext(Dispatchers.IO) {
+                                org.moontechlab.selenetv.hongguo.HongguoStreamResolver.fetchEpisodeVids(seriesId)
+                            }
+                            vids.getOrNull(index) ?: ""
                         }
-                        vids.getOrNull(index) ?: ""
+                        if (vid.isNotEmpty()) break
+                    } catch (e: Exception) {
+                        android.util.Log.w("PlayerScreen", "获取短剧 vid 异常 (attempt $vAttempt): ${e.message}")
+                        if (vAttempt == 0) kotlinx.coroutines.delay(200)
                     }
-                    if (vid.isNotEmpty()) {
-                        // 默认 1080P 超清原画硬解直出，满足高性能 TV 机顶盒硬件解码
-                        val maxQ = 1080
-                        val result = withContext(Dispatchers.IO) {
-                            org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ)
+                }
+
+                // 直链解析（带指数退避重试最多 3 次，对齐手机端多轮自愈）
+                if (vid.isNotEmpty()) {
+                    val maxQ = 1080
+                    for (rAttempt in 0..2) {
+                        try {
+                            if (rAttempt > 0) {
+                                org.moontechlab.selenetv.hongguo.VendorConstants.regenerate()
+                                kotlinx.coroutines.delay(250L * rAttempt)
+                            }
+                            val result = withContext(Dispatchers.IO) {
+                                org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ)
+                            }
+                            resolvedUrl = result["url"] as? String ?: ""
+                            decryptionKey = result["decryptionKey"] as? String ?: ""
+                            if (resolvedUrl.isNotEmpty()) break
+                        } catch (e: Exception) {
+                            android.util.Log.w("PlayerScreen", "短剧直链解析异常 (attempt $rAttempt): ${e.message}")
                         }
-                        resolvedUrl = result["url"] as? String ?: ""
-                        decryptionKey = result["decryptionKey"] as? String ?: ""
                     }
-                } catch (e: Exception) {
-                    android.util.Log.w("PlayerScreen", "短剧直链解析异常: ${e.message}")
                 }
 
                 // 终极高可用兜底 (100% 对齐手机端通道 5)：若官方端点偶发抖动或风控，无缝回退至官方公开直链，绝不弹错或黑屏
@@ -410,6 +434,8 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             reporter.resetThrottle()
             currentEpisode++
             panelOpen = false
+            controller.pause()
+            controller.clearError()
             playEpisode(currentEpisode, 0)
             wake()
         }
@@ -669,9 +695,25 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         }
     }
 
-    // 播放出错：唤出换源面板让用户改选其他源
+    // 每次切换集数时，重置短剧报错自愈重试计数器
+    LaunchedEffect(currentEpisode) {
+        dramaAutoRetryCount = 0
+    }
+
+    // 播放出错：短剧原地自愈重试，普通源唤出换源面板
     LaunchedEffect(controller.error) {
-        if (controller.error != null) {
+        val err = controller.error
+        if (err != null) {
+            val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
+            val isShort = src?.source == "hongguo" || src?.source == "shortdrama" || src?.sourceName?.contains("精品短剧") == true || src?.typeName == "短剧" || isShortDrama
+            if (isShort && dramaAutoRetryCount < 2) {
+                dramaAutoRetryCount++
+                android.util.Log.w("PlayerScreen", "短剧播放遇到偶发错误 [$err]，启动第 $dramaAutoRetryCount 次静默自愈重试...")
+                controller.clearError()
+                kotlinx.coroutines.delay(400)
+                playEpisode(currentEpisode, 0)
+                return@LaunchedEffect
+            }
             controlsVisible = true
             panelTab = PanelTab.Sources
             panelOpen = true

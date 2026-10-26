@@ -263,6 +263,12 @@ class MpvPlayerController(
 
     override fun syncProgress() { /* MPV 走属性回调推送，无需主动拉取 */ }
 
+    override fun clearError() {
+        main.post {
+            if (!released) error = null
+        }
+    }
+
     override fun release() {
         if (released) return
         released = true

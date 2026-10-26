@@ -248,6 +248,11 @@ class PlayerController(
     }
 
     @MainThread
+    override fun clearError() {
+        error = null
+    }
+
+    @MainThread
     override fun release() {
         releaseCurrentRemoteVideo()
         networkCleanupExecutor.shutdown()

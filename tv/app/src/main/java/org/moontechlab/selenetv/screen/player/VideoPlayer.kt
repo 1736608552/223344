@@ -42,6 +42,8 @@ interface VideoPlayer {
     fun seekToLiveEdge()
     /** 把后端当前位置/缓冲/时长同步到状态；由宿主周期调用。 */
     fun syncProgress()
+    /** 清除当前的错误状态（用于自动重试与自愈）。 */
+    fun clearError() {}
     fun release()
 
     /** 视频画面：各实现自行渲染（Exo→PlayerView；MPV→SurfaceView）。 */
