@@ -88,7 +88,44 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         }
         return (hex("8404") + byteArrayOf(random.toByte(),(random shr 8).toByte(),0x40,1) + out).hex()
     }
-    private fun deviceProto() = proto(f(1,1,"sint"),f(2,2,"sint"),f(3,"8662"),f(4,VendorConstants.device.getValue("device_id")),f(5,"Ai6svO3PyrwDOUSmO6ZcResxu"),f(6,"!noperm!"),f(7,-888888,"sint"),f(8,-888888,"sint"),f(9,3,"sint"),f(10,-888888,"sint"),f(11,"!notset!"),f(12,"Asia/Shanghai,8"),f(13,"zh_CN"),f(14,4,"sint"),f(16,255.24993896484375,"float"),f(17,35.58599090576172,"float"),f(18,3.467449188232422,"float"),f(19,3.467449188232422,"float"),f(20,255.1754913330078,"float"),f(21,42.17544174194336,"float"),f(22,"16"),f(23,41,"sint"),f(24,36,"sint"),f(25,1728388016635L,"sint"),f(26,1728388016635L,"sint"),f(27,1728388016635L,"sint"),f(28,1728388016637L,"sint"),f(29,-1,"sint"),f(30,"25053RT47C"),f(31,"Redmi"),f(32,"25053RT47C"),f(33,"25053RT47C"),f(34,"Xiaomi"),f(35,"Redmi"),f(36,"Redmi"),f(38,31,"sint"))
+    private fun deviceProto() = proto(
+        f(1, 1, "sint"),
+        f(2, 2, "sint"),
+        f(3, "8662"),
+        f(4, VendorConstants.device.getValue("device_id")),
+        f(5, VendorConstants.processNonce),
+        f(6, "!noperm!"),
+        f(7, -888888, "sint"),
+        f(8, -888888, "sint"),
+        f(9, 3, "sint"),
+        f(10, -888888, "sint"),
+        f(11, "!notset!"),
+        f(12, "Asia/Shanghai,8"),
+        f(13, "zh_CN"),
+        f(14, 4, "sint"),
+        f(16, 255.24993896484375, "float"),
+        f(17, 35.58599090576172, "float"),
+        f(18, 3.467449188232422, "float"),
+        f(19, 3.467449188232422, "float"),
+        f(20, 255.1754913330078, "float"),
+        f(21, 42.17544174194336, "float"),
+        f(22, "16"),
+        f(23, 41, "sint"),
+        f(24, 36, "sint"),
+        f(25, VendorConstants.processStarted, "sint"),
+        f(26, VendorConstants.processStarted, "sint"),
+        f(27, VendorConstants.processStarted, "sint"),
+        f(28, VendorConstants.processStarted + 2, "sint"),
+        f(29, -1, "sint"),
+        f(30, "25053RT47C"),
+        f(31, "Redmi"),
+        f(32, "25053RT47C"),
+        f(33, "25053RT47C"),
+        f(34, "Xiaomi"),
+        f(35, "Redmi"),
+        f(36, "Redmi"),
+        f(38, 31, "sint")
+    )
     private fun xmxor(data: ByteArray, key: ByteArray): ByteArray {
         val encoded = IntArray(data.size)
         for (i in data.indices) {
@@ -156,6 +193,69 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         }
         return (le32(random) + output.toByteArray()).base64()
     }
+    fun signHongguo(queryString: String, body: ByteArray?, nowMs: Long): Map<String, String> {
+        val ts = (nowMs / 1000).toInt()
+        val queryHash = digest("MD5", queryString.toByteArray(Charsets.UTF_8))
+        val payload = ByteArray(20)
+        System.arraycopy(queryHash, 0, payload, 0, 4)
+        var bodyStub = ""
+        if (body != null && body.isNotEmpty()) {
+            val bodyHash = digest("MD5", body)
+            System.arraycopy(bodyHash, 0, payload, 4, 4)
+            bodyStub = bodyHash.hex().uppercase()
+        }
+        payload[12] = 0
+        payload[13] = 6
+        payload[14] = 11
+        payload[15] = 28
+        val tsBytes = be32(ts)
+        System.arraycopy(tsBytes, 0, payload, 16, 4)
+
+        val key = intArrayOf(
+            0x44, 0xb9, 0xb9, 0xd9, 0xa4, 0xae, 0xf9, 0xfc, 0xa4, 0x93,
+            0xaa, 0x75, 0x7c, 0xa3, 0xc2, 0xc4, 0xa4, 0x96, 0x93, 0x8f
+        )
+        for (i in 0 until 20) {
+            payload[i] = (payload[i].u() xor key[i]).toByte()
+        }
+        for (i in 0 until 20) {
+            val cur = payload[i].u()
+            val rot = ((cur shl 4) or (cur ushr 4)) and 0xff
+            val mixed = rot xor payload[(i + 1) % 20].u()
+            val rev = Integer.reverse(mixed) ushr 24
+            payload[i] = (rev xor 0xff xor 20).toByte()
+        }
+        val prefix = byteArrayOf(0x84.toByte(), 0x04.toByte(), 0x40.toByte(), 0x1c.toByte(), 0, 0)
+        val fullSig = prefix + payload
+        val gorgonHex = fullSig.hex()
+
+        val headers = mutableMapOf(
+            "X-Khronos" to ts.toString(),
+            "X-Gorgon" to gorgonHex,
+            "X-SS-Req-Ticket" to nowMs.toString()
+        )
+        if (bodyStub.isNotEmpty()) {
+            headers["X-SS-STUB"] = bodyStub
+        }
+        return headers
+    }
+
+    fun signStandard(base: String, values: Map<String, String>, body: ByteArray? = null): Request {
+        val now = clock()
+        val query = encode(values + mapOf("_rticket" to now.toString()))
+        val signHeaders = signHongguo(query, body, now)
+        val url = "$base?$query"
+        val headers = linkedMapOf(
+            "User-Agent" to (if (body != null) VendorConstants.VIDEO_UA else VendorConstants.APP_UA),
+            "Accept" to "application/json",
+            "Content-Type" to "application/json; charset=utf-8",
+            "X-XS-From-Web" to "0",
+            "Sdk-Version" to "2"
+        )
+        headers.putAll(signHeaders)
+        return Request(url, headers, body)
+    }
+
     fun sign(base: String, values: Map<String, String>, body: ByteArray? = null): Request {
         val now = clock()
         val ts = (now / 1000).toInt()

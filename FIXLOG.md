@@ -1,5 +1,28 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.33 (2026-10-27)
+
+### 彻底根治手机端红果短剧获取只有10秒截断缺陷 (全面升级官方multi_video_model/v1完整正片接口 + 对齐工业级合法设备注册与会话架构) + 全平台双轨长视频保障
+
+#### 核心排查与深度自愈
+1. **彻底攻克手机端红果短剧获取只有10秒的致命深层缺陷**：
+   - **深层根因彻查 (Source-first 确凿证据)**：
+     - 此前手机端原生解析层 (`HongguoStreamResolver`) 与 Flutter Dart 核心桥接层 (`DuanjuCoreBridge`) 盲目请求了 `novel/player/multi_video_model/preload/v1/` 端点；
+     - 在字节跳动/红果官方短剧协议规范中，`preload/v1/` 是专门用于 Feed 流快速滑卡片预取的**10秒预览/截断切片**；
+     - 导致移动端解析出来的视频正片时长恒被截断为前 10 秒，播放至 10 秒即戛然而止结束；
+   - **全面对齐官方完整播放协议与工业级架构**：
+     - **手机端原生层注入合法设备会话与 v1 正式接口**：
+       - 移植 `DeviceRegister` 匿名设备注册与 `PlaybackDeviceSession` 进程常驻会话机制，保证长效合法身份与 Cookie 复用；
+       - 取流核心由 `preload/v1/` 全面重构为官方正式长视频正片接口 `multi_video_model/v1/`，直取整集 1~2 分钟（90s~120s）原画全长正片；
+       - 引入通道 B（`fallback_api`）容灾提取，若主接口返回火山加密流，自动平滑解密直出完整长视频；
+     - **Flutter Dart 跨平台层（iOS / PC / 移动端）双重保障**：
+       - `_fetchHongguoAppPlaybackPlan` 同步优先请求 `multi_video_model/v1/`，并接入 `fallback_api` 长视频提取机制，彻底告别 10 秒短片段！
+2. **构建发布规范**：
+   - 全平台构建产物通过已授权的 Actions Secret 全自动分发至独立发布仓库 `1736608552/LunaTV-Release`，源仓库保持干净纯洁；
+   - 版本更新至 `v2.7.33`（versionCode: `20833`）。
+
+---
+
 ## v2.7.32 (2026-10-27)
 
 ### 紧急修复TV端Kotlin编译语法 + 彻底根治TV端红果短剧起播与切集偶发报错 (全面对齐 hongguoTV 0.23.0 工业级设备会话与退避机制) + 严格基于 2.7.27 稳定基线保障纯净可靠

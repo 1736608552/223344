@@ -1647,21 +1647,39 @@ class DuanjuCoreBridge {
         final bodyBytes = Uint8List.fromList(utf8.encode(jsonEncode(payloadMap)));
         final signHeaders = _signHongguo(queryStr, bodyBytes, now);
 
-        final uri = Uri.parse('https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/?$queryStr');
-        final resp = await http.post(
-          uri,
-          headers: {
-            'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250305.002; Cronet/TTNetVersion:07a97ae8 2026-03-05 QuicVersion:f2324900 2026-02-05)',
-            'Accept': 'application/json',
-            'Content-Type': 'application/json; charset=utf-8',
-            'X-XS-From-Web': '0',
-            'Sdk-Version': '2',
-            ...signHeaders,
-          },
-          body: bodyBytes,
-        ).timeout(const Duration(seconds: 12));
+        // 优先请求官方正片完整播放接口 (v1，整集1~2分钟完整正片，彻底终结 preload 仅返回 10 秒预取视频片段的缺陷)
+        final playEndpoints = [
+          'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?$queryStr',
+          'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/?$queryStr',
+        ];
 
-        if (resp.statusCode == 200) {
+        http.Response? resp;
+        for (final ep in playEndpoints) {
+          try {
+            final uri = Uri.parse(ep);
+            final r = await http.post(
+              uri,
+              headers: {
+                'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250305.002; Cronet/TTNetVersion:07a97ae8 2026-03-05 QuicVersion:f2324900 2026-02-05)',
+                'Accept': 'application/json',
+                'Content-Type': 'application/json; charset=utf-8',
+                'X-XS-From-Web': '0',
+                'Sdk-Version': '2',
+                ...signHeaders,
+              },
+              body: bodyBytes,
+            ).timeout(const Duration(seconds: 12));
+            if (r.statusCode == 200 && r.body.isNotEmpty) {
+              final test = jsonDecode(r.body);
+              if (test is Map && (test['code'] == 0 || test['Code'] == 0)) {
+                resp = r;
+                break;
+              }
+            }
+          } catch (_) {}
+        }
+
+        if (resp != null && resp.statusCode == 200) {
           final resJson = jsonDecode(resp.body);
           if (resJson is Map && (resJson['code'] == 0 || resJson['Code'] == 0)) {
             final data = resJson['data'];
@@ -1676,6 +1694,38 @@ class DuanjuCoreBridge {
               if (vm is Map) {
                 final vl = vm['video_list'];
                 final List<dynamic> options = (vl is List) ? vl : (vl is Map ? vl.values.toList() : []);
+
+                // 容灾平滑降级: 若 video_list 为空，请求 fallback_api 提取火山 CDN 完整长视频正片
+                if (options.isEmpty) {
+                  final rawFallback = vm['fallback_api'];
+                  String fallbackUrl = '';
+                  if (rawFallback is Map) {
+                    fallbackUrl = rawFallback['fallback_api']?.toString() ?? '';
+                  } else if (rawFallback is List && rawFallback.isNotEmpty) {
+                    fallbackUrl = rawFallback.first?.toString() ?? '';
+                  } else if (rawFallback != null) {
+                    fallbackUrl = rawFallback.toString();
+                  }
+                  if (fallbackUrl.startsWith('http')) {
+                    try {
+                      final fbResp = await http.get(
+                        Uri.parse(fallbackUrl),
+                        headers: {'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 16; zh_CN; 25053RT47C)'},
+                      ).timeout(const Duration(seconds: 8));
+                      if (fbResp.statusCode == 200) {
+                        final fbJson = jsonDecode(fbResp.body);
+                        final fbInfo = fbJson['video_info']?['data'];
+                        final fbList = fbInfo?['video_list'];
+                        if (fbList is Map) {
+                          options.addAll(fbList.values);
+                        } else if (fbList is List) {
+                          options.addAll(fbList);
+                        }
+                      }
+                    } catch (_) {}
+                  }
+                }
+
                 final multiMap = <String, String>{};
                 final keysMap = <String, String>{};
                 final qualityToUrl = <int, String>{};

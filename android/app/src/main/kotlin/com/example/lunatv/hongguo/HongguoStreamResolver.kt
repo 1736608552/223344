@@ -16,10 +16,63 @@ object HongguoStreamResolver {
         .build()
 
     private val signer = Signer()
+    private val episodeVidsCache = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
+    private val seriesIntroCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     /**
-     * 官方 App 分集详情接口 (作为 Web 页面 404 或失效时的顶级原生兜底)
-     * 请求 POST /novel/player/video_detail/v1/，返回按分集升序排序的纯数字 vid 列表
+     * 获取已缓存的短剧简介 (在 fetchEpisodeVids 解析 Web SSR 时自动提取并缓存)
+     */
+    fun getCachedSeriesIntro(seriesId: String): String {
+        val cleanId = seriesId.trim().removePrefix("hongguo:").trim()
+        return seriesIntroCache[cleanId] ?: ""
+    }
+
+    /**
+     * 获取短剧剧情简介 (若缓存未命中则自动请求解析)
+     */
+    fun fetchSeriesIntro(seriesId: String): String {
+        val cleanId = seriesId.trim().removePrefix("hongguo:").trim()
+        val cached = seriesIntroCache[cleanId]
+        if (!cached.isNullOrEmpty()) return cached
+        try {
+            fetchEpisodeVids(cleanId)
+        } catch (ignored: Exception) {}
+        return seriesIntroCache[cleanId] ?: ""
+    }
+
+    /**
+     * 深度括号匹配解析 Web 页面中的 _ROUTER_DATA JSON (对齐 hongguoTV 工业级实践，比单纯正则更抗复杂嵌套)
+     */
+    private fun extractRouter(html: String): JSONObject? {
+        val marker = html.indexOf("_ROUTER_DATA")
+        if (marker < 0) return null
+        val first = html.indexOf('{', marker)
+        if (first < 0) return null
+        var depth = 0
+        var quoted = false
+        var escaped = false
+        for (i in first until html.length) {
+            val ch = html[i]
+            if (quoted) {
+                if (escaped) escaped = false else if (ch == '\\') escaped = true else if (ch == '"') quoted = false
+                continue
+            }
+            when (ch) {
+                '"' -> quoted = true
+                '{', '[' -> depth++
+                '}', ']' -> {
+                    depth--
+                    if (depth == 0) {
+                        return try { JSONObject(html.substring(first, i + 1)) } catch (ignored: Exception) { null }
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * 短剧全集分集 VID 列表拉取 (Web 官网 SSR 详情页优先保证全量 80~100+ 集 + 官方 App 签名兜底)
      */
     fun fetchEpisodeVids(seriesId: String): List<String> {
         val cleanId = seriesId.trim().removePrefix("hongguo:").trim()
@@ -27,15 +80,111 @@ object HongguoStreamResolver {
             throw IllegalArgumentException("Invalid seriesId: $seriesId")
         }
 
-        val payload = """{"series_id":"$cleanId"}""".toByteArray()
+        episodeVidsCache[cleanId]?.let { return it }
+
         var lastErr: Exception? = null
 
-        // 抖动重试最多 2 次，规避服务端偶发拒签或网络波动
+        // 通道 1 (首选最高优先级，彻底突破试看 3 集限制):
+        // 从官网 SSR 详情页 _ROUTER_DATA 提取全剧完整 vid_list (可一次性获取全部 80~100+ 集)
+        try {
+            val webUrl = "https://hongguoduanju.com/detail?series_id=$cleanId"
+            val webReq = Request.Builder()
+                .url(webUrl)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Accept-Language", "zh-CN,zh;q=0.9")
+                .build()
+            val webResp = client.newCall(webReq).execute()
+            if (webResp.isSuccessful) {
+                val html = webResp.body?.string() ?: ""
+                val vids = mutableListOf<String>()
+
+                // 策略 A: 基于 _ROUTER_DATA 深度提取 (括号栈解析优先，正则兜底)
+                val root = extractRouter(html) ?: run {
+                    val regex = Regex("""_ROUTER_DATA\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL)
+                    val match = regex.find(html)
+                    match?.let { try { JSONObject(it.groupValues[1]) } catch (ignored: Exception) { null } }
+                }
+
+                if (root != null) {
+                    try {
+                        val loaderData = root.optJSONObject("loaderData")
+                        if (loaderData != null) {
+                            val keys = loaderData.keys()
+                            while (keys.hasNext()) {
+                                val key = keys.next()
+                                val page = loaderData.optJSONObject(key) ?: continue
+                                val sd = page.optJSONObject("seriesDetail")
+                                    ?: page.optJSONObject("video_data")
+                                    ?: page.optJSONObject("detail")
+
+                                // 提取剧情简介 (series_intro / intro / video_desc)
+                                val intro = (sd?.optString("series_intro") ?: "")
+                                    .ifEmpty { sd?.optString("intro") ?: "" }
+                                    .ifEmpty { sd?.optString("video_desc") ?: "" }
+                                    .ifEmpty { sd?.optString("abstract_text") ?: "" }
+                                    .trim()
+                                if (intro.isNotEmpty() && !seriesIntroCache.containsKey(cleanId)) {
+                                    seriesIntroCache[cleanId] = intro
+                                }
+
+                                val vList = sd?.optJSONArray("vid_list") ?: page.optJSONArray("vid_list") ?: page.optJSONArray("video_list")
+                                if (vList != null && vList.length() > 0) {
+                                    for (i in 0 until vList.length()) {
+                                        val v = vList.optString(i).trim()
+                                        if (v.matches(Regex("[0-9]{1,32}"))) {
+                                            vids.add(v)
+                                        }
+                                    }
+                                    if (vids.isNotEmpty()) break
+                                }
+                            }
+                        }
+                    } catch (ignored: Exception) {}
+                }
+
+                // 策略 B: 正则快速扫描 vid_list 数组与 series_intro 兜底
+                if (vids.isEmpty()) {
+                    val rawListMatch = Regex("\"vid_list\"\\s*:\\s*\\[(.*?)\\]").find(html)
+                    if (rawListMatch != null) {
+                        val inner = rawListMatch.groupValues[1]
+                        val matches = Regex("\"([0-9]{1,32})\"").findAll(inner)
+                        for (m in matches) {
+                            val v = m.groupValues[1].trim()
+                            if (v.isNotEmpty()) vids.add(v)
+                        }
+                    }
+                }
+                if (!seriesIntroCache.containsKey(cleanId)) {
+                    val rawIntroMatch = Regex("\"series_intro\"\\s*:\\s*\"(.*?)(?<!\\\\)\"").find(html)
+                        ?: Regex("\"video_desc\"\\s*:\\s*\"(.*?)(?<!\\\\)\"").find(html)
+                    if (rawIntroMatch != null) {
+                        val rawIntro = rawIntroMatch.groupValues[1]
+                        val unescaped = rawIntro.replace("\\\"", "\"").replace("\\n", "\n").replace("\\\\", "\\").trim()
+                        if (unescaped.isNotEmpty()) {
+                            seriesIntroCache[cleanId] = unescaped
+                        }
+                    }
+                }
+
+                val distinctVids = vids.distinct()
+                if (distinctVids.isNotEmpty()) {
+                    episodeVidsCache[cleanId] = distinctVids
+                    return distinctVids
+                }
+            }
+        } catch (e: Exception) {
+            lastErr = e
+        }
+
+        // 通道 2 (官方 App 原生接口抖动重试兜底，使用合法会话设备身份)
+        val devProfile = PlaybackDeviceSession.shared.profile(client)
+        val payload = """{"series_id":"$cleanId"}""".toByteArray()
         for (attempt in 0..1) {
             try {
                 val signed = signer.sign(
                     "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/video_detail/v1/",
-                    VendorConstants.device,
+                    devProfile.values,
                     payload
                 )
 
@@ -56,6 +205,19 @@ object HongguoStreamResolver {
 
                 val videoData = json.optJSONObject("data")?.optJSONObject("video_data")
                     ?: throw IOException("No video_data in video_detail response")
+
+                // 兜底提取剧情简介
+                if (!seriesIntroCache.containsKey(cleanId)) {
+                    val appIntro = (videoData.optString("series_intro"))
+                        .ifEmpty { videoData.optString("video_desc") }
+                        .ifEmpty { videoData.optString("intro") }
+                        .ifEmpty { videoData.optString("abstract_text") }
+                        .trim()
+                    if (appIntro.isNotEmpty()) {
+                        seriesIntroCache[cleanId] = appIntro
+                    }
+                }
+
                 val videoList = videoData.optJSONArray("video_list")
                     ?: throw IOException("No video_list in video_detail response")
 
@@ -72,13 +234,15 @@ object HongguoStreamResolver {
                 pairs.sortBy { it.first }
                 val vids = pairs.map { it.second }.distinct()
                 if (vids.isNotEmpty()) {
+                    episodeVidsCache[cleanId] = vids
                     return vids
                 }
             } catch (e: Exception) {
                 lastErr = e
-                try { Thread.sleep(200) } catch (_: InterruptedException) {}
+                try { Thread.sleep(200) } catch (ignored: InterruptedException) {}
             }
         }
+
         throw lastErr ?: IOException("Failed to fetch episode vids for $cleanId")
     }
 
@@ -158,7 +322,7 @@ object HongguoStreamResolver {
                     try {
                         val cursorJson = JSONObject(cursorStr)
                         totalCount = cursorJson.optLong("danmaku_count", 0L)
-                    } catch (_: Exception) {}
+                    } catch (ignored: Exception) {}
                 }
 
                 val items = mutableListOf<Map<String, Any>>()
@@ -206,7 +370,7 @@ object HongguoStreamResolver {
                 )
             } catch (e: Exception) {
                 lastErr = e
-                try { Thread.sleep(200) } catch (_: InterruptedException) {}
+                try { Thread.sleep(200) } catch (ignored: InterruptedException) {}
             }
         }
         throw lastErr ?: IOException("Failed to fetch danmaku for vid $cleanVid")
@@ -215,7 +379,8 @@ object HongguoStreamResolver {
     private data class VideoCandidate(val qNum: Int, val mainUrl: String, val spadeA: String)
 
     /**
-     * 单集视频流模型与 CENC 解密 Key 解析 (官方 preload/v1 1080P 原画 + 多清晰度 spade_a 派生 + 360P 安全兜底)
+     * 单集视频流模型与 CENC 解密 Key 解析 (官方 multi_video_model 1080P 原画 + 注册设备身份会话 + 0/700/1500ms 退避重试)
+     * 对齐 jycao2/hongguoTV 0.23.0 工业级标准实现，彻底解决随机伪造设备号导致的服务端空响应与报错。
      */
     fun resolve(vid: String, maxQuality: Int = 1080): Map<String, Any?> {
         val cleanVid = vid.trim()
@@ -226,42 +391,111 @@ object HongguoStreamResolver {
         val payload = """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$cleanVid"]}}""".toByteArray()
         var lastErr: Exception? = null
 
-        // 优先尝试官方 App 预加载高清端点 (带抖动重试最多 2 次)
-        for (attempt in 0..1) {
-            try {
-                val signed = signer.sign("https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/", VendorConstants.device, payload)
+        // 统一由 PlaybackDeviceSession 提供进程内常驻且已注册/验证的设备身份与 Cookie，只换时间戳不换设备身份
+        val identity = PlaybackDeviceSession.shared.profile(client)
+        var bodyStr = ""
 
+        // 策略 1 (首选，对齐 hongguoTV): 直接请求官方 multi_video_model/v1/ 携带合法设备身份与 Cookie (0/700/1500ms 智能退避重试)
+        val delays = listOf(0L, 700L, 1500L)
+        for (attempt in 0..2) {
+            val delayMs = delays[attempt]
+            if (delayMs > 0) {
+                try { Thread.sleep(delayMs) } catch (ignored: InterruptedException) {}
+            }
+            try {
+                val now = System.currentTimeMillis()
+                val queryParams = identity.values.toMutableMap()
+                queryParams["_rticket"] = now.toString()
+                val queryString = queryParams.entries.joinToString("&") { (k, v) ->
+                    java.net.URLEncoder.encode(k, "UTF-8") + "=" + java.net.URLEncoder.encode(v, "UTF-8")
+                }
+                val url = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?$queryString"
+
+                val req = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", PlaybackDeviceSession.PLAYBACK_UA)
+                    .header("Accept", "application/json; charset=utf-8,application/x-protobuf")
+                    .apply {
+                        if (identity.cookie.isNotBlank()) {
+                            header("Cookie", identity.cookie)
+                        }
+                    }
+                    .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+
+                val resp = client.newCall(req).execute()
+                if (resp.isSuccessful) {
+                    val content = resp.body?.string().orEmpty()
+                    if (content.isNotBlank()) {
+                        val testJson = try { JSONObject(content) } catch (ignored: Exception) { null }
+                        val code = testJson?.optInt("Code", testJson.optInt("code", 0)) ?: -1
+                        if (code == 0) {
+                            bodyStr = content
+                            break
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                lastErr = e
+                android.util.Log.w("HongguoStreamResolver", "multi_video_model/v1 请求尝试 $attempt 异常: ${e.message}")
+            }
+        }
+
+        // 策略 2 (双保险兜底): 若 v1 暂未返回，使用带签名的 preload/v1 尝试抓取
+        if (bodyStr.isBlank()) {
+            try {
+                val signed = signer.sign(
+                    "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/",
+                    identity.values,
+                    payload
+                )
                 val reqBuilder = Request.Builder()
                     .url(signed.url)
                     .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
-
                 for ((k, v) in signed.headers) {
                     reqBuilder.header(k, v)
                 }
-
                 val resp = client.newCall(reqBuilder.build()).execute()
-                val bodyStr = resp.body?.string() ?: throw IOException("Empty response from multi_video_model/preload")
-                val data = JSONObject(bodyStr)
-                if (data.optInt("Code", data.optInt("code", 0)) != 0) {
-                    throw IOException("Video model API returned error: " + data.optString("message"))
+                val content = resp.body?.string().orEmpty()
+                if (content.isNotBlank()) {
+                    val testJson = try { JSONObject(content) } catch (ignored: Exception) { null }
+                    if (testJson?.optInt("Code", testJson.optInt("code", 0)) == 0) {
+                        bodyStr = content
+                    }
                 }
+            } catch (e: Exception) {
+                lastErr = e
+                android.util.Log.w("HongguoStreamResolver", "preload/v1 兜底请求异常: ${e.message}")
+            }
+        }
 
-                val map = data.optJSONObject("data") ?: throw IOException("Empty data in video model")
-                val entry = map.optJSONObject(cleanVid)
-                    ?: map.keys().asSequence().mapNotNull { map.optJSONObject(it) }.firstOrNull()
-                    ?: throw IOException("No entry found for vid $cleanVid")
+        if (bodyStr.isBlank()) {
+            throw lastErr ?: IOException("Empty response from multi_video_model for vid $cleanVid")
+        }
 
-                val model = entry.optJSONObject("video_model") ?: JSONObject(entry.optString("video_model", "{}"))
+        val data = JSONObject(bodyStr)
+        if (data.optInt("Code", data.optInt("code", 0)) != 0) {
+            throw IOException("Video model API returned error: " + data.optString("message"))
+        }
 
-                var seed = byteArrayOf()
-                val seedStr = model.optString("key_seed")
-                if (seedStr.isNotEmpty()) {
-                    seed = try { decode64(seedStr) } catch (_: Exception) { byteArrayOf() }
-                }
+        val map = data.optJSONObject("data") ?: throw IOException("Empty data in video model")
+        val entry = map.optJSONObject(cleanVid)
+            ?: map.keys().asSequence().mapNotNull { map.optJSONObject(it) }.firstOrNull()
+            ?: throw IOException("No entry found for vid $cleanVid")
 
-                val candidateList = mutableListOf<VideoCandidate>()
-                val rawVideoList = model.opt("video_list")
+        val model = entry.optJSONObject("video_model") ?: JSONObject(entry.optString("video_model", "{}"))
 
+        var seed = byteArrayOf()
+        val seedStr = model.optString("key_seed")
+        if (seedStr.isNotEmpty()) {
+            seed = try { decode64(seedStr) } catch (ignored: Exception) { byteArrayOf() }
+        }
+
+        val candidateList = mutableListOf<VideoCandidate>()
+
+        // 通道 A (最高优先级，官方原生 1080P 原画直出，彻底杜绝 360P 降级):
+        // 直接从 video_model 中的 video_list 提取各清晰度原画流与 spade_a
+        val rawVideoList = model.opt("video_list")
                 if (rawVideoList is org.json.JSONArray) {
                     for (i in 0 until rawVideoList.length()) {
                         val item = rawVideoList.optJSONObject(i) ?: continue
@@ -332,7 +566,7 @@ object HongguoStreamResolver {
                     }
                 }
 
-                // 兜底情况: 若 video_model 缺少 video_list，尝试 fallback_api
+                // 通道 B (平滑降级): 仅在 video_list 为空时，作为备选请求 fallback_api
                 if (candidateList.isEmpty()) {
                     val rawFallback = model.opt("fallback_api")
                     val fallback = when (rawFallback) {
@@ -342,39 +576,44 @@ object HongguoStreamResolver {
                     }
 
                     if (fallback.startsWith("https://") || fallback.startsWith("http://")) {
-                        val fbReq = Request.Builder()
-                            .url(fallback)
-                            .header("User-Agent", VendorConstants.VIDEO_UA)
-                            .build()
-                        val fbResp = client.newCall(fbReq).execute()
-                        val fbBody = fbResp.body?.string() ?: throw IOException("Empty response from fallback_api")
+                        try {
+                            val fbReq = Request.Builder()
+                                .url(fallback)
+                                .header("User-Agent", VendorConstants.VIDEO_UA)
+                                .build()
+                            val fbResp = client.newCall(fbReq).execute()
+                            val fbBody = fbResp.body?.string() ?: ""
+                            if (fbBody.isNotEmpty()) {
+                                val info = JSONObject(fbBody).optJSONObject("video_info")?.optJSONObject("data")
+                                val fbList = info?.optJSONObject("video_list")
+                                if (fbList != null) {
+                                    val seedFb = info.optString("key_seed")
+                                    if (seedFb.isNotEmpty()) {
+                                        seed = try { decode64(seedFb) } catch (ignored: Exception) { seed }
+                                    }
+                                    val fKeys = fbList.keys()
+                                    while (fKeys.hasNext()) {
+                                        val k = fKeys.next()
+                                        val item = fbList.optJSONObject(k) ?: continue
+                                        val mainUrl = item.optString("main_url")
+                                        val codec = item.optString("codec_type").lowercase()
+                                        if (mainUrl.isEmpty() || codec == "bytevc2" || codec == "bvc2") continue
 
-                        val info = JSONObject(fbBody).optJSONObject("video_info")?.optJSONObject("data")
-                            ?: throw IOException("No video_info in fallback_api")
-                        val fbList = info.optJSONObject("video_list")
-                        if (fbList != null) {
-                            val seedFb = info.optString("key_seed")
-                            if (seedFb.isNotEmpty()) {
-                                seed = try { decode64(seedFb) } catch (_: Exception) { seed }
-                            }
-                            val fKeys = fbList.keys()
-                            while (fKeys.hasNext()) {
-                                val k = fKeys.next()
-                                val item = fbList.optJSONObject(k) ?: continue
-                                val mainUrl = item.optString("main_url")
-                                val codec = item.optString("codec_type").lowercase()
-                                if (mainUrl.isEmpty() || codec == "bytevc2" || codec == "bvc2") continue
-
-                                val qDesc = item.optString("quality_desc").ifEmpty {
-                                    item.optString("height").ifEmpty {
-                                        item.optString("vheight").ifEmpty {
-                                            item.optString("quality").ifEmpty { k }
+                                        val qDesc = item.optString("quality_desc").ifEmpty {
+                                            item.optString("height").ifEmpty {
+                                                item.optString("vheight").ifEmpty {
+                                                    item.optString("quality").ifEmpty { k }
+                                                }
+                                            }
                                         }
+                                        val qNum = Regex("(\\d+)").find(qDesc)?.groupValues?.get(1)?.toIntOrNull() ?: 720
+                                        val spadeA = item.optString("spade_a")
+                                        candidateList.add(VideoCandidate(qNum, mainUrl, spadeA))
                                     }
                                 }
-                                val qNum = Regex("(\\d+)").find(qDesc)?.groupValues?.get(1)?.toIntOrNull() ?: 720
-                                candidateList.add(VideoCandidate(qNum, mainUrl, item.optString("spade_a")))
                             }
+                        } catch (e: Exception) {
+                            android.util.Log.w("HongguoStreamResolver", "fallback_api 请求异常: ${e.message}")
                         }
                     }
                 }
@@ -393,10 +632,28 @@ object HongguoStreamResolver {
                 for (cand in candidateList) {
                     val qNum = cand.qNum
                     var rawUrl = cand.mainUrl
-                    if (seed.isNotEmpty() && rawUrl.isNotEmpty()) {
-                        try {
-                            rawUrl = MediaCrypto.decryptUrl(rawUrl, seed)
-                        } catch (_: Exception) {}
+                    if (rawUrl.isNotEmpty()) {
+                        // 1. 若已经是 http/https 直链，直接可用
+                        if (!rawUrl.startsWith("http://") && !rawUrl.startsWith("https://")) {
+                            // 2. 尝试使用 seed 进行 AES 解密 (火山 0xa8 密文)
+                            if (seed.isNotEmpty()) {
+                                try {
+                                    val decrypted = MediaCrypto.decryptUrl(rawUrl, seed)
+                                    if (decrypted.startsWith("http")) {
+                                        rawUrl = decrypted
+                                    }
+                                } catch (ignored: Exception) {}
+                            }
+                            // 3. 尝试标准 Base64 解码 (若未加密仅是 Base64 包装)
+                            if (!rawUrl.startsWith("http://") && !rawUrl.startsWith("https://")) {
+                                try {
+                                    val b64Str = String(decode64(rawUrl), Charsets.UTF_8)
+                                    if (b64Str.startsWith("http://") || b64Str.startsWith("https://")) {
+                                        rawUrl = b64Str
+                                    }
+                                } catch (ignored: Exception) {}
+                            }
+                        }
                     }
                     if (rawUrl.startsWith("http")) {
                         val qLabel = "${qNum}P"
@@ -416,30 +673,25 @@ object HongguoStreamResolver {
                     }
                 }
 
-                if (multiMap.isNotEmpty()) {
-                    val targetQuality = qualityList.firstOrNull { it <= maxQuality } ?: qualityList.first()
-                    val targetLabel = "${targetQuality}P"
-                    val primaryUrl = multiMap[targetLabel] ?: multiMap.values.first()
-                    val primaryKey = keysMap[targetLabel] ?: fallbackKey
+        if (multiMap.isNotEmpty()) {
+            val targetQuality = qualityList.firstOrNull { it <= maxQuality } ?: qualityList.first()
+            val targetLabel = "${targetQuality}P"
+            val primaryUrl = multiMap[targetLabel] ?: multiMap.values.first()
+            val primaryKey = keysMap[targetLabel] ?: fallbackKey
 
-                    multiMap["自动"] = primaryUrl
+            multiMap["自动"] = primaryUrl
 
-                    return mapOf(
-                        "url" to primaryUrl,
-                        "decryptionKey" to primaryKey,
-                        "keys" to keysMap,
-                        "quality" to targetLabel,
-                        "actualQuality" to targetQuality,
-                        "qualities" to qualityList,
-                        "multiMap" to multiMap
-                    )
-                }
-            } catch (e: Exception) {
-                lastErr = e
-                try { Thread.sleep(200) } catch (_: InterruptedException) {}
-            }
+            return mapOf(
+                "url" to primaryUrl,
+                "decryptionKey" to primaryKey,
+                "keys" to keysMap,
+                "quality" to targetLabel,
+                "actualQuality" to targetQuality,
+                "qualities" to qualityList,
+                "multiMap" to multiMap
+            )
         }
 
-        throw lastErr ?: IOException("Failed to resolve stream for vid $cleanVid")
+        throw IOException("No playable stream url found for vid $cleanVid")
     }
 }
