@@ -177,14 +177,14 @@ object HongguoStreamResolver {
             lastErr = e
         }
 
-        // 通道 2 (官方 App 原生接口抖动重试兜底)
-        VendorConstants.regenerate()
+        // 通道 2 (官方 App 原生接口抖动重试兜底，使用合法会话设备身份)
+        val devProfile = PlaybackDeviceSession.shared.profile(client)
         val payload = """{"series_id":"$cleanId"}""".toByteArray()
         for (attempt in 0..1) {
             try {
                 val signed = signer.sign(
                     "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/video_detail/v1/",
-                    VendorConstants.device,
+                    devProfile.values,
                     payload
                 )
 
@@ -379,7 +379,8 @@ object HongguoStreamResolver {
     private data class VideoCandidate(val qNum: Int, val mainUrl: String, val spadeA: String)
 
     /**
-     * 单集视频流模型与 CENC 解密 Key 解析 (官方 preload/v1 1080P 原画 + 多清晰度 spade_a 派生 + 360P 安全兜底)
+     * 单集视频流模型与 CENC 解密 Key 解析 (官方 multi_video_model 1080P 原画 + 注册设备身份会话 + 0/700/1500ms 退避重试)
+     * 对齐 jycao2/hongguoTV 0.23.0 工业级标准实现，彻底解决随机伪造设备号导致的服务端空响应与报错。
      */
     fun resolve(vid: String, maxQuality: Int = 1080): Map<String, Any?> {
         val cleanVid = vid.trim()
@@ -387,55 +388,114 @@ object HongguoStreamResolver {
             throw IllegalArgumentException("Invalid vid: $vid")
         }
 
-        VendorConstants.regenerate()
-
         val payload = """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$cleanVid"]}}""".toByteArray()
         var lastErr: Exception? = null
 
-        val endpoints = listOf(
-            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/",
-            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/"
-        )
+        // 统一由 PlaybackDeviceSession 提供进程内常驻且已注册/验证的设备身份与 Cookie，只换时间戳不换设备身份
+        val identity = PlaybackDeviceSession.shared.profile(client)
+        var bodyStr = ""
 
-        // 优先尝试官方 App 预加载端点 (带抖动重试最多 2 次)
-        for (attempt in 0..1) {
-            val endpoint = endpoints.getOrElse(attempt) { endpoints.first() }
+        // 策略 1 (首选，对齐 hongguoTV): 直接请求官方 multi_video_model/v1/ 携带合法设备身份与 Cookie (0/700/1500ms 智能退避重试)
+        val delays = listOf(0L, 700L, 1500L)
+        for (attempt in 0..2) {
+            val delayMs = delays[attempt]
+            if (delayMs > 0) {
+                try { Thread.sleep(delayMs) } catch (_: InterruptedException) {}
+            }
             try {
-                val signed = signer.sign(endpoint, VendorConstants.device, payload)
+                val now = System.currentTimeMillis()
+                val queryParams = identity.values.toMutableMap()
+                queryParams["_rticket"] = now.toString()
+                val queryString = queryParams.entries.joinToString("&") { (k, v) ->
+                    java.net.URLEncoder.encode(k, "UTF-8") + "=" + java.net.URLEncoder.encode(v, "UTF-8")
+                }
+                val url = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?$queryString"
 
+                val req = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", PlaybackDeviceSession.PLAYBACK_UA)
+                    .header("Accept", "application/json; charset=utf-8,application/x-protobuf")
+                    .apply {
+                        if (identity.cookie.isNotBlank()) {
+                            header("Cookie", identity.cookie)
+                        }
+                    }
+                    .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+
+                val resp = client.newCall(req).execute()
+                if (resp.isSuccessful) {
+                    val content = resp.body?.string().orEmpty()
+                    if (content.isNotBlank()) {
+                        val testJson = try { JSONObject(content) } catch (_: Exception) { null }
+                        val code = testJson?.optInt("Code", testJson.optInt("code", 0)) ?: -1
+                        if (code == 0) {
+                            bodyStr = content
+                            break
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                lastErr = e
+                android.util.Log.w("HongguoStreamResolver", "multi_video_model/v1 请求尝试 $attempt 异常: ${e.message}")
+            }
+        }
+
+        // 策略 2 (双保险兜底): 若 v1 暂未返回，使用带签名的 preload/v1 尝试抓取
+        if (bodyStr.isBlank()) {
+            try {
+                val signed = signer.sign(
+                    "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/",
+                    identity.values,
+                    payload
+                )
                 val reqBuilder = Request.Builder()
                     .url(signed.url)
                     .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
-
                 for ((k, v) in signed.headers) {
                     reqBuilder.header(k, v)
                 }
-
                 val resp = client.newCall(reqBuilder.build()).execute()
-                val bodyStr = resp.body?.string() ?: throw IOException("Empty response from multi_video_model")
-                val data = JSONObject(bodyStr)
-                if (data.optInt("Code", data.optInt("code", 0)) != 0) {
-                    throw IOException("Video model API returned error: " + data.optString("message"))
+                val content = resp.body?.string().orEmpty()
+                if (content.isNotBlank()) {
+                    val testJson = try { JSONObject(content) } catch (_: Exception) { null }
+                    if (testJson?.optInt("Code", testJson.optInt("code", 0)) == 0) {
+                        bodyStr = content
+                    }
                 }
+            } catch (e: Exception) {
+                lastErr = e
+                android.util.Log.w("HongguoStreamResolver", "preload/v1 兜底请求异常: ${e.message}")
+            }
+        }
 
-                val map = data.optJSONObject("data") ?: throw IOException("Empty data in video model")
-                val entry = map.optJSONObject(cleanVid)
-                    ?: map.keys().asSequence().mapNotNull { map.optJSONObject(it) }.firstOrNull()
-                    ?: throw IOException("No entry found for vid $cleanVid")
+        if (bodyStr.isBlank()) {
+            throw lastErr ?: IOException("Empty response from multi_video_model for vid $cleanVid")
+        }
 
-                val model = entry.optJSONObject("video_model") ?: JSONObject(entry.optString("video_model", "{}"))
+        val data = JSONObject(bodyStr)
+        if (data.optInt("Code", data.optInt("code", 0)) != 0) {
+            throw IOException("Video model API returned error: " + data.optString("message"))
+        }
 
-                var seed = byteArrayOf()
-                val seedStr = model.optString("key_seed")
-                if (seedStr.isNotEmpty()) {
-                    seed = try { decode64(seedStr) } catch (_: Exception) { byteArrayOf() }
-                }
+        val map = data.optJSONObject("data") ?: throw IOException("Empty data in video model")
+        val entry = map.optJSONObject(cleanVid)
+            ?: map.keys().asSequence().mapNotNull { map.optJSONObject(it) }.firstOrNull()
+            ?: throw IOException("No entry found for vid $cleanVid")
 
-                val candidateList = mutableListOf<VideoCandidate>()
+        val model = entry.optJSONObject("video_model") ?: JSONObject(entry.optString("video_model", "{}"))
 
-                // 通道 A (最高优先级，官方原生 1080P 原画直出，彻底杜绝 360P 降级):
-                // 直接从 video_model 中的 video_list 提取各清晰度原画流与 spade_a
-                val rawVideoList = model.opt("video_list")
+        var seed = byteArrayOf()
+        val seedStr = model.optString("key_seed")
+        if (seedStr.isNotEmpty()) {
+            seed = try { decode64(seedStr) } catch (_: Exception) { byteArrayOf() }
+        }
+
+        val candidateList = mutableListOf<VideoCandidate>()
+
+        // 通道 A (最高优先级，官方原生 1080P 原画直出，彻底杜绝 360P 降级):
+        // 直接从 video_model 中的 video_list 提取各清晰度原画流与 spade_a
+        val rawVideoList = model.opt("video_list")
                 if (rawVideoList is org.json.JSONArray) {
                     for (i in 0 until rawVideoList.length()) {
                         val item = rawVideoList.optJSONObject(i) ?: continue

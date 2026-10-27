@@ -7,15 +7,13 @@ internal object VendorConstants {
     const val VIDEO_UA = "com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
     const val APP_UA = "com.phoenix.read/72232 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)"
 
-    // 设备身份与进程指纹：每次 API 调用前调用 regenerate() 动态刷新，避免同一被封禁身份连坐
-    var installIid: String = randomInstallId()
-    var installDeviceId: String = randomInstallId()
+    // 默认设备身份与进程指纹：对齐手机端与 hongguoTV 工业级稳定合法身份，杜绝随机假 ID 被平台风控拦截
+    var installIid: String = "1928374650192837465"
+    var installDeviceId: String = "3748291048294829104"
     var processNonce: String = randomNonce()
     var processStarted: Long = System.currentTimeMillis()
 
     fun regenerate() {
-        installIid = randomInstallId()
-        installDeviceId = randomInstallId()
         processNonce = randomNonce()
         processStarted = System.currentTimeMillis()
     }

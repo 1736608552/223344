@@ -377,15 +377,11 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                     }
                 }
 
-                // 直链解析（带指数退避重试最多 3 次，对齐手机端多轮自愈）
+                // 直链解析（调用 HongguoStreamResolver 内置的 0/700/1500ms 退避重试与合法会话身份）
                 if (vid.isNotEmpty()) {
                     val maxQ = 1080
-                    for (rAttempt in 0..2) {
+                    for (rAttempt in 0..1) {
                         try {
-                            if (rAttempt > 0) {
-                                org.moontechlab.selenetv.hongguo.VendorConstants.regenerate()
-                                kotlinx.coroutines.delay(250L * rAttempt)
-                            }
                             val result = withContext(Dispatchers.IO) {
                                 org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ)
                             }
@@ -394,25 +390,28 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                             if (resolvedUrl.isNotEmpty()) break
                         } catch (e: Exception) {
                             android.util.Log.w("PlayerScreen", "短剧直链解析异常 (attempt $rAttempt): ${e.message}")
+                            if (rAttempt == 0) kotlinx.coroutines.delay(300)
                         }
                     }
                 }
 
-                // 终极高可用兜底 (100% 对齐手机端通道 5)：若官方端点偶发抖动或风控，无缝回退至官方公开直链，绝不弹错或黑屏
-                if (resolvedUrl.isEmpty() && vid.isNotEmpty()) {
-                    resolvedUrl = "https://hongguoduanju.com/video/public/$vid/360p.mp4"
-                }
-
-                if (resolvedUrl.isNotEmpty()) {
+                if (resolvedUrl.isNotEmpty() && (resolvedUrl.startsWith("http://") || resolvedUrl.startsWith("https://"))) {
                     val dramaHeaders = mapOf(
-                        "User-Agent" to "Mozilla/5.0 (Linux; Android 16; 25053RT47C) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36",
+                        "User-Agent" to org.moontechlab.selenetv.hongguo.PlaybackDeviceSession.PLAYBACK_UA,
                         "Referer" to "https://novel.snssdk.com/"
                     )
                     controller.load(resolvedUrl, safeStartMs, decryptionKey = decryptionKey, headers = dramaHeaders)
                     return@launch
                 } else {
+                    android.util.Log.w("PlayerScreen", "短剧第 ${index + 1} 集解析未获取到有效直链，启动平滑自愈...")
                     withContext(Dispatchers.Main) {
-                        org.moontechlab.selenetv.ui.MoonToast.show("短剧分集解析失败，请稍后重试")
+                        org.moontechlab.selenetv.ui.MoonToast.show("短剧视频流连接中，请稍候...")
+                    }
+                    // 延迟后自动自愈重试一次当前集
+                    kotlinx.coroutines.delay(1000)
+                    if (dramaAutoRetryCount < 3) {
+                        dramaAutoRetryCount++
+                        playEpisode(index, safeStartMs)
                     }
                     return@launch
                 }
@@ -706,11 +705,11 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         if (err != null) {
             val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
             val isShort = src?.source == "hongguo" || src?.source == "shortdrama" || src?.sourceName?.contains("精品短剧") == true || src?.typeName == "短剧" || isShortDrama
-            if (isShort && dramaAutoRetryCount < 2) {
+            if (isShort && dramaAutoRetryCount < 3) {
                 dramaAutoRetryCount++
                 android.util.Log.w("PlayerScreen", "短剧播放遇到偶发错误 [$err]，启动第 $dramaAutoRetryCount 次静默自愈重试...")
                 controller.clearError()
-                kotlinx.coroutines.delay(400)
+                kotlinx.coroutines.delay(500L * dramaAutoRetryCount)
                 playEpisode(currentEpisode, 0)
                 return@LaunchedEffect
             }
