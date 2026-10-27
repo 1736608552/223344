@@ -36,7 +36,7 @@ object HongguoStreamResolver {
         if (!cached.isNullOrEmpty()) return cached
         try {
             fetchEpisodeVids(cleanId)
-        } catch (_: Exception) {}
+        } catch (ignored: Exception) {}
         return seriesIntroCache[cleanId] ?: ""
     }
 
@@ -63,7 +63,7 @@ object HongguoStreamResolver {
                 '}', ']' -> {
                     depth--
                     if (depth == 0) {
-                        return try { JSONObject(html.substring(first, i + 1)) } catch (_: Exception) { null }
+                        return try { JSONObject(html.substring(first, i + 1)) } catch (ignored: Exception) { null }
                     }
                 }
             }
@@ -103,7 +103,7 @@ object HongguoStreamResolver {
                 val root = extractRouter(html) ?: run {
                     val regex = Regex("""_ROUTER_DATA\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL)
                     val match = regex.find(html)
-                    match?.let { try { JSONObject(it.groupValues[1]) } catch (_: Exception) { null } }
+                    match?.let { try { JSONObject(it.groupValues[1]) } catch (ignored: Exception) { null } }
                 }
 
                 if (root != null) {
@@ -140,7 +140,7 @@ object HongguoStreamResolver {
                                 }
                             }
                         }
-                    } catch (_: Exception) {}
+                    } catch (ignored: Exception) {}
                 }
 
                 // 策略 B: 正则快速扫描 vid_list 数组与 series_intro 兜底
@@ -239,7 +239,7 @@ object HongguoStreamResolver {
                 }
             } catch (e: Exception) {
                 lastErr = e
-                try { Thread.sleep(200) } catch (_: InterruptedException) {}
+                try { Thread.sleep(200) } catch (ignored: InterruptedException) {}
             }
         }
 
@@ -322,7 +322,7 @@ object HongguoStreamResolver {
                     try {
                         val cursorJson = JSONObject(cursorStr)
                         totalCount = cursorJson.optLong("danmaku_count", 0L)
-                    } catch (_: Exception) {}
+                    } catch (ignored: Exception) {}
                 }
 
                 val items = mutableListOf<Map<String, Any>>()
@@ -370,7 +370,7 @@ object HongguoStreamResolver {
                 )
             } catch (e: Exception) {
                 lastErr = e
-                try { Thread.sleep(200) } catch (_: InterruptedException) {}
+                try { Thread.sleep(200) } catch (ignored: InterruptedException) {}
             }
         }
         throw lastErr ?: IOException("Failed to fetch danmaku for vid $cleanVid")
@@ -400,7 +400,7 @@ object HongguoStreamResolver {
         for (attempt in 0..2) {
             val delayMs = delays[attempt]
             if (delayMs > 0) {
-                try { Thread.sleep(delayMs) } catch (_: InterruptedException) {}
+                try { Thread.sleep(delayMs) } catch (ignored: InterruptedException) {}
             }
             try {
                 val now = System.currentTimeMillis()
@@ -427,7 +427,7 @@ object HongguoStreamResolver {
                 if (resp.isSuccessful) {
                     val content = resp.body?.string().orEmpty()
                     if (content.isNotBlank()) {
-                        val testJson = try { JSONObject(content) } catch (_: Exception) { null }
+                        val testJson = try { JSONObject(content) } catch (ignored: Exception) { null }
                         val code = testJson?.optInt("Code", testJson.optInt("code", 0)) ?: -1
                         if (code == 0) {
                             bodyStr = content
@@ -458,7 +458,7 @@ object HongguoStreamResolver {
                 val resp = client.newCall(reqBuilder.build()).execute()
                 val content = resp.body?.string().orEmpty()
                 if (content.isNotBlank()) {
-                    val testJson = try { JSONObject(content) } catch (_: Exception) { null }
+                    val testJson = try { JSONObject(content) } catch (ignored: Exception) { null }
                     if (testJson?.optInt("Code", testJson.optInt("code", 0)) == 0) {
                         bodyStr = content
                     }
@@ -488,7 +488,7 @@ object HongguoStreamResolver {
         var seed = byteArrayOf()
         val seedStr = model.optString("key_seed")
         if (seedStr.isNotEmpty()) {
-            seed = try { decode64(seedStr) } catch (_: Exception) { byteArrayOf() }
+            seed = try { decode64(seedStr) } catch (ignored: Exception) { byteArrayOf() }
         }
 
         val candidateList = mutableListOf<VideoCandidate>()
@@ -589,7 +589,7 @@ object HongguoStreamResolver {
                                 if (fbList != null) {
                                     val seedFb = info.optString("key_seed")
                                     if (seedFb.isNotEmpty()) {
-                                        seed = try { decode64(seedFb) } catch (_: Exception) { seed }
+                                        seed = try { decode64(seedFb) } catch (ignored: Exception) { seed }
                                     }
                                     val fKeys = fbList.keys()
                                     while (fKeys.hasNext()) {
@@ -642,7 +642,7 @@ object HongguoStreamResolver {
                                     if (decrypted.startsWith("http")) {
                                         rawUrl = decrypted
                                     }
-                                } catch (_: Exception) {}
+                                } catch (ignored: Exception) {}
                             }
                             // 3. 尝试标准 Base64 解码 (若未加密仅是 Base64 包装)
                             if (!rawUrl.startsWith("http://") && !rawUrl.startsWith("https://")) {
@@ -651,7 +651,7 @@ object HongguoStreamResolver {
                                     if (b64Str.startsWith("http://") || b64Str.startsWith("https://")) {
                                         rawUrl = b64Str
                                     }
-                                } catch (_: Exception) {}
+                                } catch (ignored: Exception) {}
                             }
                         }
                     }
@@ -673,30 +673,25 @@ object HongguoStreamResolver {
                     }
                 }
 
-                if (multiMap.isNotEmpty()) {
-                    val targetQuality = qualityList.firstOrNull { it <= maxQuality } ?: qualityList.first()
-                    val targetLabel = "${targetQuality}P"
-                    val primaryUrl = multiMap[targetLabel] ?: multiMap.values.first()
-                    val primaryKey = keysMap[targetLabel] ?: fallbackKey
+        if (multiMap.isNotEmpty()) {
+            val targetQuality = qualityList.firstOrNull { it <= maxQuality } ?: qualityList.first()
+            val targetLabel = "${targetQuality}P"
+            val primaryUrl = multiMap[targetLabel] ?: multiMap.values.first()
+            val primaryKey = keysMap[targetLabel] ?: fallbackKey
 
-                    multiMap["自动"] = primaryUrl
+            multiMap["自动"] = primaryUrl
 
-                    return mapOf(
-                        "url" to primaryUrl,
-                        "decryptionKey" to primaryKey,
-                        "keys" to keysMap,
-                        "quality" to targetLabel,
-                        "actualQuality" to targetQuality,
-                        "qualities" to qualityList,
-                        "multiMap" to multiMap
-                    )
-                }
-            } catch (e: Exception) {
-                lastErr = e
-                try { Thread.sleep(200) } catch (_: InterruptedException) {}
-            }
+            return mapOf(
+                "url" to primaryUrl,
+                "decryptionKey" to primaryKey,
+                "keys" to keysMap,
+                "quality" to targetLabel,
+                "actualQuality" to targetQuality,
+                "qualities" to qualityList,
+                "multiMap" to multiMap
+            )
         }
 
-        throw lastErr ?: IOException("Failed to resolve stream for vid $cleanVid")
+        throw IOException("No playable stream url found for vid $cleanVid")
     }
 }

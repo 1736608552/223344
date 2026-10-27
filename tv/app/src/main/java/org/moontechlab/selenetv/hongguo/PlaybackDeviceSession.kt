@@ -53,7 +53,7 @@ class PlaybackDeviceSession(
 
         val device = try {
             register(http)
-        } catch (_: Exception) {
+        } catch (ignored: Exception) {
             null
         } ?: DeviceRegister.Registered(
             // 手机端长期稳定放行、且全网兼容的工业级预置合法短剧设备身份
