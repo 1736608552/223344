@@ -92,11 +92,20 @@ class _UpdateDialogState extends State<UpdateDialog> {
       final fileName = 'luna-tv-update-v${widget.versionInfo.latestVersion}.apk';
       final filePath = '${dir.path}/$fileName';
 
-      // 构建多通道加速镜像候选列表（国内直连高可用）
+      // 构建多通道加速镜像候选列表（默认全走 CDN 加速，杜绝代理 URL 干扰）
       final candidateUrls = <String>[];
-      if (apkUrl.startsWith('https://github.com/')) {
-        candidateUrls.add('https://ghfast.top/$apkUrl');
-        candidateUrls.add(apkUrl);
+      final String rawGithubUrl;
+      if (apkUrl.contains('github.com/')) {
+        rawGithubUrl = 'https://github.com/${apkUrl.split("github.com/").last}';
+      } else {
+        rawGithubUrl = apkUrl;
+      }
+
+      if (rawGithubUrl.startsWith('https://github.com/')) {
+        candidateUrls.add('https://ghfast.top/$rawGithubUrl');
+        candidateUrls.add('https://ghproxy.net/$rawGithubUrl');
+        candidateUrls.add('https://mirror.ghproxy.com/$rawGithubUrl');
+        candidateUrls.add(rawGithubUrl);
       } else {
         candidateUrls.add(apkUrl);
       }

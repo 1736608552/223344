@@ -261,113 +261,131 @@ object HongguoStreamResolver {
         val safeStart = if (startMs < 0) 0L else startMs
         val safeDuration = if (durationMs <= safeStart) safeStart + 180000L else durationMs
 
-        val payloadMap = JSONObject().apply {
-            put("comment_source", 601)
-            put("server_channel", 1000)
-            put("group_id", cleanVid)
-            put("group_type", 30)
-            put("comment_type", 20)
-            put("sort", 1)
-            put("count", 90)
-            put("cursor", "")
-            put("aid", 8662)
-            put("compliance_status", 0)
-            put("business_param", JSONObject().apply {
-                if (actualSeriesId.isNotEmpty()) {
-                    put("book_id", actualSeriesId)
-                }
-                put("start_offset_time", safeStart)
-                put("playlet_item_duration", safeDuration)
-                put("need_danmaku_guide_type", org.json.JSONArray(listOf(1, 3, 4, 2)))
-            })
-        }
-        val payload = payloadMap.toString().toByteArray(Charsets.UTF_8)
-        var lastErr: Exception? = null
+        val allItems = mutableListOf<Map<String, Any>>()
+        val seenIds = mutableSetOf<String>()
+        var totalCount = 0L
 
-        // 抖动重试最多 2 次
-        for (attempt in 0..1) {
-            try {
-                val signed = signer.sign(
-                    "https://api5-normal-sinfonlineb.fqnovel.com/novel/commentapi/comment/list/$cleanVid/v1/",
-                    VendorConstants.device,
-                    payload
-                )
+        // 官方弹幕按 30000ms (30秒) 为一个滑动窗口分页返回。
+        // 若起播 (startMs == 0) 或需要全集弹幕，循环拉取整集所有窗口 (最多 6 个窗口 = 180秒) 彻底根治 30 秒后断档缺陷
+        val windowStep = 30000L
+        var curWindowStart = safeStart
+        val maxWindowLimit = if (safeStart == 0L) (safeDuration.coerceAtMost(240000L)) else (safeStart + windowStep)
 
-                val req = Request.Builder()
-                    .url(signed.url)
-                    .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
-
-                for ((k, v) in signed.headers) {
-                    req.header(k, v)
-                }
-                // 关键业务头，确保服务端正确识别短剧评论弹幕通道
-                req.header("Comment-Source", "601")
-                req.header("Server-Channel", "1000")
-
-                val resp = client.newCall(req.build()).execute()
-                val bodyStr = resp.body?.string() ?: throw IOException("Empty response from comment/list")
-                val json = JSONObject(bodyStr)
-                val code = json.optInt("code", json.optJSONObject("BaseResp")?.optInt("StatusCode", 0) ?: 0)
-                if (code != 0) {
-                    throw IOException("Danmaku API error code $code: " + json.optString("message"))
-                }
-
-                val data = json.optJSONObject("data") ?: JSONObject()
-                val dataList = data.optJSONArray("data_list") ?: org.json.JSONArray()
-                val nextQueryTime = data.optJSONObject("extra")?.optLong("next_query_danmaku_list_time", safeStart + 30000L) ?: (safeStart + 30000L)
-
-                var totalCount = 0L
-                val cursorStr = data.optJSONObject("common_list_info")?.optString("cursor", "") ?: ""
-                if (cursorStr.isNotEmpty() && cursorStr.startsWith("{")) {
-                    try {
-                        val cursorJson = JSONObject(cursorStr)
-                        totalCount = cursorJson.optLong("danmaku_count", 0L)
-                    } catch (ignored: Exception) {}
-                }
-
-                val items = mutableListOf<Map<String, Any>>()
-                val seenIds = mutableSetOf<String>()
-
-                for (i in 0 until dataList.length()) {
-                    val row = dataList.optJSONObject(i) ?: continue
-                    val comment = row.optJSONObject("comment") ?: continue
-                    val common = comment.optJSONObject("common") ?: continue
-                    val groupId = common.optString("group_id")
-                    val status = common.optString("status", common.optInt("status", 1).toString())
-                    if (groupId.isNotEmpty() && groupId != cleanVid) continue
-                    if (status != "1") continue
-
-                    val expand = comment.optJSONObject("expand")
-                    val offsetTime = expand?.optLong("offset_time", -1L) ?: -1L
-                    if (offsetTime < 0) continue
-
-                    val textObj = common.optJSONObject("content")
-                    var text = textObj?.optString("text") ?: ""
-                    text = text.replace(Regex("[\\p{Cntrl}\\u2028\\u2029]"), " ").trim()
-                    val id = comment.optString("comment_id")
-
-                    if (id.isEmpty() || text.isEmpty() || seenIds.contains(id)) continue
-                    if (text.length > 200) {
-                        text = text.substring(0, 200) + "…"
+        while (curWindowStart < maxWindowLimit) {
+            val payloadMap = JSONObject().apply {
+                put("comment_source", 601)
+                put("server_channel", 1000)
+                put("group_id", cleanVid)
+                put("group_type", 30)
+                put("comment_type", 20)
+                put("sort", 1)
+                put("count", 90)
+                put("cursor", "")
+                put("aid", 8662)
+                put("compliance_status", 0)
+                put("business_param", JSONObject().apply {
+                    if (actualSeriesId.isNotEmpty()) {
+                        put("book_id", actualSeriesId)
                     }
-                    seenIds.add(id)
+                    put("start_offset_time", curWindowStart)
+                    put("playlet_item_duration", safeDuration)
+                    put("need_danmaku_guide_type", org.json.JSONArray(listOf(1, 3, 4, 2)))
+                })
+            }
+            val payload = payloadMap.toString().toByteArray(Charsets.UTF_8)
+            var windowSuccess = false
 
-                    items.add(mapOf(
-                        "id" to id,
-                        "text" to text,
-                        "timeMs" to offsetTime
-                    ))
+            for (attempt in 0..1) {
+                try {
+                    val signed = signer.sign(
+                        "https://api5-normal-sinfonlineb.fqnovel.com/novel/commentapi/comment/list/$cleanVid/v1/",
+                        VendorConstants.device,
+                        payload
+                    )
+
+                    val req = Request.Builder()
+                        .url(signed.url)
+                        .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+
+                    for ((k, v) in signed.headers) {
+                        req.header(k, v)
+                    }
+                    req.header("Comment-Source", "601")
+                    req.header("Server-Channel", "1000")
+
+                    val resp = client.newCall(req.build()).execute()
+                    val bodyStr = resp.body?.string() ?: throw IOException("Empty response from comment/list")
+                    val json = JSONObject(bodyStr)
+                    val code = json.optInt("code", json.optJSONObject("BaseResp")?.optInt("StatusCode", 0) ?: 0)
+                    if (code != 0) {
+                        throw IOException("Danmaku API error code $code: " + json.optString("message"))
+                    }
+
+                    val data = json.optJSONObject("data") ?: JSONObject()
+                    val dataList = data.optJSONArray("data_list") ?: org.json.JSONArray()
+
+                    val cursorStr = data.optJSONObject("common_list_info")?.optString("cursor", "") ?: ""
+                    if (cursorStr.isNotEmpty() && cursorStr.startsWith("{")) {
+                        try {
+                            val cursorJson = JSONObject(cursorStr)
+                            val cnt = cursorJson.optLong("danmaku_count", 0L)
+                            if (cnt > totalCount) totalCount = cnt
+                        } catch (ignored: Exception) {}
+                    }
+
+                    for (i in 0 until dataList.length()) {
+                        val row = dataList.optJSONObject(i) ?: continue
+                        val comment = row.optJSONObject("comment") ?: continue
+                        val common = comment.optJSONObject("common") ?: continue
+                        val groupId = common.optString("group_id")
+                        val status = common.optString("status", common.optInt("status", 1).toString())
+                        if (groupId.isNotEmpty() && groupId != cleanVid) continue
+                        if (status != "1") continue
+
+                        val expand = comment.optJSONObject("expand")
+                        val offsetTime = expand?.optLong("offset_time", -1L) ?: -1L
+                        if (offsetTime < 0) continue
+
+                        val textObj = common.optJSONObject("content")
+                        var text = textObj?.optString("text") ?: ""
+                        text = text.replace(Regex("[\\p{Cntrl}\\u2028\\u2029]"), " ").trim()
+                        val id = comment.optString("comment_id")
+
+                        if (id.isEmpty() || text.isEmpty() || seenIds.contains(id)) continue
+                        if (text.length > 200) {
+                            text = text.substring(0, 200) + "…"
+                        }
+                        seenIds.add(id)
+
+                        allItems.add(mapOf(
+                            "id" to id,
+                            "text" to text,
+                            "timeMs" to offsetTime
+                        ))
+                    }
+                    windowSuccess = true
+                    break
+                } catch (e: Exception) {
+                    try { Thread.sleep(150) } catch (ignored: InterruptedException) {}
                 }
+            }
 
-                items.sortBy { (it["timeMs"] as? Long) ?: 0L }
+            if (!windowSuccess && curWindowStart > safeStart) {
+                // 后续窗口若偶发异常，平滑退出并保留已拉取到的前序窗口弹幕
+                break
+            }
+            curWindowStart += windowStep
+        }
 
-                return mapOf(
-                    "episodeId" to cleanVid,
-                    "items" to items,
-                    "startMs" to safeStart,
-                    "nextMs" to nextQueryTime,
-                    "total" to (if (totalCount > 0) totalCount else items.size.toLong())
-                )
+        allItems.sortBy { (it["timeMs"] as? Long) ?: 0L }
+
+        return mapOf(
+            "episodeId" to cleanVid,
+            "items" to allItems,
+            "startMs" to safeStart,
+            "nextMs" to curWindowStart,
+            "total" to (if (totalCount > 0) totalCount else allItems.size.toLong())
+        )
             } catch (e: Exception) {
                 lastErr = e
                 try { Thread.sleep(200) } catch (ignored: InterruptedException) {}

@@ -13,14 +13,34 @@ class VersionService {
   static const String _dismissedVersionKey = 'dismissed_version';
 
   // 极速高可用国内直连 CDN 镜像源列表（毫秒级响应，杜绝 GFW 阻断）
+  static const List<String> _cdnChangelogMirrors = [
+    'https://fastly.jsdelivr.net/gh/1736608552/223344@main/.github/changelogs.json',
+    'https://cdn.jsdelivr.net/gh/1736608552/223344@main/.github/changelogs.json',
+    'https://testingcf.jsdelivr.net/gh/1736608552/223344@main/.github/changelogs.json',
+  ];
+
   static const List<String> _cdnPubspecMirrors = [
     'https://fastly.jsdelivr.net/gh/1736608552/223344@main/pubspec.yaml',
-    'https://testingcf.jsdelivr.net/gh/1736608552/223344@main/pubspec.yaml',
     'https://cdn.jsdelivr.net/gh/1736608552/223344@main/pubspec.yaml',
+    'https://testingcf.jsdelivr.net/gh/1736608552/223344@main/pubspec.yaml',
     'https://raw.gitmirror.com/1736608552/223344/main/pubspec.yaml',
-    'https://ghfast.top/https://raw.githubusercontent.com/1736608552/223344/main/pubspec.yaml',
-    'https://raw.githubusercontent.com/1736608552/223344/main/pubspec.yaml',
   ];
+
+  /// 将 GitHub 下载地址转换为国内极速 CDN 加速地址（不依赖用户自定义代理）
+  static String buildCdnAcceleratedDownloadUrl(String originalUrl) {
+    if (originalUrl.isEmpty) return originalUrl;
+    // 若已经是第三方 CDN 代理，直接返回
+    if (originalUrl.contains('ghfast.top') ||
+        originalUrl.contains('ghproxy.net') ||
+        originalUrl.contains('mirror.ghproxy.com')) {
+      return originalUrl;
+    }
+    // 规范提取原始 github.com 地址并挂载全球/国内极速 CDN
+    final rawGithubUrl = originalUrl.startsWith('http') && originalUrl.contains('github.com/')
+        ? 'https://github.com/${originalUrl.split("github.com/").last}'
+        : originalUrl;
+    return 'https://ghfast.top/$rawGithubUrl';
+  }
 
   /// 检查是否有新版本（启动自动调用）
   static Future<VersionInfo?> checkForUpdate() async {
@@ -63,9 +83,9 @@ class VersionService {
   /// 通道 1：通过 GitHub Releases API 获取
   static Future<VersionInfo?> _checkViaGithubApi(String currentVersion) async {
     try {
-      final apiUrl = UserDataService.buildGithubApiUrl(githubApiUrl);
+      // 官方更新不再走用户配置的代理 URL，统一原生或 CDN 降级
       final response = await http.get(
-        Uri.parse(apiUrl),
+        Uri.parse(githubApiUrl),
         headers: {
           'Accept': 'application/vnd.github.v3+json',
           'User-Agent': 'LunaTV-Mobile/$currentVersion (Android; Mobile)',
@@ -90,7 +110,7 @@ class VersionService {
                 final isTv = name.contains('-tv-') || name.contains('tv-') || name.contains('hisense') || name.contains('selenetv');
                 final isMobile = name.contains('mobile') || name == 'app-release.apk';
                 if (isMobile && !isTv) {
-                  apkDownloadUrl = UserDataService.buildGithubReleaseAssetUrl(url);
+                  apkDownloadUrl = buildCdnAcceleratedDownloadUrl(url);
                   break;
                 }
               }
@@ -105,7 +125,7 @@ class VersionService {
                 if (name.endsWith('.apk') && url.isNotEmpty) {
                   final isTv = name.contains('-tv-') || name.contains('tv-') || name.contains('hisense') || name.contains('selenetv');
                   if (!isTv) {
-                    apkDownloadUrl = UserDataService.buildGithubReleaseAssetUrl(url);
+                    apkDownloadUrl = buildCdnAcceleratedDownloadUrl(url);
                     break;
                   }
                 }
@@ -113,7 +133,7 @@ class VersionService {
             }
           }
         }
-        apkDownloadUrl ??= UserDataService.buildGithubReleaseAssetUrl(
+        apkDownloadUrl ??= buildCdnAcceleratedDownloadUrl(
           '$githubRepoUrl/releases/download/v$latestVersion/app-release.apk',
         );
 
@@ -135,8 +155,44 @@ class VersionService {
     return null;
   }
 
-  /// 通道 2：通过 jsDelivr 全球加速 CDN 读取最新版本号（国内直连毫秒级响应）
+  /// 通道 2：通过 jsDelivr 全球加速 CDN 读取最新版本与完整更新日志（国内直连毫秒级响应）
   static Future<VersionInfo?> _checkViaCdnMirrors(String currentVersion) async {
+    // 2.1 优先通过 changelogs.json 获取最新版本号与格式化更新日志
+    for (final mirrorUrl in _cdnChangelogMirrors) {
+      try {
+        final response = await http.get(
+          Uri.parse(mirrorUrl),
+          headers: {
+            'User-Agent': 'Mozilla/5.0 LunaTV-Mobile/$currentVersion',
+          },
+        ).timeout(const Duration(seconds: 3));
+
+        if (response.statusCode == 200 && response.body.startsWith('{')) {
+          final data = json.decode(response.body) as Map<String, dynamic>;
+          if (data.isNotEmpty) {
+            final firstTag = data.keys.first;
+            final latestVersion = _cleanVersion(firstTag);
+            final notes = (data[firstTag] as String?) ?? '';
+
+            if (latestVersion.isNotEmpty && _isNewerVersion(currentVersion, latestVersion)) {
+              final rawDownloadUrl = '$githubRepoUrl/releases/download/v$latestVersion/LunaTV-Mobile-v$latestVersion.apk';
+              final apkUrl = buildCdnAcceleratedDownloadUrl(rawDownloadUrl);
+
+              return VersionInfo(
+                currentVersion: currentVersion,
+                latestVersion: latestVersion,
+                releaseNotes: notes.isNotEmpty ? notes : '发现全新版本 v$latestVersion，点击立即下载安装！',
+                apkDownloadUrl: apkUrl,
+                releasePageUrl: getReleaseUrl(latestVersion),
+              );
+            }
+            if (latestVersion.isNotEmpty) return null;
+          }
+        }
+      } catch (_) {}
+    }
+
+    // 2.2 降级通过 pubspec.yaml 读取版本号
     for (final mirrorUrl in _cdnPubspecMirrors) {
       try {
         final response = await http.get(
@@ -160,7 +216,7 @@ class VersionService {
 
           if (latestVersion.isNotEmpty && _isNewerVersion(currentVersion, latestVersion)) {
             final rawDownloadUrl = '$githubRepoUrl/releases/download/v$latestVersion/app-release.apk';
-            final apkUrl = UserDataService.buildGithubReleaseAssetUrl(rawDownloadUrl);
+            final apkUrl = buildCdnAcceleratedDownloadUrl(rawDownloadUrl);
 
             return VersionInfo(
               currentVersion: currentVersion,
@@ -170,7 +226,6 @@ class VersionService {
               releasePageUrl: getReleaseUrl(latestVersion),
             );
           }
-          // 如果解析成功且不需要更新，直接退出循环
           if (latestVersion.isNotEmpty) return null;
         }
       } catch (_) {
