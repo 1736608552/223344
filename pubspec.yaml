@@ -1,7 +1,7 @@
 name: luna_tv
 description: "LunaTV-inspired Flutter client"
 publish_to: 'none'
-version: 2.7.33+20833
+version: 2.7.34+20834
 
 environment:
   sdk: ">=3.5.0 <4.0.0"
@@ -78,3 +78,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/emojis/hongguo/

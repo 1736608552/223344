@@ -41,6 +41,9 @@ class SeleneApplication : Application(), ImageLoaderFactory {
         AppDataService.init(this)
         LocalStore.init(this)
 
+        // 异步预热加载红果短剧 53 张官方原版 WebP 高清表情进内存
+        org.moontechlab.selenetv.service.danmaku.HongguoEmojiManager.init(this)
+
         Log.d("SeleneApplication", "Application initialized")
         
         // 启动遥控器 Web 服务器

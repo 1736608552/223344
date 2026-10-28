@@ -19,6 +19,7 @@ import 'package:flutter/material.dart';
 
 import '../danmaku_settings.dart';
 import '../models/danmaku_comment.dart';
+import '../models/hongguo_danmaku_emojis.dart';
 
 class DanmakuOverlay extends StatefulWidget {
   final List<DanmakuComment> comments;
@@ -154,6 +155,9 @@ class DanmakuOverlayState extends State<DanmakuOverlay>
     _area = s.area;
     _mode = s.mode;
     _lastWallTime = DateTime.now();
+
+    // 异步预加载红果高清表情
+    HongguoEmojiLoader.preloadAll();
 
     _ctrl = AnimationController(
       vsync: this,
@@ -534,6 +538,7 @@ class _LiveBullet {
   double textHeight = 0;
   bool done = false;
   TextPainter? painter;
+  List<DanmakuSegment>? segments;
 
   _LiveBullet({
     required this.comment,
@@ -558,30 +563,48 @@ class _LiveBullet {
     final bv = c & 0xFF;
     final color = Color.fromARGB(alpha, r, g, bv);
 
-    painter = TextPainter(
-      text: TextSpan(
-        text: text,
-        style: TextStyle(
-          fontSize: fontSize,
-          color: color,
-          fontWeight: FontWeight.w500,
-          shadows: const [
-            Shadow(blurRadius: 3, color: Colors.black87, offset: Offset(0, 0)),
-            Shadow(blurRadius: 2, color: Colors.black54, offset: Offset(1, 1)),
-          ],
-        ),
-      ),
-      textDirection: TextDirection.ltr,
+    final textStyle = TextStyle(
+      fontSize: fontSize,
+      color: color,
+      fontWeight: FontWeight.w500,
+      shadows: const [
+        Shadow(blurRadius: 3, color: Colors.black87, offset: Offset(0, 0)),
+        Shadow(blurRadius: 2, color: Colors.black54, offset: Offset(1, 1)),
+      ],
     );
-    painter!.layout();
-    textWidth = painter!.width;
-    textHeight = painter!.height;
+
+    if (HongguoEmojiLoader.hasEmoji(text)) {
+      segments = HongguoEmojiLoader.parseSegments(
+        text: text,
+        style: textStyle,
+        fontSize: fontSize,
+      );
+      textWidth = segments!.fold(0.0, (sum, seg) => sum + seg.width);
+      textHeight = fontSize * 1.25;
+    } else {
+      painter = TextPainter(
+        text: TextSpan(
+          text: text,
+          style: textStyle,
+        ),
+        textDirection: TextDirection.ltr,
+      );
+      painter!.layout();
+      textWidth = painter!.width;
+      textHeight = painter!.height;
+    }
     x = screenWidth;
   }
 
   void dispose() {
     painter?.dispose();
     painter = null;
+    if (segments != null) {
+      for (final s in segments!) {
+        s.dispose();
+      }
+      segments = null;
+    }
   }
 
   /// 真实高精物理时钟步进
@@ -611,6 +634,8 @@ class _DanmakuPainter extends CustomPainter {
   final double areaRatio;
   final DanmakuMode mode;
 
+  static final Paint _emojiPaint = Paint()..filterQuality = FilterQuality.medium;
+
   _DanmakuPainter({
     required super.repaint, // 继承自 Listenable, 满帧直接重绘
     required this.bullets,
@@ -630,7 +655,7 @@ class _DanmakuPainter extends CustomPainter {
     final layout = DanmakuOverlayState._calcLayout(availH, lineH, mode);
 
     for (final b in bullets) {
-      if (b.done || b.painter == null) continue;
+      if (b.done) continue;
 
       final m = b.renderMode;
       double y;
@@ -642,8 +667,36 @@ class _DanmakuPainter extends CustomPainter {
         y = layout.topH + b.row * layout.rowH;
       }
 
-      final dx = m == 1 ? b.x : (width - b.textWidth) / 2;
-      b.painter!.paint(canvas, Offset(dx, y));
+      double curX = m == 1 ? b.x : (width - b.textWidth) / 2;
+
+      if (b.segments != null) {
+        for (final seg in b.segments!) {
+          if (seg is TextDanmakuSegment) {
+            seg.painter.paint(canvas, Offset(curX, y));
+            curX += seg.width;
+          } else if (seg is ImageDanmakuSegment) {
+            final img = seg.image ?? HongguoEmojiLoader.getImage(seg.code);
+            if (img != null) {
+              final srcRect = Rect.fromLTWH(
+                0,
+                0,
+                img.width.toDouble(),
+                img.height.toDouble(),
+              );
+              final dstRect = Rect.fromLTWH(
+                curX + 2.0,
+                y + (lineH - seg.size) / 2 - 1.0,
+                seg.size,
+                seg.size,
+              );
+              canvas.drawImageRect(img, srcRect, dstRect, _emojiPaint);
+            }
+            curX += seg.width;
+          }
+        }
+      } else if (b.painter != null) {
+        b.painter!.paint(canvas, Offset(curX, y));
+      }
     }
   }
 

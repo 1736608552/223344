@@ -1,0 +1,535 @@
+{
+  "total": 53,
+  "emojis": [
+    {
+      "id": 1,
+      "code": "[微笑]",
+      "name": "微笑",
+      "res_id": "0x7f020e7b",
+      "source_path": "res/f/dfy.webp",
+      "file_name": "01_微笑.webp",
+      "size_bytes": 1808,
+      "status": "extracted"
+    },
+    {
+      "id": 2,
+      "code": "[偷笑]",
+      "name": "偷笑",
+      "res_id": "0x7f020e86",
+      "source_path": "res/f/dg9.webp",
+      "file_name": "02_偷笑.webp",
+      "size_bytes": 1720,
+      "status": "extracted"
+    },
+    {
+      "id": 3,
+      "code": "[笑]",
+      "name": "笑",
+      "res_id": "0x7f020e91",
+      "source_path": "res/f/dgj.webp",
+      "file_name": "03_笑.webp",
+      "size_bytes": 1756,
+      "status": "extracted"
+    },
+    {
+      "id": 4,
+      "code": "[什么]",
+      "name": "什么",
+      "res_id": "0x7f020e9c",
+      "source_path": "res/f/dgu.webp",
+      "file_name": "04_什么.webp",
+      "size_bytes": 2454,
+      "status": "extracted"
+    },
+    {
+      "id": 5,
+      "code": "[害羞]",
+      "name": "害羞",
+      "res_id": "0x7f020ea7",
+      "source_path": "res/f/dh5.webp",
+      "file_name": "05_害羞.webp",
+      "size_bytes": 1954,
+      "status": "extracted"
+    },
+    {
+      "id": 6,
+      "code": "[爱慕]",
+      "name": "爱慕",
+      "res_id": "0x7f020eac",
+      "source_path": "res/f/dh_.webp",
+      "file_name": "06_爱慕.webp",
+      "size_bytes": 2350,
+      "status": "extracted"
+    },
+    {
+      "id": 7,
+      "code": "[飞吻]",
+      "name": "飞吻",
+      "res_id": "0x7f020ead",
+      "source_path": "res/f/dha.webp",
+      "file_name": "07_飞吻.webp",
+      "size_bytes": 1934,
+      "status": "extracted"
+    },
+    {
+      "id": 8,
+      "code": "[奸笑]",
+      "name": "奸笑",
+      "res_id": "0x7f020eae",
+      "source_path": "res/f/dhb.webp",
+      "file_name": "08_奸笑.webp",
+      "size_bytes": 1924,
+      "status": "extracted"
+    },
+    {
+      "id": 9,
+      "code": "[尬笑]",
+      "name": "尬笑",
+      "res_id": "0x7f020eaf",
+      "source_path": "res/f/dhc.webp",
+      "file_name": "09_尬笑.webp",
+      "size_bytes": 2326,
+      "status": "extracted"
+    },
+    {
+      "id": 10,
+      "code": "[思考]",
+      "name": "思考",
+      "res_id": "0x7f020e7c",
+      "source_path": "res/f/dfz.webp",
+      "file_name": "10_思考.webp",
+      "size_bytes": 2132,
+      "status": "extracted"
+    },
+    {
+      "id": 11,
+      "code": "[撇嘴]",
+      "name": "撇嘴",
+      "res_id": "0x7f020e7d",
+      "source_path": "res/f/dg0.webp",
+      "file_name": "11_撇嘴.webp",
+      "size_bytes": 2072,
+      "status": "extracted"
+    },
+    {
+      "id": 12,
+      "code": "[做鬼脸]",
+      "name": "做鬼脸",
+      "res_id": "0x7f020e7e",
+      "source_path": "res/f/dg1.webp",
+      "file_name": "12_做鬼脸.webp",
+      "size_bytes": 1978,
+      "status": "extracted"
+    },
+    {
+      "id": 13,
+      "code": "[酷]",
+      "name": "酷",
+      "res_id": "0x7f020e7f",
+      "source_path": "res/f/dg2.webp",
+      "file_name": "13_酷.webp",
+      "size_bytes": 2214,
+      "status": "extracted"
+    },
+    {
+      "id": 14,
+      "code": "[翻白眼]",
+      "name": "翻白眼",
+      "res_id": "0x7f020e80",
+      "source_path": "res/f/dg3.webp",
+      "file_name": "14_翻白眼.webp",
+      "size_bytes": 1772,
+      "status": "extracted"
+    },
+    {
+      "id": 15,
+      "code": "[惊呆]",
+      "name": "惊呆",
+      "res_id": "0x7f020e81",
+      "source_path": "res/f/dg4.webp",
+      "file_name": "15_惊呆.webp",
+      "size_bytes": 1892,
+      "status": "extracted"
+    },
+    {
+      "id": 16,
+      "code": "[震惊]",
+      "name": "震惊",
+      "res_id": "0x7f020e82",
+      "source_path": "res/f/dg5.webp",
+      "file_name": "16_震惊.webp",
+      "size_bytes": 2444,
+      "status": "extracted"
+    },
+    {
+      "id": 17,
+      "code": "[送心]",
+      "name": "送心",
+      "res_id": "0x7f020e83",
+      "source_path": "res/f/dg6.webp",
+      "file_name": "17_送心.webp",
+      "size_bytes": 2238,
+      "status": "extracted"
+    },
+    {
+      "id": 18,
+      "code": "[委屈]",
+      "name": "委屈",
+      "res_id": "0x7f020e84",
+      "source_path": "res/f/dg7.webp",
+      "file_name": "18_委屈.webp",
+      "size_bytes": 1824,
+      "status": "extracted"
+    },
+    {
+      "id": 19,
+      "code": "[快哭了]",
+      "name": "快哭了",
+      "res_id": "0x7f020e85",
+      "source_path": "res/f/dg8.webp",
+      "file_name": "19_快哭了.webp",
+      "size_bytes": 2046,
+      "status": "extracted"
+    },
+    {
+      "id": 20,
+      "code": "[笑哭]",
+      "name": "笑哭",
+      "res_id": "0x7f020e87",
+      "source_path": "res/f/dg_.webp",
+      "file_name": "20_笑哭.webp",
+      "size_bytes": 2394,
+      "status": "extracted"
+    },
+    {
+      "id": 21,
+      "code": "[哭]",
+      "name": "哭",
+      "res_id": "0x7f020e88",
+      "source_path": "res/f/dga.webp",
+      "file_name": "21_哭.webp",
+      "size_bytes": 2486,
+      "status": "extracted"
+    },
+    {
+      "id": 22,
+      "code": "[大笑]",
+      "name": "大笑",
+      "res_id": "0x7f020e89",
+      "source_path": "res/f/dgb.webp",
+      "file_name": "22_大笑.webp",
+      "size_bytes": 2098,
+      "status": "extracted"
+    },
+    {
+      "id": 23,
+      "code": "[舔屏]",
+      "name": "舔屏",
+      "res_id": "0x7f020e8a",
+      "source_path": "res/f/dgc.webp",
+      "file_name": "23_舔屏.webp",
+      "size_bytes": 2132,
+      "status": "extracted"
+    },
+    {
+      "id": 24,
+      "code": "[怒]",
+      "name": "怒",
+      "res_id": "0x7f020e8b",
+      "source_path": "res/f/dgd.webp",
+      "file_name": "24_怒.webp",
+      "size_bytes": 3328,
+      "status": "extracted"
+    },
+    {
+      "id": 25,
+      "code": "[捂脸]",
+      "name": "捂脸",
+      "res_id": "0x7f020e8c",
+      "source_path": "res/f/dge.webp",
+      "file_name": "25_捂脸.webp",
+      "size_bytes": 2208,
+      "status": "extracted"
+    },
+    {
+      "id": 26,
+      "code": "[吐]",
+      "name": "吐",
+      "res_id": "0x7f020e8d",
+      "source_path": "res/f/dgf.webp",
+      "file_name": "26_吐.webp",
+      "size_bytes": 2450,
+      "status": "extracted"
+    },
+    {
+      "id": 27,
+      "code": "[恐惧]",
+      "name": "恐惧",
+      "res_id": "0x7f020e8e",
+      "source_path": "res/f/dgg.webp",
+      "file_name": "27_恐惧.webp",
+      "size_bytes": 2266,
+      "status": "extracted"
+    },
+    {
+      "id": 28,
+      "code": "[抓狂]",
+      "name": "抓狂",
+      "res_id": "0x7f020e8f",
+      "source_path": "res/f/dgh.webp",
+      "file_name": "28_抓狂.webp",
+      "size_bytes": 2122,
+      "status": "extracted"
+    },
+    {
+      "id": 29,
+      "code": "[敬礼]",
+      "name": "敬礼",
+      "res_id": "0x7f020e90",
+      "source_path": "res/f/dgi.webp",
+      "file_name": "29_敬礼.webp",
+      "size_bytes": 1958,
+      "status": "extracted"
+    },
+    {
+      "id": 30,
+      "code": "[石化]",
+      "name": "石化",
+      "res_id": "0x7f020e92",
+      "source_path": "res/f/dgk.webp",
+      "file_name": "30_石化.webp",
+      "size_bytes": 1402,
+      "status": "extracted"
+    },
+    {
+      "id": 31,
+      "code": "[OK]",
+      "name": "OK",
+      "res_id": "0x7f020e93",
+      "source_path": "res/f/dgl.webp",
+      "file_name": "31_OK.webp",
+      "size_bytes": 1716,
+      "status": "extracted"
+    },
+    {
+      "id": 32,
+      "code": "[赞]",
+      "name": "赞",
+      "res_id": "0x7f020e94",
+      "source_path": "res/f/dgm.webp",
+      "file_name": "32_赞.webp",
+      "size_bytes": 1336,
+      "status": "extracted"
+    },
+    {
+      "id": 33,
+      "code": "[爱心]",
+      "name": "爱心",
+      "res_id": "0x7f020e95",
+      "source_path": "res/f/dgn.webp",
+      "file_name": "33_爱心.webp",
+      "size_bytes": 1428,
+      "status": "extracted"
+    },
+    {
+      "id": 34,
+      "code": "[伤心]",
+      "name": "伤心",
+      "res_id": "0x7f020e96",
+      "source_path": "res/f/dgo.webp",
+      "file_name": "34_伤心.webp",
+      "size_bytes": 1206,
+      "status": "extracted"
+    },
+    {
+      "id": 35,
+      "code": "[KISS]",
+      "name": "KISS",
+      "res_id": "0x7f020e97",
+      "source_path": "res/f/dgp.webp",
+      "file_name": "35_KISS.webp",
+      "size_bytes": 1676,
+      "status": "extracted"
+    },
+    {
+      "id": 36,
+      "code": "[懂了]",
+      "name": "懂了",
+      "res_id": "0x7f020e98",
+      "source_path": "res/f/dgq.webp",
+      "file_name": "36_懂了.webp",
+      "size_bytes": 2558,
+      "status": "extracted"
+    },
+    {
+      "id": 37,
+      "code": "[探究]",
+      "name": "探究",
+      "res_id": "0x7f020e99",
+      "source_path": "res/f/dgr.webp",
+      "file_name": "37_探究.webp",
+      "size_bytes": 2770,
+      "status": "extracted"
+    },
+    {
+      "id": 38,
+      "code": "[重拳出击]",
+      "name": "重拳出击",
+      "res_id": "0x7f020e9a",
+      "source_path": "res/f/dgs.webp",
+      "file_name": "38_重拳出击.webp",
+      "size_bytes": 2558,
+      "status": "extracted"
+    },
+    {
+      "id": 39,
+      "code": "[吃瓜]",
+      "name": "吃瓜",
+      "res_id": "0x7f020e9b",
+      "source_path": "res/f/dgt.webp",
+      "file_name": "39_吃瓜.webp",
+      "size_bytes": 2990,
+      "status": "extracted"
+    },
+    {
+      "id": 40,
+      "code": "[盯]",
+      "name": "盯",
+      "res_id": "0x7f020e9d",
+      "source_path": "res/f/dgv.webp",
+      "file_name": "40_盯.webp",
+      "size_bytes": 2664,
+      "status": "extracted"
+    },
+    {
+      "id": 41,
+      "code": "[你细品]",
+      "name": "你细品",
+      "res_id": "0x7f020e9e",
+      "source_path": "res/f/dgw.webp",
+      "file_name": "41_你细品.webp",
+      "size_bytes": 2218,
+      "status": "extracted"
+    },
+    {
+      "id": 42,
+      "code": "[赶稿中]",
+      "name": "赶稿中",
+      "res_id": "0x7f020e9f",
+      "source_path": "res/f/dgx.webp",
+      "file_name": "42_赶稿中.webp",
+      "size_bytes": 2884,
+      "status": "extracted"
+    },
+    {
+      "id": 43,
+      "code": "[注意]",
+      "name": "注意",
+      "res_id": "0x7f020ea0",
+      "source_path": "res/f/dgy.webp",
+      "file_name": "43_注意.webp",
+      "size_bytes": 2594,
+      "status": "extracted"
+    },
+    {
+      "id": 44,
+      "code": "[饱了]",
+      "name": "饱了",
+      "res_id": "0x7f020ea1",
+      "source_path": "res/f/dgz.webp",
+      "file_name": "44_饱了.webp",
+      "size_bytes": 1800,
+      "status": "extracted"
+    },
+    {
+      "id": 45,
+      "code": "[码住]",
+      "name": "码住",
+      "res_id": "0x7f020ea2",
+      "source_path": "res/f/dh0.webp",
+      "file_name": "45_码住.webp",
+      "size_bytes": 2406,
+      "status": "extracted"
+    },
+    {
+      "id": 46,
+      "code": "[学会了]",
+      "name": "学会了",
+      "res_id": "0x7f020ea3",
+      "source_path": "res/f/dh1.webp",
+      "file_name": "46_学会了.webp",
+      "size_bytes": 2858,
+      "status": "extracted"
+    },
+    {
+      "id": 47,
+      "code": "[顶帖]",
+      "name": "顶帖",
+      "res_id": "0x7f020ea4",
+      "source_path": "res/f/dh2.webp",
+      "file_name": "47_顶帖.webp",
+      "size_bytes": 2436,
+      "status": "extracted"
+    },
+    {
+      "id": 48,
+      "code": "[求爆更]",
+      "name": "求爆更",
+      "res_id": "0x7f020ea5",
+      "source_path": "res/f/dh3.webp",
+      "file_name": "48_求爆更.webp",
+      "size_bytes": 3500,
+      "status": "extracted"
+    },
+    {
+      "id": 49,
+      "code": "[求关注]",
+      "name": "求关注",
+      "res_id": "0x7f020ea6",
+      "source_path": "res/f/dh4.webp",
+      "file_name": "49_求关注.webp",
+      "size_bytes": 3106,
+      "status": "extracted"
+    },
+    {
+      "id": 50,
+      "code": "[爽]",
+      "name": "爽",
+      "res_id": "0x7f020ea8",
+      "source_path": "res/f/dh6.webp",
+      "file_name": "50_爽.webp",
+      "size_bytes": 2768,
+      "status": "extracted"
+    },
+    {
+      "id": 51,
+      "code": "[鼓掌]",
+      "name": "鼓掌",
+      "res_id": "0x7f020ea9",
+      "source_path": "res/f/dh7.webp",
+      "file_name": "51_鼓掌.webp",
+      "size_bytes": 2392,
+      "status": "extracted"
+    },
+    {
+      "id": 52,
+      "code": "[没看够]",
+      "name": "没看够",
+      "res_id": "0x7f020eaa",
+      "source_path": "res/f/dh8.webp",
+      "file_name": "52_没看够.webp",
+      "size_bytes": 2982,
+      "status": "extracted"
+    },
+    {
+      "id": 53,
+      "code": "[送花]",
+      "name": "送花",
+      "res_id": "0x7f020eab",
+      "source_path": "res/f/dh9.webp",
+      "file_name": "53_送花.webp",
+      "size_bytes": 1966,
+      "status": "extracted"
+    }
+  ]
+}

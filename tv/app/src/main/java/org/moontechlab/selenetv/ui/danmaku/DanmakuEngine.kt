@@ -164,12 +164,22 @@ class DanmakuEngine(private val measurer: TextMeasurer) {
     }
 
     private fun spawnInto(target: MutableList<ActiveDanmaku>, item: DanmakuItem, atClock: Long) {
-        val width = measurer.measure(item.text, config.textSizePx)
+        val segs = if (org.moontechlab.selenetv.service.danmaku.HongguoEmojiManager.hasEmoji(item.text)) {
+            org.moontechlab.selenetv.service.danmaku.HongguoEmojiManager.parseSegments(item.text, measurer, config.textSizePx)
+        } else null
+
+        val width = if (segs != null && segs.isNotEmpty()) {
+            segs.sumOf { it.width.toDouble() }.toFloat()
+        } else {
+            measurer.measure(item.text, config.textSizePx)
+        }
+
         val lane = allocLane(target, item.mode, width, atClock)
         if (lane < 0) return  // 防重叠放不下 / 无空轨 → 丢弃
         val d = obtain()
         d.id = item.id; d.text = item.text; d.colorRgb = item.colorRgb
         d.mode = item.mode; d.spawnTimeMs = atClock; d.width = width; d.lane = lane
+        d.segments = segs
         target.add(d)
     }
 
@@ -261,6 +271,6 @@ class DanmakuEngine(private val measurer: TextMeasurer) {
         for (i in 0 until pool.size) { val d = pool[i]; if (!d.inUse) { d.inUse = true; return d } }
         return ActiveDanmaku().also { it.inUse = true; pool.add(it) }
     }
-    private fun recycle(d: ActiveDanmaku) { d.inUse = false }
-    private fun recycleAll(list: MutableList<ActiveDanmaku>) { for (i in 0 until list.size) list[i].inUse = false; list.clear() }
+    private fun recycle(d: ActiveDanmaku) { d.inUse = false; d.segments = null }
+    private fun recycleAll(list: MutableList<ActiveDanmaku>) { for (i in 0 until list.size) { list[i].inUse = false; list[i].segments = null }; list.clear() }
 }

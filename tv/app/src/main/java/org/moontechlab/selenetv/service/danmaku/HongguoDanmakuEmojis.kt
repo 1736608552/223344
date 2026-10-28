@@ -212,11 +212,13 @@ object HongguoDanmakuEmojis {
         // 1. 清理控制字符与行隔离符
         val cleaned = input.replace(Regex("[\\x00-\\x1f\\x7f-\\x9f\\u2028\\u2029]"), " ").trim()
 
-        // 2. 匹配中英文方括号内的标签并替换
+        // 2. 匹配中英文方括号内的标签并替换: 53个官方原版高清WebP表情规范保留为标准标签供Canvas绘制Bitmap，其余收录标签转为原生Unicode Emoji
         return EMOJI_REGEX.replace(cleaned) { matchResult ->
             val key = matchResult.groupValues[2].trim()
             if (key.isEmpty() || key == "\$key" || key == "key") {
                 ""
+            } else if (HongguoEmojiManager.codeToFileMap.containsKey(key) || HongguoEmojiManager.codeToFileMap.containsKey("[$key]")) {
+                "[$key]"
             } else {
                 emojiMap[key] ?: matchResult.value
             }

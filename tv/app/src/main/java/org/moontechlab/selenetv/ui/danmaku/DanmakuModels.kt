@@ -32,6 +32,13 @@ data class DanmakuEngineConfig(
     val areaFraction: Float = 1f,
 )
 
+/** 弹幕图文分段（用于图文混排渲染高清表情） */
+sealed class DanmakuSegment {
+    abstract val width: Float
+    data class Text(val text: String, override val width: Float) : DanmakuSegment()
+    data class Emoji(val code: String, val bitmap: android.graphics.Bitmap?, override val width: Float) : DanmakuSegment()
+}
+
 /** 活跃弹幕（对象池复用，避免每帧分配）。x/y 每帧由 advance 重算。 */
 class ActiveDanmaku {
     var inUse = false
@@ -44,6 +51,7 @@ class ActiveDanmaku {
     var lane = 0
     var x = 0f
     var y = 0f
+    var segments: List<DanmakuSegment>? = null
 }
 
 /** 低 24 位 RGB 折入不透明度 → ARGB（绝不走 saveLayer：单 drawText 自带 alpha）。 */

@@ -1,5 +1,27 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.34 (2026-10-27)
+
+### 全量落地红果短剧53张官方原版高清WebP表情图文混排渲染 (TV端与移动端弹幕双端齐平) + 150+种Emoji优雅回退保障
+
+#### 核心升级与深度自愈
+1. **官方 53 张原版高清 WebP 表情全量解密引入与图文混排渲染**：
+   - **双端资源全量就绪**：
+     - 将红果短剧官方客户端 53 张高清 WebP 表情切片（`01_微笑.webp` ~ `53_送花.webp`）及结构化映射字典分别部署至移动端（`assets/emojis/hongguo/`）与 TV 端（`tv/app/src/main/assets/emojis/hongguo/`）；
+   - **TV 端 Android 原生图文混排渲染管线落地**：
+     - 新建 `HongguoEmojiManager`：应用启动时异步将 53 张 WebP 表情预解码为 `Bitmap` 缓存，避免每帧加载；提供 `hasEmoji` 高速判定与 `parseSegments` 分段逻辑；
+     - `DanmakuModels` 引入 `DanmakuSegment`（`Text` 与 `Emoji`），`DanmakuEngine` 动态精准度量总宽度并管理对象池生命周期；
+     - `DanmakuRenderer` 在专用渲染线程的硬件 Canvas 上逐段绘制，纯文本单次 `drawText` 直出，表情调用 `drawBitmap`（复用私有 `emojiRect` 零 GC 内存抖动）；
+   - **移动端（Flutter / Dart）高性能 Canvas 图文混排管线落地**：
+     - 新建 `HongguoEmojiLoader`：在 `DanmakuOverlay` 启动时通过 `rootBundle.load` 与 `ui.instantiateImageCodec` 异步预加载/解码 `ui.Image` 缓存至内存；
+     - 扩展 `_LiveBullet` 与 `_DanmakuPainter`：有表情弹幕自动拆解为 `TextDanmakuSegment` 与 `ImageDanmakuSegment`，在 Canvas 上通过 `drawImageRect` 满帧绘制 GPU 纹理；
+     - 规范化双端 `formatHongguoDanmakuText` 协议：53 个官方表情保留为 `[$name]` 供 Canvas 原版渲染，其余 150+ 种表情优雅平滑转换为彩色 Unicode Emoji 字符。
+2. **构建发布规范**：
+   - 全平台构建产物全自动分发至独立发布仓库 `1736608552/LunaTV-Release`，源仓库保持干净纯洁；
+   - 版本更新至 `v2.7.34`（versionCode: `20834`）。
+
+---
+
 ## v2.7.33 (2026-10-27)
 
 ### 彻底根治手机端红果短剧获取只有10秒截断缺陷 (全面升级官方multi_video_model/v1完整正片接口 + 对齐工业级合法设备注册与会话架构) + 全平台双轨长视频保障
