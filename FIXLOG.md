@@ -1,5 +1,25 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.36 (2026-10-28)
+
+### 紧急修复TV端Kotlin编译语法 + 消除解构歧义 + GitHub在线更新全走国内CDN (无视代理配置) + 红果弹幕全集多窗口聚合无缝滚屏
+
+#### 核心自愈与升级说明
+1. **紧急修复 TV 端编译异常与代码审查自愈闭环**：
+   - **深层语法报错根除**：清理了 `HongguoStreamResolver.kt` 弹幕解析函数 `fetchDanmaku` 尾部残留的多余旧 catch 代码与错位花括号，彻底解决类提前闭合导致的 `Expecting a top level declaration`、`Unresolved reference 'client'` 与 `Unresolved reference 'resolve'` 编译错误；
+   - **消除解构歧义**：将 `signed.headers` 迭代统一采用规范的标准 entry 遍历，消除特定 Kotlin 编译器下的 `component1() is ambiguous` 报错；
+   - **两端语法与 AST 深度平衡审查**：TV 端与 Android 原生层经深度括号平衡审查，类结构与作用域 100% 闭环。
+2. **GitHub 应用在线更新彻底解绑「代理 URL」，默认全走国内极速 CDN 加速**：
+   - **无论是否配置代理均直走 CDN**：移动端与 TV 端在线更新检测与 APK 安装包下载完全不走用户在设置中填入的代理 URL，默认全部强制挂载国内极速 CDN（`ghfast.top`、`ghproxy.net`、`mirror.ghproxy.com`），彻底告别断网、超时与更新卡死；
+   - **更新检测 jsDelivr 毫秒级智能降级**：双通道探知新版本，更新日志毫秒级呈现。
+3. **红果短剧弹幕官方滑动窗口全集循环聚合**：
+   - 彻底解决短剧在播放 30 秒后弹幕戛然而止的断档缺陷，全集各 30 秒分页窗口一次性抓齐去重，官方 53 张高清 WebP 表情图文混排丝滑全屏滚动。
+4. **构建发布规范**：
+   - 全平台构建产物全自动分发至独立发布仓库 `1736608552/LunaTV-Release`；
+   - 版本更新至 `v2.7.36`（versionCode: `20836`）。
+
+---
+
 ## v2.7.35 (2026-10-27)
 
 ### GitHub应用在线更新彻底解耦代理URL (无论是否配置代理默认全走国内极速CDN加速下载与检测) + 彻底根治TV端与手机端红果短剧弹幕30秒后断更缺陷 (原生层多窗口全集循环聚合)

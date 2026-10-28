@@ -307,8 +307,8 @@ object HongguoStreamResolver {
                         .url(signed.url)
                         .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
 
-                    for ((k, v) in signed.headers) {
-                        req.header(k, v)
+                    for (entry in signed.headers) {
+                        req.header(entry.key, entry.value)
                     }
                     req.header("Comment-Source", "601")
                     req.header("Server-Channel", "1000")
@@ -386,12 +386,6 @@ object HongguoStreamResolver {
             "nextMs" to curWindowStart,
             "total" to (if (totalCount > 0) totalCount else allItems.size.toLong())
         )
-            } catch (e: Exception) {
-                lastErr = e
-                try { Thread.sleep(200) } catch (ignored: InterruptedException) {}
-            }
-        }
-        throw lastErr ?: IOException("Failed to fetch danmaku for vid $cleanVid")
     }
 
     private data class VideoCandidate(val qNum: Int, val mainUrl: String, val spadeA: String)
@@ -470,8 +464,8 @@ object HongguoStreamResolver {
                 val reqBuilder = Request.Builder()
                     .url(signed.url)
                     .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                for ((k, v) in signed.headers) {
-                    reqBuilder.header(k, v)
+                for (entry in signed.headers) {
+                    reqBuilder.header(entry.key, entry.value)
                 }
                 val resp = client.newCall(reqBuilder.build()).execute()
                 val content = resp.body?.string().orEmpty()
