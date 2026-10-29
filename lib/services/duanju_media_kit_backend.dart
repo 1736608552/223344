@@ -60,6 +60,11 @@ class DuanjuMediaKitBackend implements PlayerBackend {
       ),
     );
 
+    // 确保播放器内部音频输出起播默认 100% 满额推流
+    try {
+      await player.setVolume(100.0);
+    } catch (_) {}
+
     DiaryService.add('[DuanjuMediaKit] 初始化成功，就绪状态');
     return DuanjuMediaKitBackend._(player, videoController);
   }
@@ -219,6 +224,10 @@ class DuanjuMediaKitBackend implements PlayerBackend {
           await platform.setProperty('audio-buffer', '0.8');
           await platform.setProperty('audio-pitch-correction', 'no');
           await platform.setProperty('autosync', '0');
+          // 彻底对齐红果官方短剧音量与响度：禁用自动电平衰减，放开音量上限，注入动态响度增强与平滑限幅
+          await platform.setProperty('replaygain', 'no');
+          await platform.setProperty('volume-max', '150');
+          await platform.setProperty('af', 'lavfi=[dynaudnorm=f=150:g=15:m=8.0:p=0.95]');
         } catch (e) {
           if (kDebugMode) {
             print('[DuanjuMediaKit] setProperty error (handled): $e');

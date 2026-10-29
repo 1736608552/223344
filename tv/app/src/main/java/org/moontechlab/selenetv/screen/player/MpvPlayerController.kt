@@ -205,6 +205,11 @@ class MpvPlayerController(
                 mpv.setPropertyString("scale", "bilinear")
                 mpv.setPropertyString("audio-pitch-correction", "no")
                 mpv.setPropertyString("autosync", "0")
+                // 彻底对齐红果官方短剧音量与响度：禁用自动电平衰减，放开音量上限，注入动态响度增强与平滑限幅
+                mpv.setPropertyString("replaygain", "no")
+                mpv.setPropertyString("volume-max", "150")
+                mpv.setPropertyString("af", "lavfi=[dynaudnorm=f=150:g=15:m=8.0:p=0.95]")
+                mpv.setPropertyInt("volume", 100)
             } catch (e: Exception) {
                 android.util.Log.w("MpvPlayerController", "短剧属性注入异常: ${e.message}")
             }
