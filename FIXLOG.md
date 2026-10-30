@@ -1,5 +1,27 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.39 (2026-10-30)
+
+### 彻底解决 TV 端与手机端红果短剧搜索无结果/搜不到的重大缺陷 + 升级官方原生 Suggestion 高速端点 + 预注入 VID 缓存秒开
+
+#### 核心自愈与升级说明
+1. **排查并解决 TV 端与手机端搜索红果短剧看不到任何内容的根本缺陷**：
+   - **深层故障根因 (Source-first 确凿证据)**：
+     - 红果短剧官网（`hongguoduanju.com/search/{query}`）近期进行了前端重构升级，搜索页面全面由 SSR 改为 CSR 客户端动态渲染，彻底移除了 HTML 中直出的 `_ROUTER_DATA` 全局脚本变量；
+     - 原 TV 端 `ShortDramaService.kt` 与手机端 `DuanjuCoreBridge.dart` 依赖正则提取 `_ROUTER_DATA`，因页面中无此字段导致正则 100% 匹配失败，短剧搜索恒返回空列表，使用户在电视大屏与手机端均无法搜出短剧；
+   - **全面迁移至官方原生免签名 Suggestion 高速端点**：
+     - 切换为官方免风控原生端点 `https://hongguoduanju.com/incent_resource/suggestion?app_id=8662&count=20&query={query}`；
+     - 毫秒级极速响应，直接返回结构化 JSON，精准解析 `series_id`、`series_title`、`series_cover`、`episode_cnt` 及 `series_intro`；
+     - 优先提取 `keyword` 字段维持 64 位大整数 `series_id` 的字符串精度，规避 JSON 精度丢失；
+   - **预注入分集 VID 列表与剧情简介缓存**：
+     - TV 端与手机端在检索解析短剧时，同步提取官方建议流中的 `vid_list` 注入内存缓存池（`HongguoStreamResolver.cacheEpisodeVids` / `_vidListCache`）；
+     - 用户点击搜索结果时可免除重复详情页拉取，实现秒级直接起播。
+2. **构建发布规范**：
+   - 全平台构建产物全自动分发至独立发布仓库 `1736608552/LunaTV-Release`；
+   - 版本更新至 `v2.7.39`（versionCode: `20839`）。
+
+---
+
 ## v2.7.38 (2026-10-29)
 
 ### 紧急修复短剧音频播放静音无声缺陷 (彻底移除精简版SO库不支持的af滤镜与参数) + 恢复原生稳定音频管道 (TV与手机端齐平)

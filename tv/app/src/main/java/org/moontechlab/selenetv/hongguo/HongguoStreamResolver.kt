@@ -20,6 +20,26 @@ object HongguoStreamResolver {
     private val seriesIntroCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     /**
+     * 外部预热/缓存短剧 VID 列表 (如搜索结果携带时提前写入，实现秒开)
+     */
+    fun cacheEpisodeVids(seriesId: String, vids: List<String>) {
+        val cleanId = seriesId.trim().removePrefix("hongguo:").trim()
+        if (cleanId.isNotEmpty() && vids.isNotEmpty()) {
+            episodeVidsCache[cleanId] = vids
+        }
+    }
+
+    /**
+     * 外部预热/缓存短剧简介
+     */
+    fun cacheSeriesIntro(seriesId: String, intro: String) {
+        val cleanId = seriesId.trim().removePrefix("hongguo:").trim()
+        if (cleanId.isNotEmpty() && intro.isNotEmpty()) {
+            seriesIntroCache[cleanId] = intro
+        }
+    }
+
+    /**
      * 获取已缓存的短剧简介 (在 fetchEpisodeVids 解析 Web SSR 时自动提取并缓存)
      */
     fun getCachedSeriesIntro(seriesId: String): String {

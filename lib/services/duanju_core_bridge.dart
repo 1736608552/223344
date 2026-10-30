@@ -806,36 +806,51 @@ class DuanjuCoreBridge {
       } catch (_) {}
     }
 
-    // 官方搜索接口通道
+    // 官方原生 Suggestion 高速 JSON 接口通道 (替代原 CSR 改造后失效的 _ROUTER_DATA 网页爬取)
     try {
-      final searchUri = Uri.parse('https://hongguoduanju.com/search/${Uri.encodeComponent(q)}');
+      final searchUri = Uri.parse(
+        'https://hongguoduanju.com/incent_resource/suggestion?app_id=8662&count=20&query=${Uri.encodeComponent(q)}',
+      );
       final resp = await http.get(searchUri, headers: {
         'User-Agent': _defaultUserAgent,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'zh-CN,zh;q=0.9',
-      }).timeout(const Duration(seconds: 8));
+      }).timeout(const Duration(seconds: 6));
 
       if (resp.statusCode == 200) {
-        final m = RegExp(r'_ROUTER_DATA\s*=\s*(\{.*?\});', dotAll: true).firstMatch(resp.body);
-        if (m != null) {
-          final data = jsonDecode(m.group(1)!);
-          final sList = data['loaderData']?['search_(keyword)/page']?['searchList'] ??
-              data['loaderData']?['search_page']?['searchList'];
-          if (sList is List && sList.isNotEmpty) {
-            final List<Map<String, dynamic>> result = [];
-            for (final it in sList) {
-              if (it is Map<String, dynamic>) {
-                final vData = it['video_data'];
-                if (vData is Map<String, dynamic>) {
-                  final merged = Map<String, dynamic>.from(it)..addAll(vData);
-                  result.add(_formatHongguoItem(merged));
-                } else if (it['series_name'] != null || it['title'] != null) {
-                  result.add(_formatHongguoItem(it));
+        final decoded = jsonDecode(resp.body);
+        final data = decoded is Map ? (decoded['data'] ?? decoded) : null;
+        final sList = (data is Map && data['suggest_list'] is List)
+            ? data['suggest_list'] as List
+            : null;
+        if (sList != null && sList.isNotEmpty) {
+          final List<Map<String, dynamic>> result = [];
+          for (final it in sList) {
+            if (it is Map) {
+              final itMap = Map<String, dynamic>.from(it);
+              final vData = itMap['video_data'];
+              if (vData is Map && vData.isNotEmpty) {
+                final vMap = Map<String, dynamic>.from(vData);
+                final kw = itMap['keyword']?.toString() ?? '';
+                if (RegExp(r'^\d{5,32}$').hasMatch(kw)) {
+                  vMap['series_id'] = kw;
                 }
+                if (vMap['vid_list'] is List) {
+                  final vids = (vMap['vid_list'] as List)
+                      .map((e) => e.toString().trim())
+                      .where((e) => e.isNotEmpty)
+                      .toList();
+                  final sid = cleanSeriesId(vMap['series_id'] ?? kw);
+                  if (sid.isNotEmpty && vids.isNotEmpty) {
+                    _vidListCache[sid] = vids;
+                  }
+                }
+                final merged = Map<String, dynamic>.from(itMap)..addAll(vMap);
+                result.add(_formatHongguoItem(merged));
               }
             }
-            if (result.isNotEmpty) return result;
           }
+          if (result.isNotEmpty) return result;
         }
       }
     } catch (_) {}

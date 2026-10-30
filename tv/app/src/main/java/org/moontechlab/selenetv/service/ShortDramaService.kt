@@ -528,43 +528,64 @@ object ShortDramaService {
         if (cleanQ.isEmpty()) return@withContext emptyList()
 
         try {
-            val searchUrl = "https://hongguoduanju.com/search/" + java.net.URLEncoder.encode(cleanQ, "UTF-8")
+            // 采用红果官方原生高可用 Suggestion JSON 接口，彻底解决 Web 页面 CSR 改造后 _ROUTER_DATA 丢失导致搜索失效的问题
+            val searchUrl = "https://hongguoduanju.com/incent_resource/suggestion?app_id=8662&count=20&query=" +
+                java.net.URLEncoder.encode(cleanQ, "UTF-8")
             val conn = (URL(searchUrl).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 6000
                 readTimeout = 8000
                 setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                setRequestProperty("Accept", "application/json, text/plain, */*")
                 setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
             }
 
-            val html = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            val routerMatch = Regex("""_ROUTER_DATA\s*=\s*(\{.*?\});""").find(html)
-            if (routerMatch != null) {
-                val jsonStr = routerMatch.groupValues[1]
-                val rootObj = json.parseToJsonElement(jsonStr).jsonObject
-                val loaderData = rootObj["loaderData"]?.jsonObject
-                val pageData = loaderData?.get("search_(keyword)/page")?.jsonObject
-                    ?: loaderData?.get("search_page")?.jsonObject
-                val searchList = pageData?.get("searchList")?.jsonArray
+            if (conn.responseCode == 200) {
+                val jsonText = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val rootObj = json.parseToJsonElement(jsonText).jsonObject
+                val dataObj = rootObj["data"]?.jsonObject
+                val suggestList = dataObj?.get("suggest_list")?.jsonArray
+                    ?: rootObj["suggest_list"]?.jsonArray
 
-                if (searchList != null && searchList.isNotEmpty()) {
+                if (suggestList != null && suggestList.isNotEmpty()) {
                     val results = mutableListOf<SearchResult>()
-                    for (elem in searchList) {
+                    for (elem in suggestList) {
                         try {
                             val itObj = elem.jsonObject
                             val vData = itObj["video_data"]?.jsonObject
-                            val title = itObj["name"]?.jsonPrimitive?.contentOrNull
-                                ?: vData?.get("series_title")?.jsonPrimitive?.contentOrNull
+                            if (vData == null || vData.isEmpty()) continue
+
+                            // 优先取精确的 keyword（短剧 series_id 的字符串形式，防止大整数在 JSON 反序列化中溢出截断）
+                            val keywordVal = itObj["keyword"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                            val seriesIdFromData = vData["series_id"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                            val seriesId = if (keywordVal.matches(Regex("""\d{5,32}"""))) {
+                                keywordVal
+                            } else if (seriesIdFromData.matches(Regex("""\d{5,32}"""))) {
+                                seriesIdFromData
+                            } else {
+                                keywordVal.ifEmpty { seriesIdFromData }
+                            }
+                            if (seriesId.isEmpty()) continue
+
+                            val title = vData["series_title"]?.jsonPrimitive?.contentOrNull?.trim()
+                                ?: itObj["name"]?.jsonPrimitive?.contentOrNull?.trim()
                                 ?: continue
-                            val seriesId = vData?.get("series_id")?.jsonPrimitive?.contentOrNull
-                                ?: itObj["keyword"]?.jsonPrimitive?.contentOrNull
-                                ?: continue
-                            val cover = vData?.get("series_cover")?.jsonPrimitive?.contentOrNull
-                                ?: itObj["cover_url"]?.jsonPrimitive?.contentOrNull
-                                ?: ""
-                            val epCount = vData?.get("episode_cnt")?.jsonPrimitive?.intOrNull ?: 80
-                            val intro = vData?.get("series_intro")?.jsonPrimitive?.contentOrNull.orEmpty()
+
+                            val cover = vData["series_cover"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                            val epCount = vData["episode_cnt"]?.jsonPrimitive?.intOrNull ?: 80
+                            val intro = vData["series_intro"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+
+                            // 预注入 VID 缓存与简介，加速用户点击后的起播体验
+                            val vidsArr = vData["vid_list"]?.jsonArray
+                            if (vidsArr != null && vidsArr.isNotEmpty()) {
+                                val vids = vidsArr.mapNotNull { it.jsonPrimitive.contentOrNull?.trim() }.filter { it.isNotEmpty() }
+                                if (vids.isNotEmpty()) {
+                                    org.moontechlab.selenetv.hongguo.HongguoStreamResolver.cacheEpisodeVids(seriesId, vids)
+                                }
+                            }
+                            if (intro.isNotEmpty()) {
+                                org.moontechlab.selenetv.hongguo.HongguoStreamResolver.cacheSeriesIntro(seriesId, intro)
+                            }
 
                             val epList = List(epCount) { (it + 1).toString() }
                             val epTitles = List(epCount) { "第${it + 1}集" }
