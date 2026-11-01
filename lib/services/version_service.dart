@@ -407,7 +407,7 @@ class VersionInfo {
     required this.currentVersion,
     required this.latestVersion,
     required this.releaseNotes,
-    this.downloadUrl,
+    String? downloadUrl,
     String? apkDownloadUrl,
     this.releasePageUrl,
     this.assetFileName,

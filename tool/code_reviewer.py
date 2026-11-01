@@ -79,6 +79,31 @@ def precise_parse_file(filepath):
 
     return True
 
+def check_dart_syntax(filepath):
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            src = f.read()
+    except Exception as e:
+        print(f"[CodeReview] 读取文件失败 {filepath}: {e}")
+        return False
+
+    # 1. 基础词法括号闭合审查
+    if not precise_parse_file(filepath):
+        return False
+
+    # 2. 检查构造函数中是否存在重复初始化：形如 this.name 与 : name =
+    # 匹配模式：Constructor(...) : ...
+    constructors = re.findall(r'(\w+)\s*\(([^)]*)\)\s*:\s*([^;{]+)[;{]', src)
+    for cname, params, inits in constructors:
+        this_params = set(re.findall(r'this\.(\w+)', params))
+        init_assignments = set(re.findall(r'(\w+)\s*=', inits))
+        conflict = this_params.intersection(init_assignments)
+        if conflict:
+            print(f"[CodeReview 阻断] {filepath} 构造函数 {cname} 存在字段重复初始化冲突: {conflict} (不能同时使用 this.field 和初始化列表 field = ...)")
+            return False
+
+    return True
+
 def main():
     print("=== [执行提交前自动化代码审查 (Pre-Commit Code Review)] ===")
     
@@ -107,6 +132,11 @@ def main():
                 failed = True
             else:
                 print(f"  ✅ {tf} 词法闭合与类作用域审查通过")
+        elif tf.endswith(".dart"):
+            if not check_dart_syntax(tf):
+                failed = True
+            else:
+                print(f"  ✅ {tf} 词法闭合与构造语法审查通过")
 
     if failed:
         print("\n❌ 自动化代码审查拦截：代码存在语法结构错误，严禁提交！请原地自愈修复后重试。")

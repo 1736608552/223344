@@ -1,5 +1,24 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.41 (2026-11-01)
+
+### 紧急修复 VersionInfo 构造函数字段重复初始化编译阻断 (Error: 'downloadUrl' was already initialized) + 升级代码审查门禁检测 Dart 语法冲突
+
+#### 核心自愈与升级说明
+1. **紧急修复 v2.7.40 触发的 Dart 编译失败故障**：
+   - **深层故障根因 (Source-first 确凿证据)**：
+     - 在 `VersionInfo` 构造函数形参中，因同时使用了 `this.downloadUrl` 与冒号初始化列表 `: downloadUrl = downloadUrl ?? apkDownloadUrl;`；
+     - Dart 编译器在形参解析阶段已将 `this.downloadUrl` 标记为已初始化，在冒号后再次对其赋值触发编译错误：`Error: 'downloadUrl' was already initialized by this constructor`，导致 Flutter 产物构建中断；
+   - **彻底自愈与规范重构**：
+     - 将形参修改为标准的 `String? downloadUrl`（去除 `this.` 提前绑定），统一在冒号初始化列表 `: downloadUrl = downloadUrl ?? apkDownloadUrl` 中完成初始化赋值，彻底消除编译冲突；
+   - **升级提交前自动化代码审查门禁 (`tool/code_reviewer.py`)**：
+     - 新增 Dart 构造函数静态语法审查机制，自动检测 `this.field` 与 `: field = ...` 重复初始化的语法隐患，从源头彻底杜绝同类语法错误外泄。
+2. **构建发布规范**：
+   - 全平台构建产物全自动分发至独立发布仓库 `1736608552/LunaTV-Release`；
+   - 版本更新至 `v2.7.41`（versionCode: `20841`）。
+
+---
+
 ## v2.7.40 (2026-10-31)
 
 ### 彻底根治 Windows PC 桌面端在线更新被误设为下载安卓端 APK 的缺陷 + 全平台自适应更新分发体系 (PC端精准直推 zip 绿色包 + 一键定位资源管理器)
