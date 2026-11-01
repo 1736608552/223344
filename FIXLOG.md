@@ -1,5 +1,30 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.40 (2026-10-31)
+
+### 彻底根治 Windows PC 桌面端在线更新被误设为下载安卓端 APK 的缺陷 + 全平台自适应更新分发体系 (PC端精准直推 zip 绿色包 + 一键定位资源管理器)
+
+#### 核心自愈与升级说明
+1. **彻底攻克 Windows PC 端在线更新错误下载安卓 APK 的深层缺陷**：
+   - **深层故障根因 (Source-first 确凿证据)**：
+     - `VersionService` 在过滤 GitHub Release 资源列表时，未读取当前宿主操作系统类型，硬编码仅匹配 `.endsWith('.apk')`，并将兜底镜像 URL 写死为 `LunaTV-Mobile-v$latestVersion.apk`；
+     - 导致无论在 Windows PC 桌面端、iOS 还是 Android 手机端，检查更新统统匹配到安卓 APK 安装包；
+     - `UpdateDialog` 下载完成后硬编码调用安卓专属 `MethodChannel('org.moontechlab.lunatv/apk_install')`，在 Windows 环境触发缺失通道异常，升级流程彻底中断；
+   - **建立跨平台全自动资产匹配引擎 (Cross-Platform Adaptive Assets Engine)**：
+     - 在 `VersionService` 中引入 `Platform` 探测机制：
+       - **Windows PC 桌面端**：精准匹配 `LunaTV-PC-v{version}-windows-x64.zip` 或 `LunaTV-PC-windows-x64.zip`；CDN 兜底镜像同步挂载 Windows 专属 zip 包；
+       - **iOS 苹果端**：精准匹配 `LunaTV-Mobile-v{version}-unsigned.ipa`；
+       - **Android 移动端**：继续精准匹配手机专属 APK，严格排除 TV 与海信电视专版；
+   - **Windows PC 桌面端专属优雅交互与定位**：
+     - 存储目录自适应：Windows 优先保存至用户系统的 `Downloads`（下载）目录；
+     - 下载完成后自动调起系统 `explorer.exe /select, "path"`，在文件资源管理器中精准高亮选中下载好的绿色更新包；
+     - 对话框提供「打开所在文件夹」与「完成」操作，清晰引导用户解压覆盖原文件即可无损完成升级。
+2. **构建发布规范**：
+   - 全平台构建产物全自动分发至独立发布仓库 `1736608552/LunaTV-Release`；
+   - 版本更新至 `v2.7.40`（versionCode: `20840`）。
+
+---
+
 ## v2.7.39 (2026-10-30)
 
 ### 彻底解决 TV 端与手机端红果短剧搜索无结果/搜不到的重大缺陷 + 升级官方原生 Suggestion 高速端点 + 预注入 VID 缓存秒开

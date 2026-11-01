@@ -71,9 +71,9 @@ class _UpdateDialogState extends State<UpdateDialog> {
   //      → FileProvider → Intent.ACTION_VIEW → 系统 APK 安装器
   //   4. 失败/取消/没 APK 走兜底 (启动 release page URL)
   Future<void> _startDownload() async {
-    final apkUrl = widget.versionInfo.apkDownloadUrl;
-    if (apkUrl == null || apkUrl.isEmpty) {
-      // 没 APK 直链 (release 没传 .apk) → 兜底跳 release 详情页
+    final downloadUrl = widget.versionInfo.downloadUrl;
+    if (downloadUrl == null || downloadUrl.isEmpty) {
+      // 没直链 → 兜底跳 release 详情页
       await _openReleasePage();
       return;
     }
@@ -88,17 +88,27 @@ class _UpdateDialogState extends State<UpdateDialog> {
     });
 
     try {
-      final dir = await getTemporaryDirectory();
-      final fileName = 'luna-tv-update-v${widget.versionInfo.latestVersion}.apk';
-      final filePath = '${dir.path}/$fileName';
+      final isWindows = Platform.isWindows;
+      final isAndroid = Platform.isAndroid;
+      final extension = isWindows ? '.zip' : (Platform.isIOS ? '.ipa' : '.apk');
+      final fileName = widget.versionInfo.assetFileName ??
+          'luna-tv-update-v${widget.versionInfo.latestVersion}$extension';
+
+      Directory dir;
+      if (isWindows) {
+        dir = (await getDownloadsDirectory()) ?? (await getTemporaryDirectory());
+      } else {
+        dir = await getTemporaryDirectory();
+      }
+      final filePath = '${dir.path}${Platform.pathSeparator}$fileName';
 
       // 构建多通道加速镜像候选列表（默认全走 CDN 加速，杜绝代理 URL 干扰）
       final candidateUrls = <String>[];
       final String rawGithubUrl;
-      if (apkUrl.contains('github.com/')) {
-        rawGithubUrl = 'https://github.com/${apkUrl.split("github.com/").last}';
+      if (downloadUrl.contains('github.com/')) {
+        rawGithubUrl = 'https://github.com/${downloadUrl.split("github.com/").last}';
       } else {
-        rawGithubUrl = apkUrl;
+        rawGithubUrl = downloadUrl;
       }
 
       if (rawGithubUrl.startsWith('https://github.com/')) {
@@ -107,7 +117,7 @@ class _UpdateDialogState extends State<UpdateDialog> {
         candidateUrls.add('https://mirror.ghproxy.com/$rawGithubUrl');
         candidateUrls.add(rawGithubUrl);
       } else {
-        candidateUrls.add(apkUrl);
+        candidateUrls.add(downloadUrl);
       }
 
       final dio = Dio();
@@ -117,7 +127,7 @@ class _UpdateDialogState extends State<UpdateDialog> {
       for (final currentTryUrl in candidateUrls) {
         if (_cancelToken?.isCancelled ?? false) break;
 
-        // 老 APK 残留先清掉, 避免「下载了 5MB 失败再重试, 文件被截断」
+        // 老更新包残留先清掉, 避免「下载了 5MB 失败再重试, 文件被截断」
         final oldFile = File(filePath);
         if (await oldFile.exists()) {
           try {
@@ -163,43 +173,63 @@ class _UpdateDialogState extends State<UpdateDialog> {
         _apkPath = filePath;
       });
 
-      // v2.1.46: 调 Android 端 ApkInstallChannel
-      //   - 成功: 调起系统 APK 安装器, 用户在安装器里点「安装」
-      //   - 失败: catch exception, 进 error phase
-      try {
-        await _apkInstallChannel.invokeMethod<void>(
-          'installApk',
-          <String, dynamic>{'path': filePath},
-        );
-        DiaryService.add(
-            '[Update] APK 下载完成, 调起安装器: path=$filePath, size=${_total}B');
+      if (isAndroid) {
+        // Android 端：调起系统 APK 安装器
+        try {
+          await _apkInstallChannel.invokeMethod<void>(
+            'installApk',
+            <String, dynamic>{'path': filePath},
+          );
+          DiaryService.add(
+              '[Update] APK 下载完成, 调起安装器: path=$filePath, size=${_total}B');
+          if (!mounted) return;
+          setState(() {
+            _phase = _DownloadPhase.installed;
+          });
+          // 留 1.5s 让用户看到「已调起安装器」提示, 再关 dialog
+          await Future.delayed(const Duration(milliseconds: 1500));
+          if (!mounted) return;
+          if (Navigator.of(context).canPop()) {
+            Navigator.of(context).pop();
+          }
+        } on PlatformException catch (e) {
+          DiaryService.add(
+              '[Update] 调起 APK 安装器失败: code=${e.code}, message=${e.message}');
+          if (!mounted) return;
+          setState(() {
+            _phase = _DownloadPhase.error;
+            _errorMessage = e.message ?? e.code;
+          });
+        } catch (e) {
+          DiaryService.add('[Update] 调起 APK 安装器失败: $e');
+          if (!mounted) return;
+          setState(() {
+            _phase = _DownloadPhase.error;
+            _errorMessage = e.toString();
+          });
+        }
+      } else if (isWindows) {
+        // Windows PC 桌面端：在文件资源管理器中直接定位选中下载好的 zip 包
+        try {
+          await Process.run('explorer.exe', ['/select,', filePath]);
+          DiaryService.add('[Update] Windows 更新包已下载并在资源管理器中定位: $filePath');
+        } catch (_) {
+          try {
+            await launchUrl(Uri.directory(dir.path));
+          } catch (_) {}
+        }
         if (!mounted) return;
         setState(() {
           _phase = _DownloadPhase.installed;
         });
-        // 留 1.5s 让用户看到「已调起安装器」提示, 再关 dialog
-        await Future.delayed(const Duration(milliseconds: 1500));
-        if (!mounted) return;
-        if (Navigator.of(context).canPop()) {
-          Navigator.of(context).pop();
-        }
-      } on PlatformException catch (e) {
-        // v2.1.46: ApkInstallChannel 返的错误 (e.code 是
-        //   INSTALL_FAILED / FILE_NOT_FOUND / NO_INSTALLER /
-        //   PROVIDER_PATH_MISSING / INVALID_ARG)
-        DiaryService.add(
-            '[Update] 调起 APK 安装器失败: code=${e.code}, message=${e.message}');
+      } else {
+        // 其他桌面/系统平台
+        try {
+          await launchUrl(Uri.file(filePath));
+        } catch (_) {}
         if (!mounted) return;
         setState(() {
-          _phase = _DownloadPhase.error;
-          _errorMessage = e.message ?? e.code;
-        });
-      } catch (e) {
-        DiaryService.add('[Update] 调起 APK 安装器失败: $e');
-        if (!mounted) return;
-        setState(() {
-          _phase = _DownloadPhase.error;
-          _errorMessage = e.toString();
+          _phase = _DownloadPhase.installed;
         });
       }
     } on DioException catch (e) {
@@ -379,7 +409,7 @@ class _UpdateDialogState extends State<UpdateDialog> {
                           child: Icon(
                             _phase == _DownloadPhase.installing ||
                                     _phase == _DownloadPhase.installed
-                                ? Icons.install_mobile_rounded
+                                ? (Platform.isWindows ? Icons.folder_zip_rounded : Icons.install_mobile_rounded)
                                 : _phase == _DownloadPhase.error
                                     ? Icons.error_outline_rounded
                                     : Icons.rocket_launch_rounded,
@@ -394,9 +424,9 @@ class _UpdateDialogState extends State<UpdateDialog> {
                           _phase == _DownloadPhase.downloading
                               ? '正在下载 v${widget.versionInfo.latestVersion}'
                               : _phase == _DownloadPhase.installing
-                                  ? '正在启动安装器'
+                                  ? (Platform.isAndroid ? '正在启动安装器' : '正在准备更新包')
                                   : _phase == _DownloadPhase.installed
-                                      ? '已启动系统安装器'
+                                      ? (Platform.isAndroid ? '已启动系统安装器' : (Platform.isWindows ? '更新包已就绪' : '下载完成'))
                                       : _phase == _DownloadPhase.error
                                           ? '更新失败'
                                           : '发现新版本',
@@ -585,8 +615,12 @@ class _UpdateDialogState extends State<UpdateDialog> {
     final percentText = _phase == _DownloadPhase.downloading
         ? (isIndeterminate ? '下载中...' : '${(_progress * 100).toStringAsFixed(0)}%')
         : _phase == _DownloadPhase.installing
-            ? '启动中...'
-            : '已调起安装器, 在安装器里点「安装」';
+            ? (Platform.isAndroid ? '启动中...' : '准备中...')
+            : (Platform.isAndroid
+                ? '已调起安装器, 在安装器里点「安装」'
+                : (Platform.isWindows
+                    ? '已在资源管理器中定位，解压覆盖即可升级'
+                    : '文件已下载就绪'));
     final sizeText = _phase == _DownloadPhase.downloading && _total > 0
         ? '${_formatBytes(_downloaded)} / ${_formatBytes(_total)}'
         : _phase == _DownloadPhase.downloading
@@ -643,30 +677,31 @@ class _UpdateDialogState extends State<UpdateDialog> {
   Widget _buildBottomButton(ThemeService themeService) {
     switch (_phase) {
       case _DownloadPhase.idle:
-        // v2.1.47: 初始态 — 「下载并安装 vX.X.X」(主) + 「浏览器下载」(并列备选)
-        //   - 有 APK: 内建下载是主路径, 浏览器下载是备选 (用户机器没装
-        //     系统安装器 / 想看 release notes 完再下 / 内建下载器失败想换方式)
-        //   - 没 APK (release 没传 .apk asset): 主按钮变成「查看新版本」
-        //     (内部调 _openReleasePage 跳浏览器), 「浏览器下载」按钮隐藏
-        //     避免冗余 (两个按钮都是跳浏览器)
-        final hasApk = widget.versionInfo.apkDownloadUrl != null;
+        // 初始态 — 平台自适应主下载按钮 + 浏览器备选按钮
+        final hasDownloadUrl = widget.versionInfo.downloadUrl != null;
+        final downloadBtnText = Platform.isWindows
+            ? '下载 Windows 更新包'
+            : (Platform.isAndroid
+                ? '下载并安装 v${widget.versionInfo.latestVersion}'
+                : '下载更新 v${widget.versionInfo.latestVersion}');
+
         return Row(
           children: [
             Expanded(
-              flex: hasApk ? 2 : 1,
+              flex: hasDownloadUrl ? 2 : 1,
               child: SizedBox(
                 height: 44,
                 child: ElevatedButton.icon(
                   onPressed: _startDownload,
                   icon: Icon(
-                    hasApk
+                    hasDownloadUrl
                         ? Icons.download_rounded
                         : Icons.open_in_new_rounded,
                     size: 18,
                   ),
                   label: Text(
-                    hasApk
-                        ? '下载并安装 v${widget.versionInfo.latestVersion}'
+                    hasDownloadUrl
+                        ? downloadBtnText
                         : '查看新版本',
                     style: FontUtils.poppins(
                       context,
@@ -685,7 +720,7 @@ class _UpdateDialogState extends State<UpdateDialog> {
                 ),
               ),
             ),
-            if (hasApk) ...[
+            if (hasDownloadUrl) ...[
               const SizedBox(width: 8),
               Expanded(
                 flex: 1,
@@ -745,7 +780,81 @@ class _UpdateDialogState extends State<UpdateDialog> {
 
       case _DownloadPhase.installing:
       case _DownloadPhase.installed:
-        // 安装器已调起: 灰按钮 「启动中...」 / 「已启动」
+        if (Platform.isWindows && _phase == _DownloadPhase.installed) {
+          // Windows 下下载完成后，提供「打开所在文件夹」和「完成」
+          return Row(
+            children: [
+              Expanded(
+                flex: 2,
+                child: SizedBox(
+                  height: 44,
+                  child: ElevatedButton.icon(
+                    onPressed: () async {
+                      if (_apkPath != null) {
+                        try {
+                          await Process.run('explorer.exe', ['/select,', _apkPath!]);
+                        } catch (_) {
+                          final dir = File(_apkPath!).parent;
+                          await launchUrl(Uri.directory(dir.path));
+                        }
+                      }
+                    },
+                    icon: const Icon(Icons.folder_open_rounded, size: 18),
+                    label: Text(
+                      '打开所在文件夹',
+                      style: FontUtils.poppins(
+                        context,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF27AE60),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                flex: 1,
+                child: SizedBox(
+                  height: 44,
+                  child: OutlinedButton(
+                    onPressed: _dismissAndClose,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: themeService.isDarkMode
+                          ? const Color(0xFFCCCCCC)
+                          : const Color(0xFF666666),
+                      side: BorderSide(
+                        color: themeService.isDarkMode
+                            ? const Color(0xFF555555)
+                            : const Color(0xFFCCCCCC),
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                    child: Text(
+                      '完成',
+                      style: FontUtils.poppins(
+                        context,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        }
+
+        // 安装器已调起或非 Windows: 灰按钮
         return SizedBox(
           width: double.infinity,
           height: 44,
@@ -762,8 +871,8 @@ class _UpdateDialogState extends State<UpdateDialog> {
             ),
             label: Text(
               _phase == _DownloadPhase.installing
-                  ? '启动安装器...'
-                  : '已启动, 1.5s 后关闭',
+                  ? (Platform.isAndroid ? '启动安装器...' : '处理中...')
+                  : (Platform.isAndroid ? '已启动, 1.5s 后关闭' : '已就绪'),
               style: FontUtils.poppins(
                 context,
                 fontSize: 15,
@@ -812,6 +921,9 @@ class _UpdateDialogState extends State<UpdateDialog> {
 
   // v2.1.46: 次要按钮行 (忽略 / 稍后 / 查看 release)
   Widget _buildSecondaryRow(ThemeService themeService) {
+    if (Platform.isWindows && _phase == _DownloadPhase.installed) {
+      return const SizedBox.shrink();
+    }
     if (_phase == _DownloadPhase.installing ||
         _phase == _DownloadPhase.installed) {
       // 调起安装器后次要按钮只显示「关闭」 — 装机成功直接关, 不 dismiss

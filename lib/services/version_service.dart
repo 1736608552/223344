@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
@@ -80,15 +81,152 @@ class VersionService {
     }
   }
 
+  /// 根据当前操作系统平台智能匹配对应的 release asset 下载包
+  static Map<String, String>? _matchAssetForPlatform(List<dynamic> assets, String latestVersion) {
+    if (assets.isEmpty) return null;
+
+    if (Platform.isWindows) {
+      // Windows 平台：优先匹配 Windows 专属 zip/exe 安装包 (如 LunaTV-PC-v2.7.39-windows-x64.zip)
+      for (final asset in assets) {
+        if (asset is Map<String, dynamic>) {
+          final name = ((asset['name'] as String?) ?? '').toLowerCase();
+          final url = (asset['browser_download_url'] as String?) ?? '';
+          if (url.isNotEmpty && (name.endsWith('.zip') || name.endsWith('.exe'))) {
+            if (name.contains('windows') || name.contains('pc') || name.contains('win')) {
+              return {
+                'name': (asset['name'] as String?) ?? 'LunaTV-PC-windows-x64.zip',
+                'url': buildCdnAcceleratedDownloadUrl(url),
+              };
+            }
+          }
+        }
+      }
+      for (final asset in assets) {
+        if (asset is Map<String, dynamic>) {
+          final name = ((asset['name'] as String?) ?? '').toLowerCase();
+          final url = (asset['browser_download_url'] as String?) ?? '';
+          if (url.isNotEmpty && name.endsWith('.zip')) {
+            return {
+              'name': (asset['name'] as String?) ?? 'LunaTV-PC-windows-x64.zip',
+              'url': buildCdnAcceleratedDownloadUrl(url),
+            };
+          }
+        }
+      }
+    } else if (Platform.isIOS) {
+      // iOS 平台：匹配 ipa 文件
+      for (final asset in assets) {
+        if (asset is Map<String, dynamic>) {
+          final name = ((asset['name'] as String?) ?? '').toLowerCase();
+          final url = (asset['browser_download_url'] as String?) ?? '';
+          if (url.isNotEmpty && name.endsWith('.ipa')) {
+            return {
+              'name': (asset['name'] as String?) ?? 'LunaTV-iOS.ipa',
+              'url': buildCdnAcceleratedDownloadUrl(url),
+            };
+          }
+        }
+      }
+    } else if (Platform.isMacOS) {
+      // macOS 平台：匹配 dmg 或 mac.zip
+      for (final asset in assets) {
+        if (asset is Map<String, dynamic>) {
+          final name = ((asset['name'] as String?) ?? '').toLowerCase();
+          final url = (asset['browser_download_url'] as String?) ?? '';
+          if (url.isNotEmpty && (name.endsWith('.dmg') || (name.endsWith('.zip') && name.contains('mac')))) {
+            return {
+              'name': (asset['name'] as String?) ?? 'LunaTV-macOS.dmg',
+              'url': buildCdnAcceleratedDownloadUrl(url),
+            };
+          }
+        }
+      }
+    } else if (Platform.isLinux) {
+      // Linux 平台：匹配 AppImage / deb / tar.gz
+      for (final asset in assets) {
+        if (asset is Map<String, dynamic>) {
+          final name = ((asset['name'] as String?) ?? '').toLowerCase();
+          final url = (asset['browser_download_url'] as String?) ?? '';
+          if (url.isNotEmpty && (name.endsWith('.appimage') || name.endsWith('.deb') || name.endsWith('.tar.gz'))) {
+            return {
+              'name': (asset['name'] as String?) ?? 'LunaTV-Linux.AppImage',
+              'url': buildCdnAcceleratedDownloadUrl(url),
+            };
+          }
+        }
+      }
+    } else {
+      // Android 移动端 (默认): 优先匹配手机端专用包，严格排除电视端包 (tv / hisense / selenetv)
+      for (final asset in assets) {
+        if (asset is Map<String, dynamic>) {
+          final name = ((asset['name'] as String?) ?? '').toLowerCase();
+          final url = (asset['browser_download_url'] as String?) ?? '';
+          if (name.endsWith('.apk') && url.isNotEmpty) {
+            final isTv = name.contains('-tv-') || name.contains('tv-') || name.contains('hisense') || name.contains('selenetv');
+            final isMobile = name.contains('mobile') || name == 'app-release.apk';
+            if (isMobile && !isTv) {
+              return {
+                'name': (asset['name'] as String?) ?? 'LunaTV-Mobile.apk',
+                'url': buildCdnAcceleratedDownloadUrl(url),
+              };
+            }
+          }
+        }
+      }
+      for (final asset in assets) {
+        if (asset is Map<String, dynamic>) {
+          final name = ((asset['name'] as String?) ?? '').toLowerCase();
+          final url = (asset['browser_download_url'] as String?) ?? '';
+          if (name.endsWith('.apk') && url.isNotEmpty) {
+            final isTv = name.contains('-tv-') || name.contains('tv-') || name.contains('hisense') || name.contains('selenetv');
+            if (!isTv) {
+              return {
+                'name': (asset['name'] as String?) ?? 'app-release.apk',
+                'url': buildCdnAcceleratedDownloadUrl(url),
+              };
+            }
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /// 获取当前平台的默认兜底下载文件名与加速 URL
+  static Map<String, String> _getFallbackDownloadInfo(String latestVersion) {
+    if (Platform.isWindows) {
+      final fileName = 'LunaTV-PC-v$latestVersion-windows-x64.zip';
+      final rawUrl = '$githubRepoUrl/releases/download/v$latestVersion/$fileName';
+      return {
+        'name': fileName,
+        'url': buildCdnAcceleratedDownloadUrl(rawUrl),
+      };
+    } else if (Platform.isIOS) {
+      final fileName = 'LunaTV-Mobile-v$latestVersion-unsigned.ipa';
+      final rawUrl = '$githubRepoUrl/releases/download/v$latestVersion/$fileName';
+      return {
+        'name': fileName,
+        'url': buildCdnAcceleratedDownloadUrl(rawUrl),
+      };
+    } else {
+      final fileName = 'LunaTV-Mobile-v$latestVersion.apk';
+      final rawUrl = '$githubRepoUrl/releases/download/v$latestVersion/$fileName';
+      return {
+        'name': fileName,
+        'url': buildCdnAcceleratedDownloadUrl(rawUrl),
+      };
+    }
+  }
+
   /// 通道 1：通过 GitHub Releases API 获取
   static Future<VersionInfo?> _checkViaGithubApi(String currentVersion) async {
     try {
-      // 官方更新不再走用户配置的代理 URL，统一原生或 CDN 降级
+      final osName = Platform.operatingSystem;
       final response = await http.get(
         Uri.parse(githubApiUrl),
         headers: {
           'Accept': 'application/vnd.github.v3+json',
-          'User-Agent': 'LunaTV-Mobile/$currentVersion (Android; Mobile)',
+          'User-Agent': 'LunaTV/$currentVersion ($osName)',
         },
       ).timeout(const Duration(seconds: 4));
 
@@ -98,44 +236,11 @@ class VersionService {
         final latestVersion = _cleanVersion(tagName);
         final releaseNotes = (data['body'] as String?) ?? '';
 
-        String? apkDownloadUrl;
         final assets = data['assets'] as List<dynamic>?;
-        if (assets != null) {
-          // 优先精准匹配手机端专用包（包含 mobile 或名为 app-release.apk），严格排除电视端包（包含 tv、hisense 或 selenetv）
-          for (final asset in assets) {
-            if (asset is Map<String, dynamic>) {
-              final name = ((asset['name'] as String?) ?? '').toLowerCase();
-              final url = (asset['browser_download_url'] as String?) ?? '';
-              if (name.endsWith('.apk') && url.isNotEmpty) {
-                final isTv = name.contains('-tv-') || name.contains('tv-') || name.contains('hisense') || name.contains('selenetv');
-                final isMobile = name.contains('mobile') || name == 'app-release.apk';
-                if (isMobile && !isTv) {
-                  apkDownloadUrl = buildCdnAcceleratedDownloadUrl(url);
-                  break;
-                }
-              }
-            }
-          }
-          // 次选：若无 mobile 显式标识，挑选任意非 TV 端的通用 APK
-          if (apkDownloadUrl == null) {
-            for (final asset in assets) {
-              if (asset is Map<String, dynamic>) {
-                final name = ((asset['name'] as String?) ?? '').toLowerCase();
-                final url = (asset['browser_download_url'] as String?) ?? '';
-                if (name.endsWith('.apk') && url.isNotEmpty) {
-                  final isTv = name.contains('-tv-') || name.contains('tv-') || name.contains('hisense') || name.contains('selenetv');
-                  if (!isTv) {
-                    apkDownloadUrl = buildCdnAcceleratedDownloadUrl(url);
-                    break;
-                  }
-                }
-              }
-            }
-          }
-        }
-        apkDownloadUrl ??= buildCdnAcceleratedDownloadUrl(
-          '$githubRepoUrl/releases/download/v$latestVersion/app-release.apk',
-        );
+        final matchedAsset = _matchAssetForPlatform(assets ?? [], latestVersion) ??
+            _getFallbackDownloadInfo(latestVersion);
+        final downloadUrl = matchedAsset['url'];
+        final assetFileName = matchedAsset['name'];
 
         final releasePageUrl = data['html_url'] as String? ?? getReleaseUrl(latestVersion);
 
@@ -144,7 +249,8 @@ class VersionService {
             currentVersion: currentVersion,
             latestVersion: latestVersion,
             releaseNotes: releaseNotes.isNotEmpty ? releaseNotes : '发现新版本 v$latestVersion，点击立即更新！',
-            apkDownloadUrl: apkDownloadUrl,
+            downloadUrl: downloadUrl,
+            assetFileName: assetFileName,
             releasePageUrl: releasePageUrl,
           );
         }
@@ -163,7 +269,7 @@ class VersionService {
         final response = await http.get(
           Uri.parse(mirrorUrl),
           headers: {
-            'User-Agent': 'Mozilla/5.0 LunaTV-Mobile/$currentVersion',
+            'User-Agent': 'Mozilla/5.0 LunaTV/$currentVersion',
           },
         ).timeout(const Duration(seconds: 3));
 
@@ -175,14 +281,14 @@ class VersionService {
             final notes = (data[firstTag] as String?) ?? '';
 
             if (latestVersion.isNotEmpty && _isNewerVersion(currentVersion, latestVersion)) {
-              final rawDownloadUrl = '$githubRepoUrl/releases/download/v$latestVersion/LunaTV-Mobile-v$latestVersion.apk';
-              final apkUrl = buildCdnAcceleratedDownloadUrl(rawDownloadUrl);
+              final fallback = _getFallbackDownloadInfo(latestVersion);
 
               return VersionInfo(
                 currentVersion: currentVersion,
                 latestVersion: latestVersion,
                 releaseNotes: notes.isNotEmpty ? notes : '发现全新版本 v$latestVersion，点击立即下载安装！',
-                apkDownloadUrl: apkUrl,
+                downloadUrl: fallback['url'],
+                assetFileName: fallback['name'],
                 releasePageUrl: getReleaseUrl(latestVersion),
               );
             }
@@ -198,7 +304,7 @@ class VersionService {
         final response = await http.get(
           Uri.parse(mirrorUrl),
           headers: {
-            'User-Agent': 'Mozilla/5.0 LunaTV-Mobile/$currentVersion',
+            'User-Agent': 'Mozilla/5.0 LunaTV/$currentVersion',
           },
         ).timeout(const Duration(seconds: 3));
 
@@ -215,14 +321,14 @@ class VersionService {
           }
 
           if (latestVersion.isNotEmpty && _isNewerVersion(currentVersion, latestVersion)) {
-            final rawDownloadUrl = '$githubRepoUrl/releases/download/v$latestVersion/app-release.apk';
-            final apkUrl = buildCdnAcceleratedDownloadUrl(rawDownloadUrl);
+            final fallback = _getFallbackDownloadInfo(latestVersion);
 
             return VersionInfo(
               currentVersion: currentVersion,
               latestVersion: latestVersion,
               releaseNotes: '发现全新版本 v$latestVersion，点击下方按钮立即下载安装更新！',
-              apkDownloadUrl: apkUrl,
+              downloadUrl: fallback['url'],
+              assetFileName: fallback['name'],
               releasePageUrl: getReleaseUrl(latestVersion),
             );
           }
@@ -290,14 +396,20 @@ class VersionInfo {
   final String currentVersion;
   final String latestVersion;
   final String releaseNotes;
-  final String? apkDownloadUrl;
+  final String? downloadUrl;
   final String? releasePageUrl;
+  final String? assetFileName;
+
+  // 保持向后兼容：历史代码读取 apkDownloadUrl 依然有效
+  String? get apkDownloadUrl => downloadUrl;
 
   VersionInfo({
     required this.currentVersion,
     required this.latestVersion,
     required this.releaseNotes,
-    this.apkDownloadUrl,
+    this.downloadUrl,
+    String? apkDownloadUrl,
     this.releasePageUrl,
-  });
+    this.assetFileName,
+  }) : downloadUrl = downloadUrl ?? apkDownloadUrl;
 }
