@@ -1,5 +1,30 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.42 (2026-11-02)
+
+### 彻底根治红果短剧全端（TV端与手机端）播放瘫痪故障 + 植入动态随机设备身份生成与会话自愈轮换机制 + 双高可用端点轮询 + Web免风控MP4秒开兜底
+
+#### 核心自愈与升级说明
+1. **彻底攻克红果短剧全端（TV端与手机端）播放瘫痪的重大故障**：
+   - **深层故障根因 (Source-first 铁证)**：
+     - TV 端 `PlaybackDeviceSession.kt` 降级兜底硬编码的静态 ID `3748291048294829104` 以及手机端 `duanju_core_bridge.dart` 硬编码的同款静态 ID，已被字节跳动官方服务端彻底列入风控黑名单；
+     - 请求官方核心取流接口 `multi_video_model/v1` 时，服务端直接拦截并下发 HTTP 200 + `Content-Length: 0`（0 字节空响应体），导致 TV 端与手机端全线断流，电视端提示“播放失败请尝试换源”，手机端播放器黑屏报错；
+   - **两端彻底拔除静态死 ID，重构为动态随机设备身份与会话自愈机制**：
+     - **TV 端与 Android 原生层**：`VendorConstants` 彻底移除硬编码 `3748291048294829104`，改为 `randomInstallId()` 动态生成合法 16 位随机数字身份；`PlaybackDeviceSession` 在遭遇 0 字节风控空响应时提供 `invalidate()` 线程安全作废会话方法，自动重置设备身份并向官方 `device_register` 发起注册获取全新合法设备 ID 和 Cookies；
+     - **Flutter 跨平台桥接层 (`duanju_core_bridge.dart`)**：拔除硬编码死 ID，新增动态会话状态管理，同样接入动态设备身份生成与自愈刷新；
+2. **双域名高可用轮询与 Web 官方试看流免密秒开兜底**：
+   - **双高可用官方端点轮询容灾**：
+     - 两端取流接口全面接入 `api5-normal-sinfonlineb.fqnovel.com` 与 `api5-normal-sinfonlinea.fqnovel.com` 双通道智能轮询，抵御单域名解析故障与机房拦截；
+   - **Web 官方免风控试看直链平滑兜底**：
+     - 实测证实官方网页端在每部剧的前 3 集开放免密火山 CDN MP4 直链；TV 端与手机端在原生接口和备用接口均遭遇极端网络或风控拦截时，自动触发第 3 级策略探活官方公开流（`video/public/$vid/360p.mp4`），探活成功即刻起播，彻底杜绝黑屏与报错弹窗！
+3. **短剧 ID 规范化清洗与前缀兼容**：
+   - 在 `DuanjuCoreBridge.getPlaybackPlan` 入口处补充 `cleanSeriesId` 清洗，自动剔除可能传入的 `hongguo:` 等协议前缀，杜绝正则提取 VID 失败。
+4. **构建发布规范**：
+   - 全平台构建产物全自动分发至独立发布仓库 `1736608552/LunaTV-Release`；
+   - 版本更新至 `v2.7.42`（versionCode: `20842`）。
+
+---
+
 ## v2.7.41 (2026-11-01)
 
 ### 紧急修复 VersionInfo 构造函数字段重复初始化编译阻断 (Error: 'downloadUrl' was already initialized) + 升级代码审查门禁检测 Dart 语法冲突

@@ -48,6 +48,12 @@ class PlaybackDeviceSession(
     private var ready: Profile? = null
 
     @Synchronized
+    fun invalidate() {
+        ready = null
+        VendorConstants.regenerate()
+    }
+
+    @Synchronized
     fun profile(http: OkHttpClient): Profile {
         ready?.let { return it }
 
@@ -55,16 +61,18 @@ class PlaybackDeviceSession(
             register(http)
         } catch (ignored: Exception) {
             null
-        } ?: DeviceRegister.Registered(
-            // 手机端长期稳定放行、且全网兼容的工业级预置合法短剧设备身份
-            deviceId = "3748291048294829104",
-            installId = "1928374650192837465",
-            cookies = mapOf(
-                "install_id" to "1928374650192837465",
-                "store-region" to "cn",
-                "store-region-src" to "fallback"
+        } ?: run {
+            VendorConstants.regenerate()
+            DeviceRegister.Registered(
+                deviceId = VendorConstants.installDeviceId,
+                installId = VendorConstants.installIid,
+                cookies = mapOf(
+                    "install_id" to VendorConstants.installIid,
+                    "store-region" to "cn",
+                    "store-region-src" to "fallback"
+                )
             )
-        )
+        }
 
         val cookieHeader = device.cookies
             .filterKeys {

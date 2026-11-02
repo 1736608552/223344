@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:ffi/ffi.dart';
@@ -1231,7 +1232,7 @@ class DuanjuCoreBridge {
     required int episode,
     int quality = 0,
   }) async {
-    final cleanId = dramaId.trim();
+    final cleanId = cleanSeriesId(dramaId);
     final cacheKey = quality == 0 ? '$cleanId-$episode' : '$cleanId-$episode-$quality';
 
     if (_planCache.containsKey(cacheKey)) {
@@ -1608,6 +1609,22 @@ class DuanjuCoreBridge {
     return [];
   }
 
+  static String _hongguoDynamicDevId = '';
+  static String _hongguoDynamicIid = '';
+
+  static void _refreshHongguoDeviceIdentity() {
+    final rnd = math.Random();
+    _hongguoDynamicDevId = '2${List.generate(15, (_) => rnd.nextInt(10)).join()}';
+    _hongguoDynamicIid = '2${List.generate(15, (_) => rnd.nextInt(10)).join()}';
+  }
+
+  static (String devId, String iid) _getHongguoDeviceIdentity() {
+    if (_hongguoDynamicDevId.isEmpty || _hongguoDynamicIid.isEmpty) {
+      _refreshHongguoDeviceIdentity();
+    }
+    return (_hongguoDynamicDevId, _hongguoDynamicIid);
+  }
+
   Future<DuanjuPlaybackPlan?> _fetchHongguoAppPlaybackPlan(
     String seriesId,
     String videoId,
@@ -1617,8 +1634,10 @@ class DuanjuCoreBridge {
     for (int attempt = 0; attempt < 2; attempt++) {
       try {
         final now = DateTime.now().add(Duration(milliseconds: attempt * 200));
-        const devId = '3748291048294829104';
-        const iid = '1928374650192837465';
+        if (attempt > 0) {
+          _refreshHongguoDeviceIdentity();
+        }
+        final (devId, iid) = _getHongguoDeviceIdentity();
         final q = <String, String>{
           'aid': '8662',
           'app_name': 'novelread',
@@ -1662,10 +1681,12 @@ class DuanjuCoreBridge {
         final bodyBytes = Uint8List.fromList(utf8.encode(jsonEncode(payloadMap)));
         final signHeaders = _signHongguo(queryStr, bodyBytes, now);
 
-        // 优先请求官方正片完整播放接口 (v1，整集1~2分钟完整正片，彻底终结 preload 仅返回 10 秒预取视频片段的缺陷)
+        // 优先请求官方正片完整播放接口 (双域名高可用轮询 + v1/preload双通道)
         final playEndpoints = [
           'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?$queryStr',
+          'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1/?$queryStr',
           'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/?$queryStr',
+          'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/preload/v1/?$queryStr',
         ];
 
         http.Response? resp;
@@ -1683,7 +1704,7 @@ class DuanjuCoreBridge {
                 ...signHeaders,
               },
               body: bodyBytes,
-            ).timeout(const Duration(seconds: 12));
+            ).timeout(const Duration(seconds: 8));
             if (r.statusCode == 200 && r.body.isNotEmpty) {
               final test = jsonDecode(r.body);
               if (test is Map && (test['code'] == 0 || test['Code'] == 0)) {
@@ -1834,6 +1855,34 @@ class DuanjuCoreBridge {
         }
       }
     }
+
+    // 通道 2.5: 官方 Web 试看直链免风控兜底 (火山 CDN 360P 免密直出，保障前几集极速秒开)
+    if (videoId.isNotEmpty) {
+      final webUrl = 'https://hongguoduanju.com/video/public/$videoId/360p.mp4';
+      try {
+        final headResp = await http.head(
+          Uri.parse(webUrl),
+          headers: {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'},
+        ).timeout(const Duration(seconds: 4));
+        if (headResp.statusCode == 200 || headResp.statusCode == 206) {
+          return DuanjuPlaybackPlan(
+            url: webUrl,
+            decryptionKey: '',
+            keys: const {},
+            headers: const {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+              'Referer': 'https://hongguoduanju.com/',
+            },
+            multiMap: {'360P': webUrl},
+            resolution: '360P（免密试看）',
+            quality: 360,
+            actualQuality: 360,
+            qualities: const [360],
+          );
+        }
+      } catch (_) {}
+    }
+
     return null;
   }
 

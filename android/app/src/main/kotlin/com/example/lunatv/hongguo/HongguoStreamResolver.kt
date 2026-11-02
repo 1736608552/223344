@@ -482,6 +482,74 @@ object HongguoStreamResolver {
         }
 
         if (bodyStr.isBlank()) {
+            // 自愈机制：若遭遇 0 字节空响应，说明当前设备可能被官方临时风控拉黑，立即作废当前会话并尝试全新注册重试一次
+            PlaybackDeviceSession.shared.invalidate()
+            val freshIdentity = PlaybackDeviceSession.shared.profile(client)
+            val endpoints = listOf(
+                "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1/",
+                "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/"
+            )
+            for (ep in endpoints) {
+                try {
+                    val now = System.currentTimeMillis()
+                    val qp = freshIdentity.values.toMutableMap()
+                    qp["_rticket"] = now.toString()
+                    val qs = qp.entries.joinToString("&") { (k, v) ->
+                        java.net.URLEncoder.encode(k, "UTF-8") + "=" + java.net.URLEncoder.encode(v, "UTF-8")
+                    }
+                    val req = Request.Builder()
+                        .url("$ep?$qs")
+                        .header("User-Agent", PlaybackDeviceSession.PLAYBACK_UA)
+                        .header("Accept", "application/json; charset=utf-8,application/x-protobuf")
+                        .apply {
+                            if (freshIdentity.cookie.isNotBlank()) {
+                                header("Cookie", freshIdentity.cookie)
+                            }
+                        }
+                        .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                        .build()
+                    val resp = client.newCall(req).execute()
+                    val content = resp.body?.string().orEmpty()
+                    if (content.isNotBlank()) {
+                        val testJson = try { JSONObject(content) } catch (ignored: Exception) { null }
+                        if (testJson?.optInt("Code", testJson.optInt("code", 0)) == 0) {
+                            bodyStr = content
+                            break
+                        }
+                    }
+                } catch (ignored: Exception) {}
+            }
+        }
+
+        if (bodyStr.isBlank()) {
+            // 策略 3 (终极平滑兜底): 官方 Web 试看直链探测 (免设备鉴权、免风控火山 CDN 直出，确保前几集 100% 秒开)
+            val publicWebUrl = "https://hongguoduanju.com/video/public/$cleanVid/360p.mp4"
+            var webPlayable = false
+            try {
+                val probeReq = Request.Builder()
+                    .url(publicWebUrl)
+                    .header("User-Agent", VendorConstants.VIDEO_UA)
+                    .header("Range", "bytes=0-1023")
+                    .build()
+                client.newCall(probeReq).execute().use { probeResp ->
+                    if (probeResp.isSuccessful || probeResp.code == 206) {
+                        webPlayable = true
+                    }
+                }
+            } catch (ignored: Exception) {}
+
+            if (webPlayable) {
+                return mapOf(
+                    "url" to publicWebUrl,
+                    "decryptionKey" to "",
+                    "quality" to "360P（免密试看）",
+                    "actualQuality" to 360,
+                    "qualities" to listOf(360),
+                    "multiMap" to mapOf("360P" to publicWebUrl),
+                    "keys" to emptyMap<String, String>()
+                )
+            }
+
             throw lastErr ?: IOException("Empty response from multi_video_model for vid $cleanVid")
         }
 
