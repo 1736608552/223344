@@ -1,23 +1,85 @@
 // Derived from drpys 22261ad; GPL-3.0.
 package org.moontechlab.lunatv.hongguo
 
+import android.content.Context
+import android.content.SharedPreferences
 import kotlin.random.Random
 
 internal object VendorConstants {
     const val VIDEO_UA = "com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
     const val APP_UA = "com.phoenix.read/72232 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)"
 
-    // 动态设备身份与进程指纹：彻底拔除已公开泄露被拉黑的静态 ID，每次初始化与轮换均动态生成合法指纹
-    var installIid: String = randomInstallId()
-    var installDeviceId: String = randomInstallId()
+    private const val PREFS_NAME = "hongguo_device_identity_v2"
+    private const val KEY_INSTALL_IID = "key_install_iid"
+    private const val KEY_DEVICE_ID = "key_device_id"
+    private const val KEY_OPENUDID = "key_openudid"
+    private const val KEY_CLIENTUDID = "key_clientudid"
+    private const val KEY_CDID = "key_cdid"
+    private val BLACKLIST_IDS = setOf("3748291048294829104", "0")
+
+    private fun getAppContext(): Context? {
+        return try {
+            val activityThreadClass = Class.forName("android.app.ActivityThread")
+            val currentApplication = activityThreadClass.getMethod("currentApplication")
+            (currentApplication.invoke(null) as? Context)?.applicationContext
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun getPrefs(): SharedPreferences? = getAppContext()?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    // 专属设备身份与指纹本地持久化绑定：每台设备首次安装/升级自动分配专属唯一ID并持久化，彻底杜绝共用封禁
+    var installIid: String = loadOrGenerateId(KEY_INSTALL_IID)
+    var installDeviceId: String = loadOrGenerateId(KEY_DEVICE_ID)
+    var openUdid: String = loadOrGenerateString(KEY_OPENUDID) { randomHex(16) }
+    var clientUdid: String = loadOrGenerateString(KEY_CLIENTUDID) { java.util.UUID.randomUUID().toString() }
+    var cdid: String = loadOrGenerateString(KEY_CDID) { java.util.UUID.randomUUID().toString() }
+
     var processNonce: String = randomNonce()
     var processStarted: Long = System.currentTimeMillis()
+
+    private fun loadOrGenerateId(key: String): String {
+        val sp = getPrefs()
+        var id = sp?.getString(key, null).orEmpty()
+        if (id.isBlank() || id in BLACKLIST_IDS) {
+            id = randomInstallId()
+            sp?.edit()?.putString(key, id)?.apply()
+        }
+        return id
+    }
+
+    private fun loadOrGenerateString(key: String, generator: () -> String): String {
+        val sp = getPrefs()
+        var str = sp?.getString(key, null).orEmpty()
+        if (str.isBlank()) {
+            str = generator()
+            sp?.edit()?.putString(key, str)?.apply()
+        }
+        return str
+    }
 
     fun regenerate() {
         installIid = randomInstallId()
         installDeviceId = randomInstallId()
+        openUdid = randomHex(16)
+        clientUdid = java.util.UUID.randomUUID().toString()
+        cdid = java.util.UUID.randomUUID().toString()
         processNonce = randomNonce()
         processStarted = System.currentTimeMillis()
+
+        getPrefs()?.edit()
+            ?.putString(KEY_INSTALL_IID, installIid)
+            ?.putString(KEY_DEVICE_ID, installDeviceId)
+            ?.putString(KEY_OPENUDID, openUdid)
+            ?.putString(KEY_CLIENTUDID, clientUdid)
+            ?.putString(KEY_CDID, cdid)
+            ?.apply()
+    }
+
+    private fun randomHex(len: Int): String {
+        val hexChars = "0123456789abcdef"
+        return buildString { repeat(len) { append(hexChars[Random.nextInt(16)]) } }
     }
 
     private fun randomInstallId(): String = buildString {
@@ -35,6 +97,9 @@ internal object VendorConstants {
         get() = linkedMapOf(
             "iid" to installIid,
             "device_id" to installDeviceId,
+            "openudid" to openUdid,
+            "clientudid" to clientUdid,
+            "cdid" to cdid,
             "ac" to "wifi",
             "channel" to "update_64",
             "aid" to "8662",

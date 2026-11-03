@@ -43,7 +43,7 @@ class PlaybackDeviceSession(
 
     data class Profile(val values: Map<String, String>, val cookie: String)
 
-    private val cdid = UUID.randomUUID().toString()
+    private val cdid: String get() = VendorConstants.cdid
     @Volatile
     private var ready: Profile? = null
 

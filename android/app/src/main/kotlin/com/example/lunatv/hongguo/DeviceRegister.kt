@@ -114,7 +114,7 @@ object DeviceRegister {
                     "openudid",
                     value("openudid", UUID.randomUUID().toString().replace("-", "").take(16)),
                 )
-                put("clientudid", UUID.randomUUID().toString())
+                put("clientudid", value("clientudid", UUID.randomUUID().toString()))
                 put("ipv6_list", JSONArray())
                 put("region", "CN")
                 put("tz_name", "Asia/Shanghai")

@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:luna_tv/danmaku/models/danmaku_comment.dart';
 import 'package:luna_tv/danmaku/models/hongguo_danmaku_emojis.dart';
 
@@ -1520,11 +1521,10 @@ class DuanjuCoreBridge {
     final cleanId = cleanSeriesId(seriesId);
     if (!RegExp(r'^\d{1,32}$').hasMatch(cleanId)) return [];
 
+    final (devId, iid) = await _getHongguoDeviceIdentityAsync();
     for (int attempt = 0; attempt < 2; attempt++) {
       try {
         final now = DateTime.now().add(Duration(milliseconds: attempt * 200));
-        const devId = '3748291048294829104';
-        const iid = '1928374650192837465';
         final q = <String, String>{
           'aid': '8662',
           'app_name': 'novelread',
@@ -1609,20 +1609,68 @@ class DuanjuCoreBridge {
     return [];
   }
 
-  static String _hongguoDynamicDevId = '';
-  static String _hongguoDynamicIid = '';
+  static const String _kHongguoDevIdKey = 'hongguo_unique_dev_id_v2';
+  static const String _kHongguoIidKey = 'hongguo_unique_iid_v2';
+  static const Set<String> _kHongguoBlacklist = {'3748291048294829104', '0'};
 
-  static void _refreshHongguoDeviceIdentity() {
+  static String _hongguoPersistentDevId = '';
+  static String _hongguoPersistentIid = '';
+
+  static String _generateUnique16Id() {
     final rnd = math.Random();
-    _hongguoDynamicDevId = '2${List.generate(15, (_) => rnd.nextInt(10)).join()}';
-    _hongguoDynamicIid = '2${List.generate(15, (_) => rnd.nextInt(10)).join()}';
+    return '2${List.generate(15, (_) => rnd.nextInt(10)).join()}';
   }
 
-  static (String devId, String iid) _getHongguoDeviceIdentity() {
-    if (_hongguoDynamicDevId.isEmpty || _hongguoDynamicIid.isEmpty) {
-      _refreshHongguoDeviceIdentity();
+  /// 异步从 SharedPreferences 加载或分配并持久化每台设备的专属独立 ID (老用户升级自动无感迁移)
+  static Future<(String devId, String iid)> _getHongguoDeviceIdentityAsync() async {
+    if (_hongguoPersistentDevId.isNotEmpty &&
+        _hongguoPersistentIid.isNotEmpty &&
+        !_kHongguoBlacklist.contains(_hongguoPersistentDevId)) {
+      return (_hongguoPersistentDevId, _hongguoPersistentIid);
     }
-    return (_hongguoDynamicDevId, _hongguoDynamicIid);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      var devId = prefs.getString(_kHongguoDevIdKey) ?? '';
+      var iid = prefs.getString(_kHongguoIidKey) ?? '';
+
+      // 若老设备此前残留被封黑名单 ID 或为空，全自动重新分配全新独立 ID 并持久化写入
+      if (devId.isEmpty || iid.isEmpty || _kHongguoBlacklist.contains(devId)) {
+        devId = _generateUnique16Id();
+        iid = _generateUnique16Id();
+        await prefs.setString(_kHongguoDevIdKey, devId);
+        await prefs.setString(_kHongguoIidKey, iid);
+      }
+      _hongguoPersistentDevId = devId;
+      _hongguoPersistentIid = iid;
+      return (devId, iid);
+    } catch (_) {
+      return _getHongguoDeviceIdentitySync();
+    }
+  }
+
+  /// 同步快速获取已缓存的专属 ID，未就绪时分配并异步写盘
+  static (String devId, String iid) _getHongguoDeviceIdentitySync() {
+    if (_hongguoPersistentDevId.isEmpty ||
+        _hongguoPersistentIid.isEmpty ||
+        _kHongguoBlacklist.contains(_hongguoPersistentDevId)) {
+      _hongguoPersistentDevId = _generateUnique16Id();
+      _hongguoPersistentIid = _generateUnique16Id();
+      SharedPreferences.getInstance().then((prefs) {
+        prefs.setString(_kHongguoDevIdKey, _hongguoPersistentDevId);
+        prefs.setString(_kHongguoIidKey, _hongguoPersistentIid);
+      }).catchError((_) {});
+    }
+    return (_hongguoPersistentDevId, _hongguoPersistentIid);
+  }
+
+  /// 单机故障自愈：当遇到风控拦截时作废并重新分配新 ID 持久化
+  static void _refreshHongguoDeviceIdentity() {
+    _hongguoPersistentDevId = _generateUnique16Id();
+    _hongguoPersistentIid = _generateUnique16Id();
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setString(_kHongguoDevIdKey, _hongguoPersistentDevId);
+      prefs.setString(_kHongguoIidKey, _hongguoPersistentIid);
+    }).catchError((_) {});
   }
 
   Future<DuanjuPlaybackPlan?> _fetchHongguoAppPlaybackPlan(
@@ -1637,7 +1685,7 @@ class DuanjuCoreBridge {
         if (attempt > 0) {
           _refreshHongguoDeviceIdentity();
         }
-        final (devId, iid) = _getHongguoDeviceIdentity();
+        final (devId, iid) = await _getHongguoDeviceIdentityAsync();
         final q = <String, String>{
           'aid': '8662',
           'app_name': 'novelread',
