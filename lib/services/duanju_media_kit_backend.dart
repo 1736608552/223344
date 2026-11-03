@@ -219,7 +219,6 @@ class DuanjuMediaKitBackend implements PlayerBackend {
           await platform.setProperty('audio-buffer', '0.8');
           await platform.setProperty('audio-pitch-correction', 'no');
           await platform.setProperty('audio-channels', 'stereo');
-          await platform.setProperty('volume-max', '200');
           await platform.setProperty('autosync', '0');
         } catch (e) {
           if (kDebugMode) {
@@ -271,8 +270,8 @@ class DuanjuMediaKitBackend implements PlayerBackend {
   @override
   Future<void> setVolume(double volume) async {
     if (_disposed) return;
-    _volume = volume.clamp(0.0, 2.0);
-    // media_kit volume 范围为 0.0 ~ 200.0 (底层 volume-max=200)
+    _volume = volume.clamp(0.0, 1.0);
+    // media_kit volume 范围为 0.0 ~ 100.0
     await _player.setVolume(_volume * 100.0);
   }
 

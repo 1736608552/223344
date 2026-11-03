@@ -115,9 +115,8 @@ class MpvPlayerController(
             "stream-lavf-o",
             "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=2",
         )
-        // 电视端声学优化：立体声下混人声增强 + 充沛音量增益
+        // 电视端声学优化：立体声下混人声增强
         mpv.setOptionString("audio-channels", "stereo")
-        mpv.setOptionString("volume-max", "150")
         mpv.setOptionString("audio-pitch-correction", "yes")
 
         mpv.init()

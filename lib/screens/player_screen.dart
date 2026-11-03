@@ -823,18 +823,13 @@ class _PlayerScreenState extends State<PlayerScreen>
         _volumeKeyChannel.invokeMethod<bool>('setEnabled', {'enabled': false}));
   }
 
-  /// 统一处理系统音量 (支持 0.0 ~ 1.5, 0~1.0 调系统音量与播放器音量, >1.0 锁定系统音量最大)
+  /// 统一处理系统音量 (标准 0.0 ~ 1.0, 对应 0% ~ 100%)
   Future<void> _applyVolume(double targetVol) async {
-    final v = targetVol.clamp(0.0, 1.5);
+    final v = targetVol.clamp(0.0, 1.0);
     _currentVolume = v;
     try {
-      if (v <= 1.0) {
-        await VolumeController.instance.setVolume(v);
-        await _player?.setVolume(v);
-      } else {
-        await VolumeController.instance.setVolume(1.0);
-        await _player?.setVolume(1.0);
-      }
+      await VolumeController.instance.setVolume(v);
+      await _player?.setVolume(v);
     } catch (_) {}
   }
 
@@ -1622,10 +1617,10 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
-  /// 键盘快捷键调节音量 (向上/向下键, 支持最高 150% 增强)
+  /// 键盘快捷键调节音量 (向上/向下键)
   void _adjustVolumeByStep(double delta) {
     if (_isDisposing) return;
-    final newVol = (_currentVolume + delta).clamp(0.0, 1.5);
+    final newVol = (_currentVolume + delta).clamp(0.0, 1.0);
     setState(() {
       _currentVolume = newVol;
       _showVolumeIndicator = true;
@@ -2371,11 +2366,10 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   void _onVolumeSwipeUpdate(DragUpdateDetails details) {
-    // 同亮度手势, 用累计 delta + 支持滑至 1.5 (150% 超额音量放大)
     _totalDragVolumeDelta += -details.delta.dy; // 上滑增音量
     final screenHeight = MediaQuery.of(context).size.height;
-    final normalized = (_totalDragVolumeDelta / screenHeight) * 1.5;
-    final targetVol = (_dragStartVolume! + normalized).clamp(0.0, 1.5);
+    final normalized = (_totalDragVolumeDelta / screenHeight) * 1.0;
+    final targetVol = (_dragStartVolume! + normalized).clamp(0.0, 1.0);
     setState(() {
       _currentVolume = targetVol;
       _showVolumeIndicator = true;
@@ -2392,7 +2386,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     _scheduleHideControls();
   }
 
-  // v2.5.18 / v2.7.45: 物理音量键回调 — 支持超额增强至 1.5 (150%)
+  // 物理音量键回调
   Future<dynamic> _onVolumeKeyCall(MethodCall call) async {
     if (call.method != 'onVolumeKey') return null;
     final direction = call.arguments as String?;
@@ -2402,10 +2396,10 @@ class _PlayerScreenState extends State<PlayerScreen>
     double newVolume = _currentVolume;
     switch (direction) {
       case 'up':
-        newVolume = (_currentVolume + step).clamp(0.0, 1.5);
+        newVolume = (_currentVolume + step).clamp(0.0, 1.0);
         break;
       case 'down':
-        newVolume = (_currentVolume - step).clamp(0.0, 1.5);
+        newVolume = (_currentVolume - step).clamp(0.0, 1.0);
         break;
       case 'mute':
         // 物理静音键 — 静音切到 0, 再按一下恢复原音量.
@@ -8232,11 +8226,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
-  /// 音量浮窗 (右侧, 支持 150% 超额放大指示)
+  /// 音量浮窗 (右侧, 标准 0% ~ 100%)
   Widget _buildVolumeIndicator() {
-    final isBoosted = _currentVolume > 1.0;
-    const boostColor = Color(0xFFF59E0B); // 琥珀金色高亮表示音量增强
-    final activeColor = isBoosted ? boostColor : Colors.white;
     final percent = (_currentVolume * 100).round();
 
     return Positioned(
@@ -8245,14 +8236,11 @@ class _PlayerScreenState extends State<PlayerScreen>
       bottom: 0,
       child: Center(
         child: Container(
-          width: 58,
+          width: 56,
           padding: const EdgeInsets.symmetric(vertical: 16),
           decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.75),
-            borderRadius: BorderRadius.circular(14),
-            border: isBoosted
-                ? Border.all(color: boostColor.withOpacity(0.6), width: 1.2)
-                : null,
+            color: Colors.black.withOpacity(0.7),
+            borderRadius: BorderRadius.circular(12),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -8262,30 +8250,30 @@ class _PlayerScreenState extends State<PlayerScreen>
                     ? Icons.volume_off
                     : _currentVolume < 0.5
                         ? Icons.volume_down
-                        : (isBoosted ? Icons.volume_up_rounded : Icons.volume_up),
-                color: activeColor,
+                        : Icons.volume_up,
+                color: Colors.white,
                 size: 28,
               ),
               const SizedBox(height: 10),
               SizedBox(
-                width: 5,
+                width: 4,
                 height: 120,
                 child: Stack(
                   children: [
                     Container(
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(2.5),
+                        color: Colors.white.withOpacity(0.3),
+                        borderRadius: BorderRadius.circular(2),
                       ),
                     ),
                     Align(
                       alignment: Alignment.bottomCenter,
                       child: FractionallySizedBox(
-                        heightFactor: (_currentVolume / 1.5).clamp(0.0, 1.0),
+                        heightFactor: _currentVolume.clamp(0.0, 1.0),
                         child: Container(
                           decoration: BoxDecoration(
-                            color: activeColor,
-                            borderRadius: BorderRadius.circular(2.5),
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(2),
                           ),
                         ),
                       ),
@@ -8295,25 +8283,13 @@ class _PlayerScreenState extends State<PlayerScreen>
               ),
               const SizedBox(height: 10),
               Text(
-                '$percent%',
-                style: TextStyle(
-                  color: activeColor,
-                  fontSize: 12,
+                '$percent',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              if (isBoosted)
-                const Padding(
-                  padding: EdgeInsets.only(top: 2),
-                  child: Text(
-                    '放大',
-                    style: TextStyle(
-                      color: boostColor,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
             ],
           ),
         ),
