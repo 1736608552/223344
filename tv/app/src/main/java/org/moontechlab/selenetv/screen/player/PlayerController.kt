@@ -111,26 +111,7 @@ class PlayerController(
     private var lastHeaders: Map<String, String>? = null
     private var hasFallbackToRaw: Boolean = false
 
-    private var loudnessEnhancer: android.media.audiofx.LoudnessEnhancer? = null
-
-    private fun setupLoudnessEnhancer(audioSessionId: Int) {
-        if (audioSessionId <= 0) return
-        try {
-            loudnessEnhancer?.release()
-            loudnessEnhancer = android.media.audiofx.LoudnessEnhancer(audioSessionId).apply {
-                // TV 端外放和双声道电视扬声器，动态赋予 +300 mB (+3.0dB) 的动态人声对白与响度补偿
-                setTargetGain(300)
-                enabled = true
-            }
-        } catch (_: Throwable) {
-            loudnessEnhancer = null
-        }
-    }
-
     private val listener = object : Player.Listener {
-        override fun onAudioSessionIdChanged(audioSessionId: Int) {
-            setupLoudnessEnhancer(audioSessionId)
-        }
         override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
         override fun onPlaybackStateChanged(state: Int) {
             isBuffering = state == Player.STATE_BUFFERING
@@ -283,10 +264,6 @@ class PlayerController(
         releaseCurrentRemoteVideo()
         networkCleanupExecutor.shutdown()
         exo.removeListener(listener)
-        try {
-            loudnessEnhancer?.release()
-        } catch (_: Throwable) {}
-        loudnessEnhancer = null
         exo.stop()
         exo.clearMediaItems()
         exo.release()

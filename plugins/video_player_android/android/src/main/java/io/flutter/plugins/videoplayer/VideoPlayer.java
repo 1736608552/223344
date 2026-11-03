@@ -40,9 +40,6 @@ public abstract class VideoPlayer implements VideoPlayerInstanceApi {
   // TODO: Migrate to stable API, see https://github.com/flutter/flutter/issues/147039.
   @UnstableApi @Nullable protected DefaultTrackSelector trackSelector;
 
-  @Nullable private android.media.audiofx.LoudnessEnhancer loudnessEnhancer;
-  private double targetVolume = 1.0;
-
   private final Handler mainHandler = new Handler(Looper.getMainLooper());
   private boolean isDisposed = false;
 
@@ -88,50 +85,7 @@ public abstract class VideoPlayer implements VideoPlayerInstanceApi {
     exoPlayer.prepare();
     exoPlayerEventListener = createExoPlayerEventListener(exoPlayer, surfaceProducer);
     exoPlayer.addListener(exoPlayerEventListener);
-    exoPlayer.addListener(
-        new androidx.media3.common.Player.Listener() {
-          @Override
-          public void onAudioSessionIdChanged(int audioSessionId) {
-            setupLoudnessEnhancer(audioSessionId);
-          }
-        });
     setAudioAttributes(exoPlayer, options.mixWithOthers);
-  }
-
-  private void setupLoudnessEnhancer(int audioSessionId) {
-    if (audioSessionId <= 0) return;
-    try {
-      if (loudnessEnhancer != null) {
-        loudnessEnhancer.release();
-        loudnessEnhancer = null;
-      }
-      loudnessEnhancer = new android.media.audiofx.LoudnessEnhancer(audioSessionId);
-      loudnessEnhancer.setEnabled(true);
-      applyVolumeAndGain(targetVolume);
-    } catch (Throwable t) {
-      loudnessEnhancer = null;
-    }
-  }
-
-  private void applyVolumeAndGain(double volume) {
-    float baseVolume = (float) Math.max(0.0, Math.min(1.0, volume));
-    exoPlayer.setVolume(baseVolume);
-
-    if (loudnessEnhancer != null) {
-      try {
-        if (volume > 1.0) {
-          int gainMb = (int) Math.round((volume - 1.0) * 1000.0);
-          loudnessEnhancer.setTargetGain(gainMb);
-          loudnessEnhancer.setEnabled(true);
-        } else if (volume > 0.05) {
-          loudnessEnhancer.setTargetGain(150);
-          loudnessEnhancer.setEnabled(true);
-        } else {
-          loudnessEnhancer.setEnabled(false);
-        }
-      } catch (Throwable ignored) {
-      }
-    }
   }
 
   public void setDisposeHandler(@Nullable DisposeHandler handler) {
@@ -190,8 +144,8 @@ public abstract class VideoPlayer implements VideoPlayerInstanceApi {
 
   @Override
   public void setVolume(double volume) {
-    this.targetVolume = Math.max(0.0, Math.min(2.0, volume));
-    applyVolumeAndGain(this.targetVolume);
+    float bracketedValue = (float) Math.max(0.0, Math.min(1.0, volume));
+    exoPlayer.setVolume(bracketedValue);
   }
 
   @Override
@@ -507,13 +461,6 @@ public abstract class VideoPlayer implements VideoPlayerInstanceApi {
     if (exoPlayerEventListener != null) {
       exoPlayerEventListener.dispose();
       exoPlayerEventListener = null;
-    }
-    if (loudnessEnhancer != null) {
-      try {
-        loudnessEnhancer.release();
-      } catch (Throwable ignored) {
-      }
-      loudnessEnhancer = null;
     }
     exoPlayer.release();
   }

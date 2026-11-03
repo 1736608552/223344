@@ -821,24 +821,41 @@ class _PlayerScreenState extends State<PlayerScreen>
     VolumeController.instance.showSystemUI = true;
     unawaited(
         _volumeKeyChannel.invokeMethod<bool>('setEnabled', {'enabled': false}));
-    if (_currentVolume > 1.0) {
-      unawaited(_player?.setVolume(1.0));
-    }
   }
 
-  /// 统一处理系统音量与超额软增益 (支持 0.0 ~ 1.5, 超过 1.0 激活底层 LoudnessEnhancer / 软增益)
+  /// 统一处理系统音量 (支持 0.0 ~ 1.5, 0~1.0 调系统音量与播放器音量, >1.0 锁定系统音量最大)
   Future<void> _applyVolume(double targetVol) async {
     final v = targetVol.clamp(0.0, 1.5);
     _currentVolume = v;
     try {
       if (v <= 1.0) {
         await VolumeController.instance.setVolume(v);
-        await _player?.setVolume(1.0);
+        await _player?.setVolume(v);
       } else {
         await VolumeController.instance.setVolume(1.0);
-        await _player?.setVolume(v);
+        await _player?.setVolume(1.0);
       }
     } catch (_) {}
+  }
+
+  /// v2.7.46: 统一调度系统 UI 沉浸模式 (播放视频时彻底隐藏系统虚拟按键与状态栏, 离开播放恢复)
+  void _updateSystemUIMode() {
+    if (_isDisposing || !mounted) return;
+    if (DeviceUtils.isWindows()) return;
+
+    if (_phase == 'playing') {
+      // 只要处于播放状态，强制进入黏性沉浸模式，彻底隐藏系统底部虚拟按键（三键导航）与状态栏
+      unawaited(SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.immersiveSticky,
+        overlays: const [],
+      ));
+    } else {
+      // 离开播放恢复系统状态栏与虚拟导航栏
+      unawaited(SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.manual,
+        overlays: SystemUiOverlay.values,
+      ));
+    }
   }
 
   /// 退出时串行: save → stop → dispose
@@ -921,6 +938,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       //   (showSystemUI=false + setEnabled(true)), 跟进入 playing 阶段一致.
       _volumeKeyChannel.setMethodCallHandler(_onVolumeKeyCall);
       _enableVolumeInterception();
+      if (_phase == 'playing') {
+        _updateSystemUIMode();
+      }
     }
   }
 
@@ -1561,11 +1581,18 @@ class _PlayerScreenState extends State<PlayerScreen>
       await WindowUtils.setFullScreen(false);
       return;
     }
-    // 恢复系统UI
-    await SystemChrome.setEnabledSystemUIMode(
-      SystemUiMode.manual,
-      overlays: SystemUiOverlay.values,
-    );
+    // 若仍在播放阶段维持沉浸式隐藏虚拟按键，否则恢复系统UI
+    if (_phase == 'playing') {
+      await SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.immersiveSticky,
+        overlays: const [],
+      );
+    } else {
+      await SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.manual,
+        overlays: SystemUiOverlay.values,
+      );
+    }
     // ★ 解锁所有方向, 让系统传感器决定 (不再强制竖屏)
     await SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
@@ -2314,6 +2341,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (!mounted) return;
       if (_isPlaying) {
         setState(() => _isControlsVisible = false);
+        _updateSystemUIMode();
       }
     });
   }
@@ -2322,6 +2350,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   void _toggleControls() {
     if (_isControlsVisible) {
       setState(() => _isControlsVisible = false);
+      _updateSystemUIMode();
     } else {
       _showControls();
       if (_isPlaying) _scheduleHideControls();
@@ -4346,6 +4375,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     // v2.6.42: 进入播放阶段, 开启音量拦截 (屏蔽系统音量弹窗 + 物理键接管).
     //   切集时 _phase 已经是 'playing', 重复调无副作用.
     _enableVolumeInterception();
+    // v2.7.46: 进入播放阶段, 彻底隐藏系统底部虚拟导航键与顶部状态栏 (全沉浸模式)
+    _updateSystemUIMode();
     // v2.0.51: 切集后 PageView 跳到当前 episode 所在页 (用 jumpToPage, 静默切)
     final newPage = (index ~/ _episodesPerPage).clamp(0, 999);
     if (_episodesPageController.hasClients &&
@@ -4625,6 +4656,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                 setState(() => _phase = 'detail');
                 _setKeepScreenOn(false);
                 _disableVolumeInterception();
+                _updateSystemUIMode();
                 if (DeviceUtils.isWindows()) {
                   unawaited(WindowUtils.setFullScreen(false));
                 }
@@ -6098,6 +6130,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                       _setKeepScreenOn(false);
                       // v2.6.42: 退出播放回 detail, 关音量拦截, 恢复系统音量弹窗
                       _disableVolumeInterception();
+                      _updateSystemUIMode();
                     });
                   }();
                 },
@@ -6504,6 +6537,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         _setKeepScreenOn(false);
         // v2.6.42: 退出播放回 detail, 关音量拦截, 恢复系统音量弹窗
         _disableVolumeInterception();
+        _updateSystemUIMode();
       });
       // 提示
       ScaffoldMessenger.of(context).showSnackBar(
@@ -6647,10 +6681,15 @@ class _PlayerScreenState extends State<PlayerScreen>
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
     final maxW = isLandscape ? screenWidth * 0.65 : double.infinity;
+    final padding = MediaQuery.of(context).padding;
+    final bottomInset = padding.bottom > 0 ? padding.bottom + 6.0 : 12.0;
+    final leftInset = padding.left > 0 ? padding.left + 4.0 : 12.0;
+    final rightInset = padding.right > 0 ? padding.right + 4.0 : 12.0;
+
     return Positioned(
-      left: 12,
-      right: 12,
-      bottom: 12,
+      left: leftInset,
+      right: rightInset,
+      bottom: bottomInset,
       child: Center(
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: maxW),
@@ -7610,8 +7649,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         // v2.6.93: 全新智能片头/片尾跳过胶囊浮层 (置于最顶层，确保无论控制栏是否隐藏均优雅浮现且点击100%响应)
         if (_activeSmartSegment != null)
           Positioned(
-            right: 18,
-            bottom: _isControlsVisible ? 104 : 32,
+            right: 18 + MediaQuery.of(context).padding.right,
+            bottom: (_isControlsVisible ? 104 : 32) +
+                MediaQuery.of(context).padding.bottom,
             child: _buildSmartSkipCapsule(),
           ),
         // v2.6.113: 下一季居中卡片自动连播浮层 (类似 YouTube / Netflix 风格)
@@ -8135,7 +8175,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   /// 亮度浮窗 (左侧, v1.0.40 修复主播放器手势)
   Widget _buildBrightnessIndicator() {
     return Positioned(
-      left: 32,
+      left: 32 + MediaQuery.of(context).padding.left,
       top: 0,
       bottom: 0,
       child: Center(
@@ -8200,7 +8240,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     final percent = (_currentVolume * 100).round();
 
     return Positioned(
-      right: 32,
+      right: 32 + MediaQuery.of(context).padding.right,
       top: 0,
       bottom: 0,
       child: Center(

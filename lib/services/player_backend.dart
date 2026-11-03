@@ -79,7 +79,7 @@ abstract class PlayerBackend {
   ///   (下一集可以重新 open). 跟 dispose() 不同, dispose 会 release 整个 player.
   Future<void> stop();
   Future<void> seek(Duration position);
-  Future<void> setVolume(double volume); // 0.0-2.0 (支持超额增益)
+  Future<void> setVolume(double volume); // 0.0-1.0
   Future<void> setSpeed(double speed);   // 0.25-4.0
   Future<void> dispose();
 

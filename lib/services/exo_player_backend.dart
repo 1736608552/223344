@@ -342,7 +342,7 @@ class ExoPlayerBackend implements PlayerBackend {
 
   @override
   Future<void> setVolume(double volume) async {
-    final v = volume.clamp(0.0, 2.0);
+    final v = volume.clamp(0.0, 1.0);
     final c = _controller;
     if (c == null) {
       _volume = v;
