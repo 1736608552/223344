@@ -88,11 +88,11 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         }
         return (hex("8404") + byteArrayOf(random.toByte(),(random shr 8).toByte(),0x40,1) + out).hex()
     }
-    private fun deviceProto() = proto(
+    private fun deviceProto(values: Map<String, String>? = null) = proto(
         f(1, 1, "sint"),
         f(2, 2, "sint"),
         f(3, "8662"),
-        f(4, VendorConstants.device.getValue("device_id")),
+        f(4, values?.get("device_id")?.ifEmpty { null } ?: VendorConstants.device.getValue("device_id")),
         f(5, VendorConstants.processNonce),
         f(6, "!noperm!"),
         f(7, -888888, "sint"),
@@ -148,12 +148,14 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         encoded[0] = ((encoded[0] xor encoded[1]) + sum) and 255
         return encoded.map { it.toByte() }.toByteArray()
     }
-    fun medusa(query: String, body: ByteArray?, ts: Int, random: Int): String {
+    fun medusa(query: String, body: ByteArray?, ts: Int, random: Int, values: Map<String, String>? = null): String {
         val bodyMd5 = body?.let { digest("MD5", it) } ?: ByteArray(16)
         val querySm3 = sm3(query.toByteArray())
         val queryBodyTs = hashF13(querySm3, bodyMd5, ts)
-        val env = proto(f(1,114,"sint"),f(2,146331399,"sint"),f(3,146331396,"sint"),f(5,7,"sint"),f(6,"v04.06.04.03-bugfix"),f(7,11309,"sint"),f(12,deviceProto(),"message"),f(13,proto(f(1,ts,"sint"),f(2,-2,"sint"),f(4,200,"sint")),"message"),f(14,VendorConstants.device.getValue("version_name")))
-        val message = proto(f(1,hex("f7e85ffad7d7dc3bd62ac87057cf6118"),"bytes"),f(2,3,"sint"),f(3,rand(),"sint"),f(4,"8662"),f(5,VendorConstants.device.getValue("device_id")),f(6,"1588093228"),f(7,VendorConstants.device.getValue("version_name")),f(8,"v04.06.04-ml-android"),f(9,67503104,"sint"),f(10,hex("4001000000000000"),"bytes"),f(12,ts,"sint"),f(13,queryBodyTs,"bytes"),f(14,querySm3.copyOf(6),"bytes"),f(15,proto(f(1,111,"sint"),f(2,10,"sint"),f(3,694367,"sint"),f(5,586952199,"sint")),"message"),f(16,"AXYQOS6n2m60x1fVZHIrH3iol"),f(17,ts,"sint"),f(19,sm3(query.toByteArray() + bodyMd5 + "none".toByteArray()),"bytes"),f(20,"none"),f(21,312,"sint"),f(23,env,"message"),f(24,"{\"cmr\":16777216,\"cmr2\":16777216,\"un_h\":1879194040,\"vpn\":0,\"kd\":0,\"fkd\":3672518972,\"pd\":-1872573247,\"dyn\":\"\",\"do\":0,\"tk\":true}"))
+        val effectiveDevId = values?.get("device_id")?.ifEmpty { null } ?: VendorConstants.device.getValue("device_id")
+        val effectiveVerName = values?.get("version_name")?.ifEmpty { null } ?: VendorConstants.device.getValue("version_name")
+        val env = proto(f(1,114,"sint"),f(2,146331399,"sint"),f(3,146331396,"sint"),f(5,7,"sint"),f(6,"v04.06.04.03-bugfix"),f(7,11309,"sint"),f(12,deviceProto(values),"message"),f(13,proto(f(1,ts,"sint"),f(2,-2,"sint"),f(4,200,"sint")),"message"),f(14,effectiveVerName))
+        val message = proto(f(1,hex("f7e85ffad7d7dc3bd62ac87057cf6118"),"bytes"),f(2,3,"sint"),f(3,rand(),"sint"),f(4,"8662"),f(5,effectiveDevId),f(6,"1588093228"),f(7,effectiveVerName),f(8,"v04.06.04-ml-android"),f(9,67503104,"sint"),f(10,hex("4001000000000000"),"bytes"),f(12,ts,"sint"),f(13,queryBodyTs,"bytes"),f(14,querySm3.copyOf(6),"bytes"),f(15,proto(f(1,111,"sint"),f(2,10,"sint"),f(3,694367,"sint"),f(5,586952199,"sint")),"message"),f(16,"AXYQOS6n2m60x1fVZHIrH3iol"),f(17,ts,"sint"),f(19,sm3(query.toByteArray() + bodyMd5 + "none".toByteArray()),"bytes"),f(20,"none"),f(21,312,"sint"),f(23,env,"message"),f(24,"{\"cmr\":16777216,\"cmr2\":16777216,\"un_h\":1879194040,\"vpn\":0,\"kd\":0,\"fkd\":3672518972,\"pd\":-1872573247,\"dyn\":\"\",\"do\":0,\"tk\":true}"))
         val signKey = hex("8ebdfa3806ecc5cee79423e6029ed82540bc2218bb7eaef71cb691f7aa8aa2f5")
         val hash = sm3(signKey + le32(random) + signKey)
         val d1 = (random shr 16) and 255
@@ -297,7 +299,7 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
             "x-argus" to le32(ts).base64(),
             "x-gorgon" to gorgon(query, body, ts, random),
             "x-helios" to helios(ts),
-            "x-medusa" to medusa(query, body, ts, rand()),
+            "x-medusa" to medusa(query, body, ts, rand(), values),
             "x-tt-dt" to ""
         )
         if (body != null) {

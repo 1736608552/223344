@@ -407,117 +407,69 @@ object HongguoStreamResolver {
         val identity = PlaybackDeviceSession.shared.profile(client)
         var bodyStr = ""
 
-        // 策略 1 (首选，对齐 hongguoTV): 直接请求官方 multi_video_model/v1/ 携带合法设备身份与 Cookie (0/700/1500ms 智能退避重试)
-        val delays = listOf(0L, 700L, 1500L)
-        for (attempt in 0..2) {
-            val delayMs = delays[attempt]
-            if (delayMs > 0) {
-                try { Thread.sleep(delayMs) } catch (ignored: InterruptedException) {}
-            }
+        // 官方 App 正式播放接口 (双域名高可用轮询 + preload/v1与v1双通道 + 工业级全套签名与合法Cookie鉴权)
+        val candidateEndpoints = listOf(
+            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/",
+            "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/preload/v1/",
+            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/",
+            "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1/"
+        )
+
+        fun executeSignedPlaybackRequest(ep: String, profile: PlaybackDeviceSession.Profile): String {
             try {
-                val now = System.currentTimeMillis()
-                val queryParams = identity.values.toMutableMap()
-                queryParams["_rticket"] = now.toString()
-                val queryString = queryParams.entries.joinToString("&") { (k, v) ->
-                    java.net.URLEncoder.encode(k, "UTF-8") + "=" + java.net.URLEncoder.encode(v, "UTF-8")
+                val signed = try {
+                    signer.sign(ep, profile.values, payload)
+                } catch (_: Exception) {
+                    signer.signStandard(ep, profile.values, payload)
                 }
-                val url = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?$queryString"
-
-                val req = Request.Builder()
-                    .url(url)
-                    .header("User-Agent", PlaybackDeviceSession.PLAYBACK_UA)
-                    .header("Accept", "application/json; charset=utf-8,application/x-protobuf")
-                    .apply {
-                        if (identity.cookie.isNotBlank()) {
-                            header("Cookie", identity.cookie)
-                        }
-                    }
+                val reqBuilder = Request.Builder()
+                    .url(signed.url)
                     .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                    .build()
 
-                val resp = client.newCall(req).execute()
+                for ((k, v) in signed.headers) {
+                    reqBuilder.header(k, v)
+                }
+                if (profile.cookie.isNotBlank()) {
+                    reqBuilder.header("Cookie", profile.cookie)
+                }
+
+                val resp = client.newCall(reqBuilder.build()).execute()
                 if (resp.isSuccessful) {
                     val content = resp.body?.string().orEmpty()
                     if (content.isNotBlank()) {
                         val testJson = try { JSONObject(content) } catch (ignored: Exception) { null }
                         val code = testJson?.optInt("Code", testJson.optInt("code", 0)) ?: -1
                         if (code == 0) {
-                            bodyStr = content
-                            break
+                            return content
                         }
                     }
                 }
             } catch (e: Exception) {
                 lastErr = e
-                android.util.Log.w("HongguoStreamResolver", "multi_video_model/v1 请求尝试 $attempt 异常: ${e.message}")
+                android.util.Log.w("HongguoStreamResolver", "请求端点 $ep 异常: ${e.message}")
             }
+            return ""
         }
 
-        // 策略 2 (双保险兜底): 若 v1 暂未返回，使用带签名的 preload/v1 尝试抓取
-        if (bodyStr.isBlank()) {
-            try {
-                val signed = signer.sign(
-                    "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/",
-                    identity.values,
-                    payload
-                )
-                val reqBuilder = Request.Builder()
-                    .url(signed.url)
-                    .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                for (entry in signed.headers) {
-                    reqBuilder.header(entry.key, entry.value)
-                }
-                val resp = client.newCall(reqBuilder.build()).execute()
-                val content = resp.body?.string().orEmpty()
-                if (content.isNotBlank()) {
-                    val testJson = try { JSONObject(content) } catch (ignored: Exception) { null }
-                    if (testJson?.optInt("Code", testJson.optInt("code", 0)) == 0) {
-                        bodyStr = content
-                    }
-                }
-            } catch (e: Exception) {
-                lastErr = e
-                android.util.Log.w("HongguoStreamResolver", "preload/v1 兜底请求异常: ${e.message}")
+        // 策略 1: 使用当前注册设备身份轮询双域名与双端点 (智能微退避)
+        val delays = listOf(0L, 300L, 600L, 900L)
+        for (i in candidateEndpoints.indices) {
+            val ep = candidateEndpoints[i]
+            val delayMs = delays.getOrElse(i) { 0L }
+            if (delayMs > 0) {
+                try { Thread.sleep(delayMs) } catch (ignored: InterruptedException) {}
             }
+            bodyStr = executeSignedPlaybackRequest(ep, identity)
+            if (bodyStr.isNotBlank()) break
         }
 
+        // 策略 2: 自愈轮换重试机制 (若遭遇拦截或过期，作废当前会话并重新注册全新设备凭证与Cookie重试)
         if (bodyStr.isBlank()) {
-            // 自愈机制：若遭遇 0 字节空响应，说明当前设备可能被官方临时风控拉黑，立即作废当前会话并尝试全新注册重试一次
             PlaybackDeviceSession.shared.invalidate()
             val freshIdentity = PlaybackDeviceSession.shared.profile(client)
-            val endpoints = listOf(
-                "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1/",
-                "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/"
-            )
-            for (ep in endpoints) {
-                try {
-                    val now = System.currentTimeMillis()
-                    val qp = freshIdentity.values.toMutableMap()
-                    qp["_rticket"] = now.toString()
-                    val qs = qp.entries.joinToString("&") { (k, v) ->
-                        java.net.URLEncoder.encode(k, "UTF-8") + "=" + java.net.URLEncoder.encode(v, "UTF-8")
-                    }
-                    val req = Request.Builder()
-                        .url("$ep?$qs")
-                        .header("User-Agent", PlaybackDeviceSession.PLAYBACK_UA)
-                        .header("Accept", "application/json; charset=utf-8,application/x-protobuf")
-                        .apply {
-                            if (freshIdentity.cookie.isNotBlank()) {
-                                header("Cookie", freshIdentity.cookie)
-                            }
-                        }
-                        .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                        .build()
-                    val resp = client.newCall(req).execute()
-                    val content = resp.body?.string().orEmpty()
-                    if (content.isNotBlank()) {
-                        val testJson = try { JSONObject(content) } catch (ignored: Exception) { null }
-                        if (testJson?.optInt("Code", testJson.optInt("code", 0)) == 0) {
-                            bodyStr = content
-                            break
-                        }
-                    }
-                } catch (ignored: Exception) {}
+            for (ep in candidateEndpoints) {
+                bodyStr = executeSignedPlaybackRequest(ep, freshIdentity)
+                if (bodyStr.isNotBlank()) break
             }
         }
 

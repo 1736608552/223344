@@ -1563,6 +1563,7 @@ class DuanjuCoreBridge {
             'Content-Type': 'application/json; charset=utf-8',
             'X-XS-From-Web': '0',
             'Sdk-Version': '2',
+            'Cookie': 'store-region=cn; store-region-src=fallback; install_id=$iid',
             ...signHeaders,
           },
           body: bodyBytes,
@@ -1729,12 +1730,12 @@ class DuanjuCoreBridge {
         final bodyBytes = Uint8List.fromList(utf8.encode(jsonEncode(payloadMap)));
         final signHeaders = _signHongguo(queryStr, bodyBytes, now);
 
-        // 优先请求官方正片完整播放接口 (双域名高可用轮询 + v1/preload双通道)
+        // 优先请求官方正片完整播放接口 (双域名高可用轮询 + preload/v1与v1双通道)
         final playEndpoints = [
-          'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?$queryStr',
-          'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1/?$queryStr',
           'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/?$queryStr',
           'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/preload/v1/?$queryStr',
+          'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?$queryStr',
+          'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1/?$queryStr',
         ];
 
         http.Response? resp;
@@ -1749,6 +1750,7 @@ class DuanjuCoreBridge {
                 'Content-Type': 'application/json; charset=utf-8',
                 'X-XS-From-Web': '0',
                 'Sdk-Version': '2',
+                'Cookie': 'store-region=cn; store-region-src=fallback; install_id=$iid',
                 ...signHeaders,
               },
               body: bodyBytes,

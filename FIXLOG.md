@@ -1,5 +1,36 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.44 (2026-11-03)
+
+### 彻底攻克红果短剧全端（TV端与手机端）播放断流重大故障 + 修复签名与Cookie注入缺失 + 彻底根治第4集及之后播放中断 + 双域名高可用多端点智能自愈闭环
+
+#### 核心自愈与升级说明
+1. **彻底攻克红果短剧全端（TV端与手机端）播放断流的深层致命缺陷**：
+   - **深层故障根因 (Source-first 确凿证据)**：
+     - **破绽一：TV 端与 Android 原生端 `HongguoStreamResolver` 策略 1 遗漏了签名！**
+       此前在修改 `resolve()` 时，错误地将 `multi_video_model/v1/` 改为纯拼接 `queryString` 后直接 POST 发送，完全没有调用 `signer.signStandard()` 或 `signer.sign()`！未带 `X-Gorgon`、`X-Khronos`、`X-SS-Req-Ticket` 签名头，字节跳动官方服务端直接判定非法请求并返回 `HTTP 200 + Content-Length: 0`；
+     - **破绽二：策略 2（`preload/v1/`）遗漏了 `Cookie`！**
+       在策略 2 调用 `signer.sign` 后构造 `reqBuilder` 时，只迭代添加了 `signed.headers`，完全漏掉了 `header("Cookie", identity.cookie)`！在官方设备放行体系中，签名头与合法设备 Cookie（`install_id=...; store-region=cn`）缺一不可，缺少 Cookie 导致服务端同样下发 0 字节！且自愈阶段也是无签名裸调；
+     - **破绽三：`Signer.kt` 签名设备指纹与 URL 参数冲突！**
+       在 `Signer.kt` 中，`medusa()` 函数内部硬编码了 `VendorConstants.device.getValue("device_id")`！当传入已注册的动态设备 ID 时，URL query 里的 ID 与 `x-medusa` 里的 ID 不一致，服务端直接判定非法重放并拒签；
+     - **破绽四：Flutter 跨平台桥接层 `duanju_core_bridge.dart` 同样缺少 `Cookie`！**
+       在 `_fetchHongguoAppPlaybackPlan` 与 `_fetchHongguoAppEpisodeVids` 中，请求头包含了 `...signHeaders`，但完全没有传 `Cookie` 请求头，导致官方接口在跨平台层同样无法被放行；
+     - **破绽五：Web 试看流第 4 集 404 分水岭**：
+       实测证实公开直链（`video/public/$vid/360p.mp4`）官方仅在前 3 集开放，第 4 集及之后恒返回 404；前面原生接口因签名或 Cookie 失败后落入 404 导致整集崩溃报错！
+   - **全链路彻底自愈重构**：
+     - **`Signer.kt` 设备指纹闭环**：`deviceProto` 与 `medusa` 支持动态传入当前注册设备的 `device_id` 与 `version_name`，彻底消除签名头与 URL 参数冲突；
+     - **双端取流通道工业级重构**：优先请求现行最稳定端点 `multi_video_model/preload/v1/`，双域名（`sinfonlineb` / `sinfonlinea`）高可用轮询；必须全套带齐企业级签名与设备身份 Cookie；
+     - **Flutter 跨平台层注入合法 Cookie**：为所有官方取流与分集接口显式补充 Cookie 请求头，双端齐平；
+2. **多级容灾与秒开兜底保障**：
+   - 优先通过官方正片接口直出 1080P/720P 高清原画与真实 CENC 解密凭据；
+   - 会话异常时自动原地作废会话并重新注册合法设备秒级复活；
+   - 前 3 集保留 Web 官方火山 CDN 试看流极速秒播兜底，第 4 集及之后由官方正片流无缝承接，彻底告别黑屏与报错弹窗！
+3. **构建发布规范**：
+   - 全平台构建产物全自动分发至独立发布仓库 `1736608552/LunaTV-Release`；
+   - 版本更新至 `v2.7.44`（versionCode: `20844`）。
+
+---
+
 ## v2.7.43 (2026-11-03)
 
 ### 全面落地每人专属设备ID本地持久化与老用户自动无感清洗升级体系 (一人一码杜绝共用封禁) + 拔除分集接口死ID残留 + 官方取流与Web秒开双轨闭环实测
