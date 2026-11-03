@@ -318,12 +318,12 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     await _videoPlayerPlatform.seekTo(_playerId!, position);
   }
 
-  /// Sets the volume to [volume], which should be between 0.0 and 1.0.
+  /// Sets the volume to [volume], supported between 0.0 and 2.0 (with digital boost).
   Future<void> setVolume(double volume) async {
     if (_isDisposed || _playerId == null) {
       return;
     }
-    value = value.copyWith(volume: volume.clamp(0.0, 1.0));
+    value = value.copyWith(volume: volume.clamp(0.0, 2.0));
     await _videoPlayerPlatform.setVolume(_playerId!, volume);
   }
 

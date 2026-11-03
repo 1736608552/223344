@@ -268,6 +268,15 @@ class ExoPlayerBackend implements PlayerBackend {
     }
 
     try {
+      if (_volume != 1.0) {
+        await c.setVolume(_volume);
+      }
+      if (_speed != 1.0) {
+        await c.setPlaybackSpeed(_speed);
+      }
+    } catch (_) {}
+
+    try {
       await c.play();
     } catch (e) {
       DiaryService.add('[ExoPlayer] play err: $e');
@@ -333,7 +342,7 @@ class ExoPlayerBackend implements PlayerBackend {
 
   @override
   Future<void> setVolume(double volume) async {
-    final v = volume.clamp(0.0, 1.0);
+    final v = volume.clamp(0.0, 2.0);
     final c = _controller;
     if (c == null) {
       _volume = v;

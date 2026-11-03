@@ -1,5 +1,25 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.45 (2026-11-03)
+
+### 全平台系统性音量增强与动态响度补偿 + 开放 150% 音量超额软增益 (Volume Boost) + TV 端电影声学优化与 LoudnessEnhancer 对白增强
+
+#### 核心自愈与升级说明
+1. **解决全端 App 整体音量偏低、电影与短剧台词人声微弱的痛点**：
+   - **移动端开放 150% 音量超额软增益 (Volume Boost)**：
+     - 在手势上滑（屏幕右半侧）、键盘方向键以及物理音量键调节时，支持从 100% 连续滑动放大至 150% 超额音量；
+     - 0% ~ 100% 调节设备系统媒体音量，超过 100%（101% ~ 150%）锁定系统音量为最大，同时激活底层软件数字放大与动态响度增益；
+     - UI 音量浮层指示器自适应超额放大指示，超出 100% 时高亮显示琥珀金色状态并提示「放大」；
+   - **ExoPlayer 原生层挂载 `LoudnessEnhancer` 动态响度增强**：
+     - 在 `video_player_android` 原生层为 ExoPlayer 规范配置 `AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)`，唤醒系统级电影调音曲线；
+     - 动态监听 `onAudioSessionIdChanged`，挂载硬件级 `LoudnessEnhancer` DSP 效果器：基础播放提供 +1.5dB 的人声饱满度补偿，超额放大时提供平滑纯净的数字增益（最高 +10dB），带系统级软削波 limiter 保护，彻底解决声音发闷且不破音；
+   - **短剧与桌面端 (`DuanjuMediaKitBackend`) 声学优化**：
+     - 注入 `volume-max=200` 软增益上限，并强制 `audio-channels=stereo` 规范下混，确保多声道短剧在双扬声器上完整保留中央人声音轨；
+   - **TV 电视端注入电影声学增强与 LoudnessEnhancer**：
+     - 在 TV 端 `PlayerController.kt` 为 ExoPlayer 配置电影媒体音频属性并挂载 `LoudnessEnhancer`，赋予 +3.0dB 的动态人声补偿，解决电视机扬声器声音小、背景音乐过大盖过人声的通病；
+     - 在 `MpvPlayerController.kt` 注入立体声下混优化与音量上限提升。
+
+
 ## v2.7.44 (2026-11-03)
 
 ### 彻底攻克红果短剧全端（TV端与手机端）播放断流重大故障 + 修复签名与Cookie注入缺失 + 彻底根治第4集及之后播放中断 + 双域名高可用多端点智能自愈闭环
