@@ -36,6 +36,13 @@ object MediaHttp {
     fun dataSourceFactory(userAgent: String): DataSource.Factory =
         OkHttpDataSource.Factory(client).setUserAgent(resolveLiveUa(userAgent))
 
+    /** 清理全局媒体网络连接池 (在系统睡眠唤醒时调用) */
+    fun evictConnections() {
+        try {
+            client.connectionPool.evictAll()
+        } catch (_: Throwable) {}
+    }
+
     private fun createUnsafeOkHttpClient(): OkHttpClient {
         return try {
             val trustAll = arrayOf<TrustManager>(object : X509TrustManager {
@@ -47,9 +54,12 @@ object MediaHttp {
             OkHttpClient.Builder()
                 .sslSocketFactory(ssl.socketFactory, trustAll[0] as X509TrustManager)
                 .hostnameVerifier { _, _ -> true }
+                .retryOnConnectionFailure(true)
+                .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
                 .build()
         } catch (e: Exception) {
-            OkHttpClient.Builder().build()
+            OkHttpClient.Builder().retryOnConnectionFailure(true).build()
         }
     }
 }

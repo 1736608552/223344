@@ -10,10 +10,20 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 object HongguoStreamResolver {
-    private val client = OkHttpClient.Builder()
+    val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .build()
+
+    /**
+     * 清理网络连接池 (在电视睡眠唤醒或网络波动重连时调用，彻底拔除已失效的僵尸 TCP Socket)
+     */
+    fun evictConnections() {
+        try {
+            client.connectionPool.evictAll()
+        } catch (_: Throwable) {}
+    }
 
     private val signer = Signer()
     private val episodeVidsCache = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
@@ -483,9 +493,9 @@ object HongguoStreamResolver {
             if (bodyStr.isNotBlank()) break
         }
 
-        // 策略 2: 自愈轮换重试机制 (若遭遇拦截或过期，作废当前会话并重新注册全新设备凭证与Cookie重试)
+        // 策略 2: 自愈轮换重试机制 (若遭遇拦截或过期，作废当前会话并清空连接池，重新注册全新设备凭证与Cookie重试)
         if (bodyStr.isBlank()) {
-            PlaybackDeviceSession.shared.invalidate()
+            PlaybackDeviceSession.shared.invalidate(client)
             val freshIdentity = PlaybackDeviceSession.shared.profile(client)
             for (ep in candidateEndpoints) {
                 bodyStr = executeSignedPlaybackRequest(ep, freshIdentity)

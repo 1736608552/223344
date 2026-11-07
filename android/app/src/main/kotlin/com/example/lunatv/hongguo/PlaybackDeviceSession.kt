@@ -18,22 +18,35 @@ import okhttp3.RequestBody.Companion.toRequestBody
  */
 class PlaybackDeviceSession(
     private val register: (OkHttpClient) -> DeviceRegister.Registered? = { http ->
-        try {
-            val body = DeviceRegister.payload(VendorConstants.device)
-            val request = Request.Builder().url(DeviceRegister.url())
-            DeviceRegister.headers(body, VendorConstants.device).forEach { (key, value) ->
-                request.header(key, value)
+        var registered: DeviceRegister.Registered? = null
+        // 睡眠唤醒防抖：增加 2 次微退避重试，确保休眠唤醒网络刚连上时能顺利注册
+        for (attempt in 0..2) {
+            try {
+                val body = DeviceRegister.payload(VendorConstants.device)
+                val request = Request.Builder().url(DeviceRegister.url())
+                DeviceRegister.headers(body, VendorConstants.device).forEach { (key, value) ->
+                    request.header(key, value)
+                }
+                request.post(body.toRequestBody("application/octet-stream".toMediaType()))
+                val transport = http.newBuilder()
+                    .cookieJar(CookieJar.NO_COOKIES)
+                    .retryOnConnectionFailure(true)
+                    .build()
+                transport.newCall(request.build()).execute().use { response ->
+                    val bodyStr = readRegisterBody(response)
+                    registered = DeviceRegister.parse(bodyStr, response.headers("Set-Cookie"))
+                }
+                if (registered != null && registered.deviceId.isNotBlank() && registered.deviceId != "0") {
+                    break
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("PlaybackDeviceSession", "官方设备注册请求异常 (attempt $attempt): ${e.message}")
+                if (attempt < 2) {
+                    try { Thread.sleep(300L * (attempt + 1)) } catch (_: InterruptedException) {}
+                }
             }
-            request.post(body.toRequestBody("application/octet-stream".toMediaType()))
-            val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-            transport.newCall(request.build()).execute().use { response ->
-                val bodyStr = readRegisterBody(response)
-                DeviceRegister.parse(bodyStr, response.headers("Set-Cookie"))
-            }
-        } catch (e: Exception) {
-            android.util.Log.w("PlaybackDeviceSession", "官方设备注册请求异常: ${e.message}")
-            null
         }
+        registered
     }
 ) {
     companion object {
@@ -41,27 +54,34 @@ class PlaybackDeviceSession(
         const val PLAYBACK_UA = "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)"
     }
 
-    data class Profile(val values: Map<String, String>, val cookie: String)
+    data class Profile(val values: Map<String, String>, val cookie: String, val isOfficialRegistered: Boolean = true)
 
     private val cdid: String get() = VendorConstants.cdid
     @Volatile
     private var ready: Profile? = null
 
     @Synchronized
-    fun invalidate() {
+    fun invalidate(http: OkHttpClient? = null) {
         ready = null
         VendorConstants.regenerate()
+        if (http != null) {
+            try {
+                http.connectionPool.evictAll()
+            } catch (_: Throwable) {}
+        }
     }
 
     @Synchronized
     fun profile(http: OkHttpClient): Profile {
         ready?.let { return it }
 
+        var isOfficial = true
         val device = try {
             register(http)
         } catch (ignored: Exception) {
             null
         } ?: run {
+            isOfficial = false
             VendorConstants.regenerate()
             DeviceRegister.Registered(
                 deviceId = VendorConstants.installDeviceId,
@@ -81,14 +101,22 @@ class PlaybackDeviceSession(
             .entries
             .joinToString("; ") { (name, value) -> "$name=$value" }
 
-        return Profile(
+        val createdProfile = Profile(
             VendorConstants.device + mapOf(
                 "device_id" to device.deviceId,
                 "iid" to device.installId,
                 "cdid" to cdid,
             ),
-            cookieHeader
-        ).also { ready = it }
+            cookieHeader,
+            isOfficialRegistered = isOfficial
+        )
+
+        // 核心自愈法则：仅当真正获得官方注册通过的设备身份时才常驻缓存至 ready！
+        // 若因休眠未连网等走 fallback，严禁缓存，确保网络恢复后下一次调用立即自动发起合法官方注册！
+        if (isOfficial) {
+            ready = createdProfile
+        }
+        return createdProfile
     }
 }
 

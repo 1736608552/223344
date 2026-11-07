@@ -119,6 +119,14 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         activityScope.launch(Dispatchers.IO) {
             org.moontechlab.selenetv.server.RemoteControlServer.ensureRunning()
+            // 电视睡眠唤醒保活：清空断线残留的僵尸 Socket 连接并静默校验预热短剧官方授权凭证
+            try {
+                org.moontechlab.selenetv.hongguo.HongguoStreamResolver.evictConnections()
+                org.moontechlab.selenetv.service.MediaHttp.evictConnections()
+                org.moontechlab.selenetv.hongguo.PlaybackDeviceSession.shared.profile(
+                    org.moontechlab.selenetv.hongguo.HongguoStreamResolver.client
+                )
+            } catch (_: Throwable) {}
         }
     }
 

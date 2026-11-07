@@ -44,6 +44,8 @@ interface VideoPlayer {
     fun syncProgress()
     /** 清除当前的错误状态（用于自动重试与自愈）。 */
     fun clearError() {}
+    /** 休眠唤醒或恢复播放时确保底层管线就绪。 */
+    fun resumeOrPrepare() {}
     fun release()
 
     /** 视频画面：各实现自行渲染（Exo→PlayerView；MPV→SurfaceView）。 */

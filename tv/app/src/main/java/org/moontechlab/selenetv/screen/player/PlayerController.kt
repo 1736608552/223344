@@ -238,10 +238,22 @@ class PlayerController(
     override fun seekTo(ms: Long) { exo.seekTo(ms.coerceAtLeast(0)); syncProgress() }
 
     @MainThread
-    override fun togglePlay() { exo.playWhenReady = !exo.playWhenReady }
+    override fun togglePlay() {
+        if (exo.playbackState == Player.STATE_IDLE) {
+            exo.prepare()
+        }
+        exo.playWhenReady = !exo.playWhenReady
+    }
 
     @MainThread
     override fun pause() { exo.playWhenReady = false }
+
+    @MainThread
+    override fun resumeOrPrepare() {
+        if (exo.playbackState == Player.STATE_IDLE) {
+            exo.prepare()
+        }
+    }
 
     @MainThread
     override fun seekToLiveEdge() { exo.seekToDefaultPosition() }

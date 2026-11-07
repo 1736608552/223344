@@ -719,13 +719,41 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         }
     }
 
-    // App 退到后台：强制保存 + 暂停播放
+    // App 退到后台：强制保存 + 暂停播放；恢复前台(如电视睡眠唤醒)：清理僵尸连接 + 短剧断点智能自愈
     val lifecycleOwner = LocalLifecycleOwner.current
+    var wasPausedByLifecycle by remember { mutableStateOf(false) }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_PAUSE) {
-                saveProgress(force = true)
-                controller.pause()
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> {
+                    wasPausedByLifecycle = controller.isPlaying || controller.isBuffering
+                    saveProgress(force = true)
+                    controller.pause()
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    // 1. 重置短剧报错重试计数，使电视睡眠唤醒后拥有全新的自愈机会
+                    dramaAutoRetryCount = 0
+                    // 2. 清空休眠期间被底层网络中断的僵尸 Socket 连接
+                    org.moontechlab.selenetv.hongguo.HongguoStreamResolver.evictConnections()
+                    org.moontechlab.selenetv.service.MediaHttp.evictConnections()
+
+                    val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
+                    val isShort = src?.source == "hongguo" || src?.source == "shortdrama" || src?.sourceName?.contains("精品短剧") == true || src?.typeName == "短剧" || isShortDrama
+                    if (isShort) {
+                        // 短剧专属休眠唤醒自愈：若处于报错状态或在播放中被系统休眠打断，自动重新解析最新防盗链直链并从断点秒开续播
+                        if (controller.error != null || wasPausedByLifecycle) {
+                            android.util.Log.i("PlayerScreen", "电视睡眠唤醒，触发短剧断点自愈重载: 第 ${currentEpisode + 1} 集, 断点: ${positionMs}ms")
+                            controller.clearError()
+                            playEpisode(currentEpisode, positionMs)
+                        } else {
+                            controller.resumeOrPrepare()
+                        }
+                    } else {
+                        controller.resumeOrPrepare()
+                    }
+                    wasPausedByLifecycle = false
+                }
+                else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
