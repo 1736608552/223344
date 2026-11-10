@@ -98,4 +98,9 @@ class MainActivity : FlutterActivity() {
         }
         return super.dispatchKeyEvent(event)
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        org.moontechlab.lunatv.hongguo.HongguoCoreManager.stop()
+    }
 }

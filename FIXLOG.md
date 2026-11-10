@@ -1,5 +1,24 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.53 (2026-11-10)
+
+### 紧急修复CI构建Kotlin编译语法 (Expression 'length' / loadDirect引用) + 落地生命周期安全销毁 + 完整保障aston314/hongguo-tv本地原生解密核心
+
+#### 核心自愈与升级说明
+1. **紧急修复 CI 编译报错自愈闭环 (Source-first 铁证)**：
+   - **深层故障根因**：
+     - **病灶一 (Kotlin 语法歧义)**：在 TV 端与移动端 `HongguoCoreManager.kt` 第 79 行，将 Kotlin 属性 `String.length` 误写为 Java 风格的方法调用 `READY_PREFIX.length()`，在 CI 的 Kotlin 1.9/2.0 严格编译器下触发 `Expression 'length' of type 'Int' cannot be invoked as a function. Function 'invoke()' is not found.` 致命阻断；
+     - **病灶二 (接口类型引用未解析)**：在 `PlayerScreen.kt` 第 403 行，`controller` 的静态类型为抽象接口 `VideoPlayer`，而 `loadDirect` 为子类实现私有/扩展方法，触发 `Unresolved reference 'loadDirect'`；
+   - **彻底自愈与闭环修复**：
+     - **语法更正**：将 TV 端与 Android 原生端 `HongguoCoreManager.kt` 中的 `READY_PREFIX.length()` 统一规范为合法的 Kotlin 属性访问 `READY_PREFIX.length`；
+     - **接口规范调用**：在 `PlayerScreen.kt` 将解密流起播收敛为 `controller.load(resolvedUrl, safeStartMs, playWhenReady = true)`，统一走 `VideoPlayer` 契约规范；
+     - **生命周期零残留规范**：在移动端 `MainActivity.onDestroy()` 补充注入 `HongguoCoreManager.stop()`，配合 TV 端的清理逻辑，确保进程销毁时本地原生核心（minireel-proxy）子进程即刻优雅终止回收，完全杜绝系统资源泄漏。
+2. **构建发布规范**：
+   - 全平台构建产物全自动分发至独立发布仓库 `1736608552/LunaTV-Release`；
+   - 版本更新至 `v2.7.53`（versionCode: `20853`）。
+
+
+
 ## v2.7.52 (2026-11-10)
 
 ### 完整照搬并集成 aston314/hongguo-tv 本地解密代理核心 (Native Core minireel-proxy) + 彻底拔除20秒试看截断与后续集播放失败 + 原生标准明文MP4直喂ExoPlayer硬解

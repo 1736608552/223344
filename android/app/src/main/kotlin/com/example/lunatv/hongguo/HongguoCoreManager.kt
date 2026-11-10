@@ -76,7 +76,7 @@ object HongguoCoreManager {
                         while (reader.readLine().also { line = it } != null) {
                             val l = line.orEmpty()
                             if (l.startsWith(READY_PREFIX)) {
-                                val fields = l.substring(READY_PREFIX.length()).trim().split(" ")
+                                val fields = l.substring(READY_PREFIX.length).trim().split(" ")
                                 if (fields.size == 2 && fields[1] == instanceId) {
                                     val port = fields[0].toIntOrNull()
                                     if (port != null && port in 1..65535) {

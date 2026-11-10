@@ -398,9 +398,9 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
 
                 if (resolvedUrl.isNotEmpty() && (resolvedUrl.startsWith("http://") || resolvedUrl.startsWith("https://"))) {
                     dramaAutoRetryCount = 0
-                    // 若为本地核心服务已透明解密流 (127.0.0.1)，直接使用 loadDirect 直播秒开，绝不挂载额外 CENC 解密管道！
+                    // 若为本地核心服务已透明解密流 (127.0.0.1)，直接使用 load 直播秒开，绝不挂载额外 CENC 解密管道！
                     if (resolvedUrl.contains("127.0.0.1") || resolvedUrl.contains("/minireel-proxy/media/")) {
-                        controller.loadDirect(resolvedUrl, safeStartMs, playWhenReady = true, headers = null)
+                        controller.load(resolvedUrl, safeStartMs, playWhenReady = true)
                         return@launch
                     }
                     val dramaHeaders = mapOf(
