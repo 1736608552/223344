@@ -19,11 +19,13 @@ import okhttp3.RequestBody.Companion.toRequestBody
 class PlaybackDeviceSession(
     private val register: (OkHttpClient) -> DeviceRegister.Registered? = { http ->
         var registered: DeviceRegister.Registered? = null
-        // 睡眠唤醒防抖：增加 2 次微退避重试，确保电视休眠唤醒网络刚连上时能顺利注册
+        val targetUrls = DeviceRegister.urls()
+        // 睡眠唤醒防抖与多节点轮询：确保首选 log.snssdk.com 优先，高可用容灾
         for (attempt in 0..2) {
+            val regUrl = targetUrls.getOrElse(attempt) { targetUrls.first() }
             try {
                 val body = DeviceRegister.payload(VendorConstants.device)
-                val request = Request.Builder().url(DeviceRegister.url())
+                val request = Request.Builder().url(regUrl)
                 DeviceRegister.headers(body, VendorConstants.device).forEach { (key, value) ->
                     request.header(key, value)
                 }
@@ -40,7 +42,7 @@ class PlaybackDeviceSession(
                     break
                 }
             } catch (e: Exception) {
-                android.util.Log.w("PlaybackDeviceSession", "官方设备注册请求异常 (attempt $attempt): ${e.message}")
+                android.util.Log.w("PlaybackDeviceSession", "官方设备注册请求异常 ($regUrl, attempt $attempt): ${e.message}")
                 if (attempt < 2) {
                     try { Thread.sleep(300L * (attempt + 1)) } catch (_: InterruptedException) {}
                 }

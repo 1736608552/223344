@@ -122,7 +122,17 @@ class PlayerController(
     }
 
     private val listener = object : Player.Listener {
-        override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
+        override fun onIsPlayingChanged(playing: Boolean) {
+            isPlaying = playing
+            if (playing) {
+                // 画面正常起播时，立即彻底清除瞬时错误状态，防止假报错悬浮
+                error = null
+            }
+        }
+        override fun onRenderedFirstFrame() {
+            // 首帧渲染上屏，彻底清空任何历史报错状态
+            error = null
+        }
         override fun onPlaybackStateChanged(state: Int) {
             isBuffering = state == Player.STATE_BUFFERING
             mainHandler.removeCallbacks(bufferingWatchdogRunnable)
@@ -130,7 +140,12 @@ class PlayerController(
                 // 3.5 秒硬件解码死锁看门狗守护，专为海信等老旧电视 SOC 优化
                 mainHandler.postDelayed(bufferingWatchdogRunnable, 3500L)
             }
-            if (state == Player.STATE_READY) { hasStarted = true; val d = exo.duration; if (d > 0) durationMs = d }
+            if (state == Player.STATE_READY) {
+                error = null
+                hasStarted = true
+                val d = exo.duration
+                if (d > 0) durationMs = d
+            }
             if (state == Player.STATE_ENDED) onEnded()
         }
         override fun onPlayerError(e: PlaybackException) {
@@ -142,6 +157,7 @@ class PlayerController(
                 android.util.Log.w("PlayerController", "短剧 CENC 解密源播放失败，原地自愈无缝降级到原生网络流: $lastUrl")
                 hasFallbackToRaw = true
                 releaseCurrentRemoteVideo()
+                error = null
                 loadDirect(lastUrl, lastStartMs, playWhenReady = true, lastHeaders)
                 return
             }

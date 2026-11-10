@@ -29,9 +29,10 @@ class MainActivity : FlutterActivity() {
                 "resolveStream" -> {
                     val vid = call.argument<String>("vid") ?: ""
                     val maxQuality = call.argument<Int>("maxQuality") ?: 1080
+                    val seriesId = call.argument<String>("seriesId") ?: ""
                     Thread {
                         try {
-                            val res = org.moontechlab.lunatv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality)
+                            val res = org.moontechlab.lunatv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality, seriesId)
                             runOnUiThread { result.success(res) }
                         } catch (e: Exception) {
                             runOnUiThread { result.error("RESOLVE_ERROR", e.message, null) }

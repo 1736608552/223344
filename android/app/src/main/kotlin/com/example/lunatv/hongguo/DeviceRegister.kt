@@ -19,7 +19,12 @@ import org.json.JSONObject
  * 注册本身是匿名的，不要账号、不要签名头。
  */
 object DeviceRegister {
-    private const val HOST = "https://log5-applog-lf.fqnovel.com"
+    private const val HOST = "https://log.snssdk.com"
+    val REGISTER_HOSTS = listOf(
+        "https://log.snssdk.com",
+        "https://log5-applog-lq.fqnovel.com",
+        "https://log5-applog-lf.fqnovel.com"
+    )
     private const val PATH = "/service/2/device_register/"
     private const val QUERY =
         "?tt_data=a&cronet_version=8d40f833_2026-03-03&ttnet_version=4.2.243.31-douyin&use_store_region_cookie=1"
@@ -166,6 +171,7 @@ object DeviceRegister {
         )
 
     fun url() = HOST + PATH + QUERY
+    fun urls(): List<String> = REGISTER_HOSTS.map { it + PATH + QUERY }
 
     /** 解析注册响应；device_id / install_id 数字或字符串都认，全为 0 表示被拒。 */
     fun parse(body: String, setCookies: List<String> = emptyList()): Registered? {

@@ -383,7 +383,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                     for (rAttempt in 0..1) {
                         try {
                             val result = withContext(Dispatchers.IO) {
-                                org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ)
+                                org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ, seriesId = seriesId)
                             }
                             resolvedUrl = result["url"] as? String ?: ""
                             decryptionKey = result["decryptionKey"] as? String ?: ""
@@ -999,7 +999,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                 org.moontechlab.selenetv.ui.MoonSpinner(size = 52.dp)
             }
         }
-        if (controller.error != null) {
+        if (controller.error != null && !controller.isPlaying) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopCenter)

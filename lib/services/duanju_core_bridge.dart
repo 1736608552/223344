@@ -1276,6 +1276,7 @@ class DuanjuCoreBridge {
         final res = await channel.invokeMethod<Map<dynamic, dynamic>>('resolveStream', {
           'vid': vid,
           'maxQuality': quality > 0 ? quality : 1080,
+          'seriesId': cleanId,
         });
         if (res != null) {
           final streamUrl = res['url']?.toString() ?? '';
