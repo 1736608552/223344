@@ -63,6 +63,22 @@ class MainActivity : FlutterActivity() {
                         }
                     }.start()
                 }
+                "getDeviceIdentity" -> {
+                    Thread {
+                        try {
+                            val client = org.moontechlab.lunatv.hongguo.HongguoStreamResolver.client
+                            val profile = org.moontechlab.lunatv.hongguo.PlaybackDeviceSession.shared.profile(client)
+                            val map = mapOf(
+                                "deviceId" to (profile.values["device_id"] ?: ""),
+                                "installId" to (profile.values["iid"] ?: ""),
+                                "cookie" to profile.cookie
+                            )
+                            runOnUiThread { result.success(map) }
+                        } catch (e: Exception) {
+                            runOnUiThread { result.error("DEV_ERROR", e.message, null) }
+                        }
+                    }.start()
+                }
                 else -> {
                     result.notImplemented()
                 }

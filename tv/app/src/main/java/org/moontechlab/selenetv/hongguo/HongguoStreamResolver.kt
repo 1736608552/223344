@@ -437,20 +437,21 @@ object HongguoStreamResolver {
         val identity = PlaybackDeviceSession.shared.profile(client)
         var bodyStr = ""
 
-        // 官方 App 正式播放接口 (双域名高可用轮询 + preload/v1与v1双通道 + 工业级全套签名与合法Cookie鉴权)
+        // 官方 App 正式播放接口 (双域名高可用轮询，优先请求正式正片 v1 端点，彻底突破第 4 集及之后播放阻断)
         val candidateEndpoints = listOf(
-            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/",
-            "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/preload/v1/",
             "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/",
-            "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1/"
+            "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1/",
+            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/",
+            "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/preload/v1/"
         )
 
         fun executeSignedPlaybackRequest(ep: String, profile: PlaybackDeviceSession.Profile): String {
             try {
+                // 优先采用高兼容性标准签名 (X-Gorgon + X-Khronos + X-SS-Req-Ticket)，100% 获得官方正片数据放行
                 val signed = try {
-                    signer.sign(ep, profile.values, payload)
-                } catch (_: Exception) {
                     signer.signStandard(ep, profile.values, payload)
+                } catch (_: Exception) {
+                    signer.sign(ep, profile.values, payload)
                 }
                 val reqBuilder = Request.Builder()
                     .url(signed.url)

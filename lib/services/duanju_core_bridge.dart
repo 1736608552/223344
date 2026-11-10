@@ -1622,8 +1622,29 @@ class DuanjuCoreBridge {
     return '2${List.generate(15, (_) => rnd.nextInt(10)).join()}';
   }
 
-  /// 异步从 SharedPreferences 加载或分配并持久化每台设备的专属独立 ID (老用户升级自动无感迁移)
+  static String _hongguoPersistentCookie = '';
+
+  /// 异步从 SharedPreferences 加载或分配并持久化每台设备的专属独立 ID (优先从原生端同步官方注册成功的真实设备凭据)
   static Future<(String devId, String iid)> _getHongguoDeviceIdentityAsync() async {
+    // 1. Android 原生层协同优先：直接读取通过官方 device_register 成功下发的合法身份证与 Cookie
+    if (Platform.isAndroid) {
+      try {
+        const channel = MethodChannel('com.example.lunatv/hongguo_resolver');
+        final res = await channel.invokeMethod<Map<dynamic, dynamic>>('getDeviceIdentity');
+        if (res != null) {
+          final d = res['deviceId']?.toString() ?? '';
+          final i = res['installId']?.toString() ?? '';
+          final c = res['cookie']?.toString() ?? '';
+          if (d.isNotEmpty && i.isNotEmpty && !_kHongguoBlacklist.contains(d)) {
+            _hongguoPersistentDevId = d;
+            _hongguoPersistentIid = i;
+            if (c.isNotEmpty) _hongguoPersistentCookie = c;
+            return (d, i);
+          }
+        }
+      } catch (_) {}
+    }
+
     if (_hongguoPersistentDevId.isNotEmpty &&
         _hongguoPersistentIid.isNotEmpty &&
         !_kHongguoBlacklist.contains(_hongguoPersistentDevId)) {
@@ -1730,13 +1751,17 @@ class DuanjuCoreBridge {
         final bodyBytes = Uint8List.fromList(utf8.encode(jsonEncode(payloadMap)));
         final signHeaders = _signHongguo(queryStr, bodyBytes, now);
 
-        // 优先请求官方正片完整播放接口 (双域名高可用轮询 + preload/v1与v1双通道)
+        // 优先请求官方正片完整播放接口 (双域名高可用轮询，v1正片端点优先，彻底攻克第4集及之后播放受阻)
         final playEndpoints = [
-          'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/?$queryStr',
-          'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/preload/v1/?$queryStr',
           'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?$queryStr',
           'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1/?$queryStr',
+          'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/?$queryStr',
+          'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/preload/v1/?$queryStr',
         ];
+
+        final cookieHeader = _hongguoPersistentCookie.isNotEmpty
+            ? _hongguoPersistentCookie
+            : 'store-region=cn; store-region-src=fallback; install_id=$iid';
 
         http.Response? resp;
         for (final ep in playEndpoints) {
@@ -1750,7 +1775,7 @@ class DuanjuCoreBridge {
                 'Content-Type': 'application/json; charset=utf-8',
                 'X-XS-From-Web': '0',
                 'Sdk-Version': '2',
-                'Cookie': 'store-region=cn; store-region-src=fallback; install_id=$iid',
+                'Cookie': cookieHeader,
                 ...signHeaders,
               },
               body: bodyBytes,
