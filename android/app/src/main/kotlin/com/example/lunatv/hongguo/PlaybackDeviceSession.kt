@@ -71,6 +71,20 @@ class PlaybackDeviceSession(
         }
     }
 
+    /**
+     * 设备自动轮转引擎 (对齐 openhongguo 工业级架构，突破 ANONYMOUS_LIMITED 限流)
+     * 当遭遇服务端空响应或限流拒绝时，强制废弃旧身份并立即向官方中心注册全新设备通行证
+     */
+    @Synchronized
+    fun rotate(http: OkHttpClient): Profile {
+        ready = null
+        VendorConstants.regenerate()
+        try {
+            http.connectionPool.evictAll()
+        } catch (_: Throwable) {}
+        return profile(http)
+    }
+
     @Synchronized
     fun profile(http: OkHttpClient): Profile {
         ready?.let { return it }

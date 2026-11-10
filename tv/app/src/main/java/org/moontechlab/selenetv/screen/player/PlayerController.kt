@@ -111,14 +111,30 @@ class PlayerController(
     private var lastHeaders: Map<String, String>? = null
     private var hasFallbackToRaw: Boolean = false
 
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val bufferingWatchdogRunnable = Runnable {
+        if (isBuffering && positionMs == 0L && currentRemoteVideo != null && !hasFallbackToRaw && lastUrl.isNotEmpty()) {
+            android.util.Log.w("PlayerController", "短剧检测到硬件解码器首帧卡死缓冲超时，原地自愈无缝降级到原生网络流: $lastUrl")
+            hasFallbackToRaw = true
+            releaseCurrentRemoteVideo()
+            loadDirect(lastUrl, lastStartMs, playWhenReady = true, lastHeaders)
+        }
+    }
+
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
         override fun onPlaybackStateChanged(state: Int) {
             isBuffering = state == Player.STATE_BUFFERING
+            mainHandler.removeCallbacks(bufferingWatchdogRunnable)
+            if (state == Player.STATE_BUFFERING && currentRemoteVideo != null && !hasFallbackToRaw) {
+                // 3.5 秒硬件解码死锁看门狗守护，专为海信等老旧电视 SOC 优化
+                mainHandler.postDelayed(bufferingWatchdogRunnable, 3500L)
+            }
             if (state == Player.STATE_READY) { hasStarted = true; val d = exo.duration; if (d > 0) durationMs = d }
             if (state == Player.STATE_ENDED) onEnded()
         }
         override fun onPlayerError(e: PlaybackException) {
+            mainHandler.removeCallbacks(bufferingWatchdogRunnable)
             android.util.Log.e("PlayerController", "ExoPlayer 异常: ${e.errorCodeName}, msg=${e.message}")
             // 核心自愈机制：若在 CENC 解密管道加载中抛出异常（如缺少 saio/saiz 索引或 moov 不在开头），
             // 立即原地无缝回退到携带完整 headers (User-Agent + Referer) 的原生网络流播放，绝不黑屏挂死！
@@ -137,6 +153,7 @@ class PlayerController(
     private val networkCleanupExecutor = Executors.newSingleThreadExecutor()
 
     private fun releaseCurrentRemoteVideo() {
+        mainHandler.removeCallbacks(bufferingWatchdogRunnable)
         val remote = currentRemoteVideo
         currentRemoteVideo = null
         if (remote != null) {

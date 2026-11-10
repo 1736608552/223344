@@ -430,28 +430,28 @@ object HongguoStreamResolver {
             throw IllegalArgumentException("Invalid vid: $vid")
         }
 
-        val payload = """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$cleanVid"]}}""".toByteArray()
+        val payload = """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"dr_scene":"preload","mixed_video_id_map":{"1004":["$cleanVid"]}}""".toByteArray()
         var lastErr: Exception? = null
 
-        // 统一由 PlaybackDeviceSession 提供进程内常驻且已注册/验证的设备身份与 Cookie，只换时间戳不换设备身份
+        // 统一由 PlaybackDeviceSession 提供进程内常驻且已注册/验证的设备身份与 Cookie
         val identity = PlaybackDeviceSession.shared.profile(client)
         var bodyStr = ""
 
-        // 官方 App 正式播放接口 (双域名高可用轮询，优先请求正式正片 v1 端点，彻底突破第 4 集及之后播放阻断)
+        // 官方 App 正式播放接口 (双域名高可用轮询，preload与v1双通道协同)
         val candidateEndpoints = listOf(
-            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/",
-            "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1/",
             "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/",
-            "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/preload/v1/"
+            "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/preload/v1/",
+            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/",
+            "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1/"
         )
 
         fun executeSignedPlaybackRequest(ep: String, profile: PlaybackDeviceSession.Profile): String {
             try {
-                // 优先采用高兼容性标准签名 (X-Gorgon + X-Khronos + X-SS-Req-Ticket)，100% 获得官方正片数据放行
+                // 优先采用工业级全套签名 (X-Gorgon + X-Khronos + X-Ladon + X-Argus + X-Helios + X-Medusa)，确保官方网关放行
                 val signed = try {
-                    signer.signStandard(ep, profile.values, payload)
-                } catch (_: Exception) {
                     signer.sign(ep, profile.values, payload)
+                } catch (_: Exception) {
+                    signer.signStandard(ep, profile.values, payload)
                 }
                 val reqBuilder = Request.Builder()
                     .url(signed.url)
@@ -483,7 +483,7 @@ object HongguoStreamResolver {
         }
 
         // 策略 1: 使用当前注册设备身份轮询双域名与双端点 (智能微退避)
-        val delays = listOf(0L, 300L, 600L, 900L)
+        val delays = listOf(0L, 200L, 400L, 600L)
         for (i in candidateEndpoints.indices) {
             val ep = candidateEndpoints[i]
             val delayMs = delays.getOrElse(i) { 0L }
@@ -494,10 +494,9 @@ object HongguoStreamResolver {
             if (bodyStr.isNotBlank()) break
         }
 
-        // 策略 2: 自愈轮换重试机制 (若遭遇拦截或过期，作废当前会话并清空连接池，重新注册全新设备凭证与Cookie重试)
+        // 策略 2: 设备自动轮换机制 (若遭遇 ANONYMOUS_LIMITED 空响应拦截，立即注册崭新设备通行证并重试)
         if (bodyStr.isBlank()) {
-            PlaybackDeviceSession.shared.invalidate(client)
-            val freshIdentity = PlaybackDeviceSession.shared.profile(client)
+            val freshIdentity = PlaybackDeviceSession.shared.rotate(client)
             for (ep in candidateEndpoints) {
                 bodyStr = executeSignedPlaybackRequest(ep, freshIdentity)
                 if (bodyStr.isNotBlank()) break

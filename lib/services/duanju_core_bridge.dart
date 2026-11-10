@@ -1744,6 +1744,7 @@ class DuanjuCoreBridge {
             'use_server_dns': false,
             'video_platform': 1024,
           },
+          'dr_scene': 'preload',
           'mixed_video_id_map': {
             '1004': [videoId],
           },
@@ -1751,12 +1752,12 @@ class DuanjuCoreBridge {
         final bodyBytes = Uint8List.fromList(utf8.encode(jsonEncode(payloadMap)));
         final signHeaders = _signHongguo(queryStr, bodyBytes, now);
 
-        // 优先请求官方正片完整播放接口 (双域名高可用轮询，v1正片端点优先，彻底攻克第4集及之后播放受阻)
+        // 官方 App 正式播放接口 (preload 与 v1 双通道协同轮询，彻底攻克第 4 集及之后播放受阻)
         final playEndpoints = [
-          'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?$queryStr',
-          'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1/?$queryStr',
           'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/?$queryStr',
           'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/preload/v1/?$queryStr',
+          'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?$queryStr',
+          'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1/?$queryStr',
         ];
 
         final cookieHeader = _hongguoPersistentCookie.isNotEmpty
