@@ -377,13 +377,14 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                     }
                 }
 
-                // 直链解析（调用 HongguoStreamResolver 内置的 0/700/1500ms 退避重试与合法会话身份）
+                // 直链解析：优先调用 aston314/hongguo-tv 本地解密核心 (彻底杜绝 20 秒试看截断与硬解死锁)
                 if (vid.isNotEmpty()) {
                     val maxQ = 1080
                     for (rAttempt in 0..1) {
                         try {
                             val result = withContext(Dispatchers.IO) {
-                                org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ, seriesId = seriesId)
+                                val coreResult = org.moontechlab.selenetv.hongguo.HongguoCoreManager.resolveMedia(context, seriesId, vid, quality = maxQ)
+                                coreResult ?: org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ, seriesId = seriesId)
                             }
                             resolvedUrl = result["url"] as? String ?: ""
                             decryptionKey = result["decryptionKey"] as? String ?: ""
@@ -396,6 +397,12 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                 }
 
                 if (resolvedUrl.isNotEmpty() && (resolvedUrl.startsWith("http://") || resolvedUrl.startsWith("https://"))) {
+                    dramaAutoRetryCount = 0
+                    // 若为本地核心服务已透明解密流 (127.0.0.1)，直接使用 loadDirect 直播秒开，绝不挂载额外 CENC 解密管道！
+                    if (resolvedUrl.contains("127.0.0.1") || resolvedUrl.contains("/minireel-proxy/media/")) {
+                        controller.loadDirect(resolvedUrl, safeStartMs, playWhenReady = true, headers = null)
+                        return@launch
+                    }
                     val dramaHeaders = mapOf(
                         "User-Agent" to org.moontechlab.selenetv.hongguo.PlaybackDeviceSession.PLAYBACK_UA,
                         "Referer" to "https://novel.snssdk.com/"

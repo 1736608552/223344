@@ -32,7 +32,8 @@ class MainActivity : FlutterActivity() {
                     val seriesId = call.argument<String>("seriesId") ?: ""
                     Thread {
                         try {
-                            val res = org.moontechlab.lunatv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality, seriesId)
+                            val coreRes = org.moontechlab.lunatv.hongguo.HongguoCoreManager.resolveMedia(this, seriesId, vid, maxQuality)
+                            val res = coreRes ?: org.moontechlab.lunatv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality, seriesId)
                             runOnUiThread { result.success(res) }
                         } catch (e: Exception) {
                             runOnUiThread { result.error("RESOLVE_ERROR", e.message, null) }

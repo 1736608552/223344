@@ -121,6 +121,7 @@ class MainActivity : ComponentActivity() {
             org.moontechlab.selenetv.server.RemoteControlServer.ensureRunning()
             // 电视睡眠唤醒保活：清空断线残留的僵尸 Socket 连接并静默校验预热短剧官方授权凭证
             try {
+                org.moontechlab.selenetv.hongguo.HongguoCoreManager.ensureStarted(this@MainActivity)
                 org.moontechlab.selenetv.hongguo.HongguoStreamResolver.evictConnections()
                 org.moontechlab.selenetv.service.MediaHttp.evictConnections()
                 org.moontechlab.selenetv.hongguo.PlaybackDeviceSession.shared.profile(
@@ -136,6 +137,7 @@ class MainActivity : ComponentActivity() {
         // 配置变更重建时不清：新实例的 onCreate 会重新注册，避免清掉新回调。
         if (!isChangingConfigurations) {
             RemoteControlServer.clearCallbacks()
+            org.moontechlab.selenetv.hongguo.HongguoCoreManager.stop()
         }
         // 取消未随生命周期取消的协程作用域（在飞的登录刷新会持有 Activity 直到完成）
         activityScope.cancel()
