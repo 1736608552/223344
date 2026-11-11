@@ -824,6 +824,48 @@ object HongguoStreamResolver {
                 } catch (e: Exception) {
                     android.util.Log.w("HongguoStreamResolver", "fallback_api 请求异常: ${e.message}")
                 }
+
+                // 多编码智能协商 (Codec Fallback): 若默认资源全为 ByteVC2，自动协商请求 H.264/HEVC 正片原画
+                if (candidateList.isEmpty()) {
+                    for (codec in listOf("codec_type=1", "codec_type=0&force_codec=h264", "codec_type=3")) {
+                        try {
+                            val parts = fallback.split("?", limit = 2)
+                            val candFb = if (parts.size < 2) "$fallback?$codec" else parts[0] + "?" + (parts[1].split("&").filter { !it.startsWith("codec_type=") && !it.startsWith("force_codec=") } + codec).joinToString("&")
+                            val cReq = Request.Builder().url(candFb).header("User-Agent", VendorConstants.VIDEO_UA).build()
+                            val cResp = client.newCall(cReq).execute()
+                            val cBody = cResp.body?.string().orEmpty()
+                            if (cBody.isNotEmpty()) {
+                                val cInfo = JSONObject(cBody).optJSONObject("video_info")?.optJSONObject("data")
+                                val cList = cInfo?.optJSONObject("video_list")
+                                if (cList != null) {
+                                    val seedFb = cInfo.optString("key_seed")
+                                    if (seedFb.isNotEmpty()) {
+                                        seed = try { decode64(seedFb) } catch (_: Exception) { seed }
+                                    }
+                                    val fKeys = cList.keys()
+                                    while (fKeys.hasNext()) {
+                                        val k = fKeys.next()
+                                        val item = cList.optJSONObject(k) ?: continue
+                                        val mainUrl = item.optString("main_url")
+                                        val codecType = item.optString("codec_type").lowercase()
+                                        if (mainUrl.isEmpty() || codecType == "bytevc2" || codecType == "bvc2") continue
+                                        val qDesc = item.optString("quality_desc").ifEmpty {
+                                            item.optString("height").ifEmpty {
+                                                item.optString("vheight").ifEmpty {
+                                                    item.optString("quality").ifEmpty { k }
+                                                }
+                                            }
+                                        }
+                                        val qNum = Regex("(\\d+)").find(qDesc)?.groupValues?.get(1)?.toIntOrNull() ?: 720
+                                        val spadeA = item.optString("spade_a")
+                                        candidateList.add(VideoCandidate(qNum, mainUrl, spadeA))
+                                    }
+                                    if (candidateList.isNotEmpty()) break
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
             }
         }
 

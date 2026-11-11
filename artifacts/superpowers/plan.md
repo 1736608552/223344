@@ -21,8 +21,9 @@
   - 验证：手机端编译预检与代码无死链检查。
 - **步骤 3：本地编译与静态分析验证**
   - 运行 Gradle 编译任务或静态语法检查，确保无任何未解析引用（unresolved reference）或编译报错。
-- **步骤 4：版本自增与发布 (v2.7.55 / v2.7.56 紧急自愈闭环)**
-  - 针对 TV 端缺失的 `cdid`、`signStandard`、`regenerate`、`installDeviceId`、`installIid`，完整同步移植移动端完备的 `VendorConstants.kt` 与 `Signer.kt`。
-  - 更新 `pubspec.yaml` 版本号至 `2.7.56+20856`。
-  - 更新 `FIXLOG.md` 与 `.github/changelogs.json`。
-  - Git commit 并打 tag `v2.7.56`，推送到 GitHub 远程仓库，触发全平台 CI 构建发布。
+- **步骤 4：版本自增与发布 (v2.7.55 / v2.7.56 / v2.7.57 深度闭环)**
+  - 彻底对齐 1736608552/hongguo-tv 官方匿名设备注册与 Cookie 鉴权规范（未注册设备一律被返回 0 字节）。
+  - `ContentRepository` 接入 `PlaybackDeviceSession.shared` 与 `MemoryCookies`，使用 `playbackText` 退避重试。
+  - `HongguoStreamResolver` 的 `fallback_api` 也同步植入 `buildCodecUrl` 多编码智能协商。
+  - `PlayerScreen` 建立纯内存硬解与 ExoPlayer 原生解密流双轨容灾起播管道。
+  - 更新 `pubspec.yaml` 版本号至 `2.7.57+20857`，同步更新文档并推送 GitHub CI 发布。

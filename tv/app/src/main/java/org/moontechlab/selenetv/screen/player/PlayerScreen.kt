@@ -377,23 +377,51 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                     }
                 }
 
-                // 100% 照搬 aston314/hongguoTV 官方原版 Kotlin 取流与内存解密架构 (彻底根治 9秒试看/360P/第4集失效)
+                // 100% 照搬 1736608552/hongguo-tv 官方原版生产架构 (彻底根治 9秒试看/360P/第4集失效)
                 if (vid.isNotEmpty()) {
                     val maxQ = 1080
+                    var streamInfo: org.moontechlab.selenetv.hongguo.StreamInfo? = null
+                    var repoInstance: org.moontechlab.selenetv.hongguo.ContentRepository? = null
+
                     for (rAttempt in 0..2) {
                         try {
-                            val remote = withContext(Dispatchers.IO) {
+                            val (repo, info) = withContext(Dispatchers.IO) {
                                 val repo = org.moontechlab.selenetv.hongguo.ContentRepository()
                                 val info = repo.stream(vid, maxQuality = maxQ)
-                                org.moontechlab.selenetv.hongguo.RemoteVideo(repo.http, info).prepare()
+                                Pair(repo, info)
+                            }
+                            repoInstance = repo
+                            streamInfo = info
+                            break
+                        } catch (e: Exception) {
+                            android.util.Log.w("PlayerScreen", "短剧原版取流异常 (attempt $rAttempt): ${e.message}")
+                            if (rAttempt < 2) kotlinx.coroutines.delay(400)
+                        }
+                    }
+
+                    if (streamInfo != null && repoInstance != null) {
+                        val keyHex = streamInfo.key?.joinToString("") { "%02x".format(it.toInt() and 0xff) } ?: ""
+                        val dramaHeaders = mapOf(
+                            "User-Agent" to org.moontechlab.selenetv.hongguo.VendorConstants.VIDEO_UA,
+                            "Referer" to "https://novel.snssdk.com/"
+                        )
+
+                        // 优先策略 1: 纯内存 Range 分段硬解直喂 ExoPlayer (零磁盘残留，毫秒级秒开)
+                        try {
+                            val remote = withContext(Dispatchers.IO) {
+                                org.moontechlab.selenetv.hongguo.RemoteVideo(repoInstance.http, streamInfo).prepare()
                             }
                             dramaAutoRetryCount = 0
                             controller.loadRemoteVideo(remote, safeStartMs, playWhenReady = true)
                             return@launch
                         } catch (e: Exception) {
-                            android.util.Log.w("PlayerScreen", "短剧原版取流与解密准备异常 (attempt $rAttempt): ${e.message}")
-                            if (rAttempt < 2) kotlinx.coroutines.delay(400)
+                            android.util.Log.w("PlayerScreen", "RemoteVideo 内存硬解握手受阻，平滑降级至 ExoPlayer 原生解密管道: ${e.message}")
                         }
+
+                        // 降级策略 2: ExoPlayer 原生流直接播放 (搭载 16 字节正片解密密钥与鉴权头)
+                        dramaAutoRetryCount = 0
+                        controller.load(streamInfo.url, safeStartMs, decryptionKey = keyHex, headers = dramaHeaders)
+                        return@launch
                     }
 
                     // 备用兜底：尝试 HongguoStreamResolver 解析
