@@ -88,7 +88,44 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         }
         return (hex("8404") + byteArrayOf(random.toByte(),(random shr 8).toByte(),0x40,1) + out).hex()
     }
-    private fun deviceProto() = proto(f(1,1,"sint"),f(2,2,"sint"),f(3,"8662"),f(4,VendorConstants.device.getValue("device_id")),f(5,"Ai6svO3PyrwDOUSmO6ZcResxu"),f(6,"!noperm!"),f(7,-888888,"sint"),f(8,-888888,"sint"),f(9,3,"sint"),f(10,-888888,"sint"),f(11,"!notset!"),f(12,"Asia/Shanghai,8"),f(13,"zh_CN"),f(14,4,"sint"),f(16,255.24993896484375,"float"),f(17,35.58599090576172,"float"),f(18,3.467449188232422,"float"),f(19,3.467449188232422,"float"),f(20,255.1754913330078,"float"),f(21,42.17544174194336,"float"),f(22,"16"),f(23,41,"sint"),f(24,36,"sint"),f(25,1728388016635L,"sint"),f(26,1728388016635L,"sint"),f(27,1728388016635L,"sint"),f(28,1728388016637L,"sint"),f(29,-1,"sint"),f(30,"25053RT47C"),f(31,"Redmi"),f(32,"25053RT47C"),f(33,"25053RT47C"),f(34,"Xiaomi"),f(35,"Redmi"),f(36,"Redmi"),f(38,31,"sint"))
+    private fun deviceProto(values: Map<String, String>? = null) = proto(
+        f(1, 1, "sint"),
+        f(2, 2, "sint"),
+        f(3, "8662"),
+        f(4, values?.get("device_id")?.ifEmpty { null } ?: VendorConstants.device.getValue("device_id")),
+        f(5, VendorConstants.processNonce),
+        f(6, "!noperm!"),
+        f(7, -888888, "sint"),
+        f(8, -888888, "sint"),
+        f(9, 3, "sint"),
+        f(10, -888888, "sint"),
+        f(11, "!notset!"),
+        f(12, "Asia/Shanghai,8"),
+        f(13, "zh_CN"),
+        f(14, 4, "sint"),
+        f(16, 255.24993896484375, "float"),
+        f(17, 35.58599090576172, "float"),
+        f(18, 3.467449188232422, "float"),
+        f(19, 3.467449188232422, "float"),
+        f(20, 255.1754913330078, "float"),
+        f(21, 42.17544174194336, "float"),
+        f(22, "16"),
+        f(23, 41, "sint"),
+        f(24, 36, "sint"),
+        f(25, VendorConstants.processStarted, "sint"),
+        f(26, VendorConstants.processStarted, "sint"),
+        f(27, VendorConstants.processStarted, "sint"),
+        f(28, VendorConstants.processStarted + 2, "sint"),
+        f(29, -1, "sint"),
+        f(30, "25053RT47C"),
+        f(31, "Redmi"),
+        f(32, "25053RT47C"),
+        f(33, "25053RT47C"),
+        f(34, "Xiaomi"),
+        f(35, "Redmi"),
+        f(36, "Redmi"),
+        f(38, 31, "sint")
+    )
     private fun xmxor(data: ByteArray, key: ByteArray): ByteArray {
         val encoded = IntArray(data.size)
         for (i in data.indices) {
@@ -98,75 +135,186 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
             d2 = (d2 + d1) and 255; d2 = (d2 xor d0) and 255; encoded[data.size-i-1] = d2.inv() and 255
         }
         val last = encoded.last() xor encoded[encoded.size-2]; val first = encoded[0]
-        encoded[0] = (last.inv() + first) and 255
-        encoded[1] = ((encoded[0] xor encoded.last() xor 254) + encoded[1]) and 255
-        encoded[2] = (encoded[2] + ((last-first) xor (((encoded[1] shl 3) or (encoded[1] ushr 5)) and 255) xor 2)) and 255
-        for (i in 0 until encoded.size-4) {
-            val temp = (((encoded[i+2] shl 3) or (encoded[i+2] ushr 5)) and 255) xor encoded[i+1] xor (i+3)
-            encoded[i+3] = (temp.inv() + encoded[i+3]) and 255
+        encoded[0] = (first - last - 1) and 255
+        encoded[1] = (encoded[0] xor encoded.last() xor 254) + encoded[1] and 255
+        encoded[2] = (encoded[2] + ((last - first) xor (((encoded[1] shl 3) or (encoded[1] ushr 5)) and 255) xor 2)) and 255
+        for (i in 0 until encoded.size - 4) {
+            val temp = (((encoded[i + 2] shl 3) or (encoded[i + 2] ushr 5)) and 255) xor encoded[i + 1] xor (i + 3)
+            encoded[i + 3] = (encoded[i + 3] - temp - 1) and 255
         }
-        encoded[encoded.size-1] = encoded.last() xor encoded[encoded.size-2]
-        encoded[0] = ((encoded[0] xor encoded[1]) + encoded.drop(1).sum()) and 255
+        encoded[encoded.size - 1] = encoded[encoded.size - 1] xor encoded[encoded.size - 2]
+        var sum = 0
+        for (i in 0 until encoded.size - 1) sum += encoded[i + 1]
+        encoded[0] = ((encoded[0] xor encoded[1]) + sum) and 255
         return encoded.map { it.toByte() }.toByteArray()
     }
-    fun medusa(url: String, body: ByteArray?, ts: Int): String {
-        val bodyMd5 = body?.let { digest("MD5",it) } ?: ByteArray(16)
-        val query = url.substringAfter('?').toByteArray(); val querySm3 = sm3(query)
-        val queryBodyTs = hashF13(querySm3,bodyMd5,ts)
-        val nested = proto(f(1,111,"sint"),f(2,10,"sint"),f(3,694367,"sint"),f(5,586952199,"sint"))
-        val messageRand = unsigned(rand()); val envLaunch = (random()*21).toInt()+100; val envPid = (random()*2000).toInt()+10001
-        val version = VendorConstants.device.getValue("version_name")
-        val env = proto(f(1,envLaunch,"sint"),f(2,146331399,"sint"),f(3,146331396,"sint"),f(5,7,"sint"),f(6,"v04.06.04.03-bugfix"),f(7,envPid,"sint"),f(12,deviceProto()),f(13,proto(f(1,clock()/1000,"sint"),f(2,-2,"sint"),f(4,200,"sint"))),f(14,version))
-        val queryHash = sm3(query+bodyMd5+"none".toByteArray())
-        val message = proto(f(1,hex("f7e85ffad7d7dc3bd62ac87057cf6118")),f(2,3,"sint"),f(3,messageRand,"sint"),f(4,"8662"),f(5,VendorConstants.device.getValue("device_id")),f(6,"1588093228"),f(7,version),f(8,"v04.06.04-ml-android"),f(9,67503104,"sint"),f(10,hex("4001000000000000")),f(12,ts,"sint"),f(13,queryBodyTs),f(14,querySm3.copyOf(6)),f(15,nested),f(16,"AXYQOS6n2m60x1fVZHIrH3iol"),f(17,ts,"sint"),f(19,queryHash),f(20,"none"),f(21,312,"sint"),f(23,env),f(24,"""{"cmr":16777216,"cmr2":16777216,"un_h":1879194040,"vpn":0,"kd":0,"fkd":3672518972,"pd":-1872573247,"dyn":"","do":0,"tk":true}"""))
-        val r = rand(); val signKey = hex("8ebdfa3806ecc5cee79423e6029ed82540bc2218bb7eaef71cb691f7aa8aa2f5")
-        val hash = sm3(signKey+le32(r)+signKey); val d1 = (r shr 16) and 255
-        val seed = le32((((d1 shl 11) or (r ushr 24)) xor (d1 shr 5) xor d1).inv())
-        val transformed = (hex("4001000000000000")+xmxor(message,hash)).reversedArray()
-        for (i in transformed.indices) transformed[i] = (transformed[i].u() xor seed[i.inv() and 3].u()).toByte()
+    fun medusa(query: String, body: ByteArray?, ts: Int, random: Int, values: Map<String, String>? = null): String {
+        val bodyMd5 = body?.let { digest("MD5", it) } ?: ByteArray(16)
+        val querySm3 = sm3(query.toByteArray())
+        val queryBodyTs = hashF13(querySm3, bodyMd5, ts)
+        val effectiveDevId = values?.get("device_id")?.ifEmpty { null } ?: VendorConstants.device.getValue("device_id")
+        val effectiveVerName = values?.get("version_name")?.ifEmpty { null } ?: VendorConstants.device.getValue("version_name")
+        val env = proto(f(1,114,"sint"),f(2,146331399,"sint"),f(3,146331396,"sint"),f(5,7,"sint"),f(6,"v04.06.04.03-bugfix"),f(7,11309,"sint"),f(12,deviceProto(values),"message"),f(13,proto(f(1,ts,"sint"),f(2,-2,"sint"),f(4,200,"sint")),"message"),f(14,effectiveVerName))
+        val message = proto(f(1,hex("f7e85ffad7d7dc3bd62ac87057cf6118"),"bytes"),f(2,3,"sint"),f(3,rand(),"sint"),f(4,"8662"),f(5,effectiveDevId),f(6,"1588093228"),f(7,effectiveVerName),f(8,"v04.06.04-ml-android"),f(9,67503104,"sint"),f(10,hex("4001000000000000"),"bytes"),f(12,ts,"sint"),f(13,queryBodyTs,"bytes"),f(14,querySm3.copyOf(6),"bytes"),f(15,proto(f(1,111,"sint"),f(2,10,"sint"),f(3,694367,"sint"),f(5,586952199,"sint")),"message"),f(16,"AXYQOS6n2m60x1fVZHIrH3iol"),f(17,ts,"sint"),f(19,sm3(query.toByteArray() + bodyMd5 + "none".toByteArray()),"bytes"),f(20,"none"),f(21,312,"sint"),f(23,env,"message"),f(24,"{\"cmr\":16777216,\"cmr2\":16777216,\"un_h\":1879194040,\"vpn\":0,\"kd\":0,\"fkd\":3672518972,\"pd\":-1872573247,\"dyn\":\"\",\"do\":0,\"tk\":true}"))
+        val signKey = hex("8ebdfa3806ecc5cee79423e6029ed82540bc2218bb7eaef71cb691f7aa8aa2f5")
+        val hash = sm3(signKey + le32(random) + signKey)
+        val d1 = (random shr 16) and 255
+        val seed = le32(((((d1 shl 11) or (random ushr 24)) xor (d1 shr 5) xor d1).inv()))
+        val transformed = xor((hex("4001000000000000") + xmxor(message, hash)).reversedArray(), ByteArray(message.size + 8) { seed[(it.inv()) and 3] })
         val check = ((querySm3[0].u() and 63) shl 14) or 0x18000001 or ((queryBodyTs[0].u() and 63) shl 8)
-        val packed = byteArrayOf(0x35)+le32(rand())+le32(check)+transformed+byteArrayOf((r shr 16).toByte(),(r shr 24).toByte())
-        val encrypted = AesV3(hex("f1593376766ea98d34f31b057a9d5be4"),ts).encrypt(packed,hex("1fe109a4125283f418de9e051a969e12"))
-        val versionBytes = hex("03000000f7e85ffad7d7dc3bd62ac87057cf6118")
-        val prefix = (0 until 20 step 4).fold(byteArrayOf()) { a,i -> a+le32(versionBytes.i32(i,true) xor ts) }
-        return (prefix+byteArrayOf(r.toByte(),(r shr 8).toByte(),0,1)+encrypted).base64()
+        val packed = byteArrayOf(0x35) + le32(rand()) + le32(check) + transformed + byteArrayOf((random shr 16).toByte(),(random shr 24).toByte())
+        val encrypted = AesV3(hex("f1593376766ea98d34f31b057a9d5be4"), ts).encrypt(packed, hex("1fe109a4125283f418de9e051a969e12"))
+        val prefix = ByteArray(20).apply { for (i in 0..4) ByteBuffer.wrap(this, i * 4, 4).order(ByteOrder.LITTLE_ENDIAN).putInt((hex("03000000f7e85ffad7d7dc3bd62ac87057cf6118").i32(i * 4, true) xor ts)) }
+        return (prefix + byteArrayOf((random and 255).toByte(), ((random shr 8) and 255).toByte(), 0, 1) + encrypted).base64()
     }
     fun helios(ts: Int): String {
         val random = rand()
-        val ascii = digest("MD5",le32(random)+"8662".toByteArray()).hex().toByteArray()
-        val words = (0..3).map { ascii.i64(it*8,true) }.toMutableList(); val table = mutableListOf(words[0])
-        var b0 = words.removeAt(0); var b8 = words.removeAt(0)
+        val ascii = digest("MD5", le32(random) + "8662".toByteArray()).hex().toByteArray(Charsets.US_ASCII)
+        val words = (0 until 4).map { ByteBuffer.wrap(ascii, it * 8, 8).order(ByteOrder.LITTLE_ENDIAN).long.toULong() }.toMutableList()
+        val table = mutableListOf(words[0])
+        var b0 = words[0]; var b8 = words[1]; words.removeAt(0); words.removeAt(0)
         for (i in 0 until 34) {
-            var x8 = (java.lang.Long.rotateRight(b8,8)+b0) xor i.toLong()
-            words.add(x8); x8 = x8 xor java.lang.Long.rotateRight(b0,61); table.add(x8); b0=x8; b8=words.removeAt(0)
+            val x8 = ((b8.rotateRight(8) + b0) xor i.toULong())
+            words.add(x8)
+            val x8New = x8 xor b0.rotateRight(61)
+            table.add(x8New)
+            b0 = x8New; b8 = words.removeAt(0)
         }
-        val text = "$ts-1588093228-8662".toByteArray(); val padding = 16 - text.size % 16
-        val data = text+ByteArray(padding) { padding.toByte() }
-        var output = le32(random)
-        for (at in data.indices step 16) {
-            var a = data.i64(at,true); var b = data.i64(at+8,true)
-            for (i in 0 until 34) { b = table[i] xor (a + java.lang.Long.rotateRight(b,8)); a = b xor java.lang.Long.rotateRight(a,61) }
-            output += le64(a)+le64(b)
+        val text = "$ts-1588093228-8662".toByteArray()
+        val pad = text.copyOf((text.size / 16 + 1) * 16).apply { fill((16 - text.size % 16).toByte(), text.size) }
+        val output = ByteArrayOutputStream()
+        for (at in pad.indices step 16) {
+            var a = ByteBuffer.wrap(pad, at, 8).order(ByteOrder.LITTLE_ENDIAN).long.toULong()
+            var b = ByteBuffer.wrap(pad, at + 8, 8).order(ByteOrder.LITTLE_ENDIAN).long.toULong()
+            for (i in 0 until 34) {
+                b = table[i] xor (a + b.rotateRight(8))
+                a = b xor a.rotateRight(61)
+            }
+            output.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(a.toLong()).array())
+            output.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(b.toLong()).array())
         }
-        return output.base64()
+        return (le32(random) + output.toByteArray()).base64()
     }
-    fun sign(base: String, values: Map<String,String>, body: ByteArray? = null): Request {
-        val now = clock(); val ts = (now / 1000).toInt()
-        var ticket = now; var query: String
+    fun signHongguo(queryString: String, body: ByteArray?, nowMs: Long): Map<String, String> {
+        val ts = (nowMs / 1000).toInt()
+        val queryHash = digest("MD5", queryString.toByteArray(Charsets.UTF_8))
+        val payload = ByteArray(20)
+        System.arraycopy(queryHash, 0, payload, 0, 4)
+        var bodyStub = ""
+        if (body != null && body.isNotEmpty()) {
+            val bodyHash = digest("MD5", body)
+            System.arraycopy(bodyHash, 0, payload, 4, 4)
+            bodyStub = bodyHash.hex().uppercase()
+        }
+        payload[12] = 0
+        payload[13] = 6
+        payload[14] = 11
+        payload[15] = 28
+        val tsBytes = be32(ts)
+        System.arraycopy(tsBytes, 0, payload, 16, 4)
+
+        val key = intArrayOf(
+            0x44, 0xb9, 0xb9, 0xd9, 0xa4, 0xae, 0xf9, 0xfc, 0xa4, 0x93,
+            0xaa, 0x75, 0x7c, 0xa3, 0xc2, 0xc4, 0xa4, 0x96, 0x93, 0x8f
+        )
+        for (i in 0 until 20) {
+            payload[i] = (payload[i].u() xor key[i]).toByte()
+        }
+        for (i in 0 until 20) {
+            val cur = payload[i].u()
+            val rot = ((cur shl 4) or (cur ushr 4)) and 0xff
+            val mixed = rot xor payload[(i + 1) % 20].u()
+            val rev = Integer.reverse(mixed) ushr 24
+            payload[i] = (rev xor 0xff xor 20).toByte()
+        }
+        val prefix = byteArrayOf(0x84.toByte(), 0x04.toByte(), 0x40.toByte(), 0x1c.toByte(), 0, 0)
+        val fullSig = prefix + payload
+        val gorgonHex = fullSig.hex()
+
+        val headers = mutableMapOf(
+            "X-Khronos" to ts.toString(),
+            "X-Gorgon" to gorgonHex,
+            "X-SS-Req-Ticket" to nowMs.toString()
+        )
+        if (bodyStub.isNotEmpty()) {
+            headers["X-SS-STUB"] = bodyStub
+        }
+        return headers
+    }
+
+    fun signStandard(base: String, values: Map<String, String>, body: ByteArray? = null): Request {
+        val now = clock()
+        val query = encode(values + mapOf("_rticket" to now.toString()))
+        val signHeaders = signHongguo(query, body, now)
+        val url = "$base?$query"
+        val headers = linkedMapOf(
+            "User-Agent" to (if (body != null) VendorConstants.VIDEO_UA else VendorConstants.APP_UA),
+            "Accept" to "application/json",
+            "Content-Type" to "application/json; charset=utf-8",
+            "X-XS-From-Web" to "0",
+            "Sdk-Version" to "2"
+        )
+        headers.putAll(signHeaders)
+        return Request(url, headers, body)
+    }
+
+    fun sign(base: String, values: Map<String, String>, body: ByteArray? = null): Request {
+        val now = clock()
+        val ts = (now / 1000).toInt()
+        var ticket = now
+        var query = ""
+        var found = false
+        // 阶段 1: 0..127 递增偏移抖动锁定 Branch 0
         for (offset in 0..127) {
-            ticket = now + offset; query = encode(values + mapOf("ts" to ts.toString(), "_rticket" to ticket.toString()))
-            if (branch(query,body,ts) == 0) {
-                val url = "$base?$query"
-                val random = (random()*65536).toInt()
-                val headers = linkedMapOf("User-Agent" to (if (body != null) VendorConstants.VIDEO_UA else VendorConstants.APP_UA),"Accept" to "application/json; charset=utf-8,application/x-protobuf", "x-ss-req-ticket" to ticket.toString(),"x-tt-request-tag" to "t=0;n=0","sdk-version" to "2","passport-sdk-version" to "50561","x-xs-from-web" to "0","x-khronos" to ts.toString(),"x-ladon" to be32(ts).base64(),"x-argus" to le32(ts).base64(),"x-gorgon" to gorgon(query,body,ts,random),"x-helios" to helios(ts),"x-medusa" to medusa(url,body,ts),"x-tt-dt" to "")
-                if (body != null) { headers["Content-Type"]="application/json; charset=UTF-8"; headers["x-vc-bdturing-sdk-version"]="3.7.2.cn"; headers["x-ss-stub"]=digest("MD5",body).hex().uppercase() }
-                return Request(url,headers,body)
+            ticket = now + offset
+            query = encode(values + mapOf("ts" to ts.toString(), "_rticket" to ticket.toString()))
+            if (branch(query, body, ts) == 0) {
+                found = true
+                break
             }
         }
-        error("无法生成请求签名")
+        // 阶段 2: 极低概率兜底，随机抖动直到 100% 命中 Branch 0 (消除服务端拒签与Unsupported hash branch)
+        if (!found) {
+            for (retry in 0..255) {
+                ticket = now + 128 + (random() * 20000).toLong()
+                query = encode(values + mapOf("ts" to ts.toString(), "_rticket" to ticket.toString()))
+                if (branch(query, body, ts) == 0) {
+                    found = true
+                    break
+                }
+            }
+        }
+        val random = (random() * 65536).toInt()
+        val url = "$base?$query"
+        val headers = linkedMapOf(
+            "User-Agent" to (if (body != null) VendorConstants.VIDEO_UA else VendorConstants.APP_UA),
+            "Accept" to "application/json; charset=utf-8,application/x-protobuf",
+            "x-ss-req-ticket" to ticket.toString(),
+            "x-tt-request-tag" to "t=0;n=0",
+            "sdk-version" to "2",
+            "passport-sdk-version" to "50561",
+            "x-xs-from-web" to "0",
+            "x-khronos" to ts.toString(),
+            "x-ladon" to be32(ts).base64(),
+            "x-argus" to le32(ts).base64(),
+            "x-gorgon" to gorgon(query, body, ts, random),
+            "x-helios" to helios(ts),
+            "x-medusa" to medusa(query, body, ts, rand(), values),
+            "x-tt-dt" to ""
+        )
+        if (body != null) {
+            headers["Content-Type"] = "application/json; charset=UTF-8"
+            headers["x-vc-bdturing-sdk-version"] = "3.7.2.cn"
+            headers["x-ss-stub"] = digest("MD5", body).hex().uppercase()
+        }
+        return Request(url, headers, body)
     }
+
     companion object {
-        fun encode(values: Map<String,String>) = values.entries.joinToString("&") { (k,v) -> "${encode(k)}=${encode(v)}" }
-        fun encode(value: String): String = URLEncoder.encode(value,"UTF-8").replace("+","%20").replace("%7E","~")
+        fun encode(values: Map<String, String>): String =
+            values.entries.joinToString("&") { (k, v) -> "${encode(k)}=${encode(v)}" }
+
+        fun encode(value: String): String =
+            URLEncoder.encode(value, "UTF-8").replace("+", "%20").replace("%7E", "~").replace("*", "%2A")
     }
 }

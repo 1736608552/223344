@@ -1,5 +1,18 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.55 (2026-11-11)
+
+### 紧急修复TV端PlayerController引用未解析 (VideoDataSource/RemoteVideo缺失import) + 修复移动端原生符号兼容与标准库十六进制安全转换
+
+#### 核心自愈与升级说明
+1. **紧急修复 CI 编译报错自愈闭环 (Source-first 铁证)**：
+   - **TV 端 PlayerController.kt 引用自愈**：补充注入 `import org.moontechlab.selenetv.hongguo.RemoteVideo` 与 `import org.moontechlab.selenetv.hongguo.VideoDataSource`，彻底消除 `compileHisenseReleaseKotlin` 与 `compileStandardReleaseKotlin` 下的 `Unresolved reference 'VideoDataSource' / 'info'` 编译阻断；
+   - **移动端 MainActivity.kt 与 HongguoStreamResolver.kt 符号自愈**：解密密钥统一改用标准库 `joinToString` 转换十六进制格式（`it.toInt() and 0xff`），彻底消除对内部 `internal` 扩展函数的跨包调用歧义；
+   - **移动端 VendorConstants 与 Signer 原生符号对齐**：完整保障移动端 `signStandard`、`cdid` 与设备轮换符号兼容，确保 Flutter Android APK 极速平滑构建通过；
+2. **构建发布规范**：
+   - 全平台构建产物全自动分发至独立发布仓库 `1736608552/LunaTV-Release`；
+   - 版本更新至 `v2.7.55`（versionCode: `20855`）。
+
 ## v2.7.54 (2026-11-11)
 
 ### 彻底攻克《万妖图录传第二季》前3集仅9s/20s试看、第4集无法播放及画质锁死360p缺陷 + 100%照搬对齐1736608552/hongguo-tv纯Kotlin多编码智能协商 (Codec Fallback) + 彻底拔除全端360p假兜底

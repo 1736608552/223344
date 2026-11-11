@@ -957,14 +957,15 @@ object HongguoStreamResolver {
             val repo = ContentRepository()
             val info = repo.stream(cleanVid, maxQuality)
             val qNum = Regex("(\\d+)").find(info.quality)?.groupValues?.get(1)?.toIntOrNull() ?: 1080
+            val keyHex = info.key?.joinToString("") { "%02x".format(it.toInt() and 0xff) } ?: ""
             return mapOf(
                 "url" to info.url,
-                "decryptionKey" to (info.key?.hex() ?: ""),
+                "decryptionKey" to keyHex,
                 "quality" to info.quality,
                 "actualQuality" to qNum,
                 "qualities" to listOf(qNum),
                 "multiMap" to mapOf(info.quality to info.url),
-                "keys" to mapOf(info.quality to (info.key?.hex() ?: ""))
+                "keys" to mapOf(info.quality to keyHex)
             )
         } catch (e: Exception) {
             android.util.Log.w("HongguoStreamResolver", "ContentRepository 兜底异常: ${e.message}")

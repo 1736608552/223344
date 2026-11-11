@@ -36,14 +36,15 @@ class MainActivity : FlutterActivity() {
                                 val repo = org.moontechlab.lunatv.hongguo.ContentRepository()
                                 val info = repo.stream(vid, maxQuality)
                                 val qNum = Regex("(\\d+)").find(info.quality)?.groupValues?.get(1)?.toIntOrNull() ?: 1080
+                                val keyHex = info.key?.joinToString("") { "%02x".format(it.toInt() and 0xff) } ?: ""
                                 mapOf(
                                     "url" to info.url,
-                                    "decryptionKey" to (info.key?.hex() ?: ""),
+                                    "decryptionKey" to keyHex,
                                     "quality" to info.quality,
                                     "actualQuality" to qNum,
                                     "qualities" to listOf(qNum),
                                     "multiMap" to mapOf(info.quality to info.url),
-                                    "keys" to mapOf(info.quality to (info.key?.hex() ?: ""))
+                                    "keys" to mapOf(info.quality to keyHex)
                                 )
                             } catch (eRepo: Exception) {
                                 org.moontechlab.lunatv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality, seriesId)
