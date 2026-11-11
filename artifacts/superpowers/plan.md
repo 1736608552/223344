@@ -21,7 +21,8 @@
   - 验证：手机端编译预检与代码无死链检查。
 - **步骤 3：本地编译与静态分析验证**
   - 运行 Gradle 编译任务或静态语法检查，确保无任何未解析引用（unresolved reference）或编译报错。
-- **步骤 4：版本自增与发布**
-  - 更新 `pubspec.yaml` 版本号至 `2.7.54+20854`。
+- **步骤 4：版本自增与发布 (v2.7.55 / v2.7.56 紧急自愈闭环)**
+  - 针对 TV 端缺失的 `cdid`、`signStandard`、`regenerate`、`installDeviceId`、`installIid`，完整同步移植移动端完备的 `VendorConstants.kt` 与 `Signer.kt`。
+  - 更新 `pubspec.yaml` 版本号至 `2.7.56+20856`。
   - 更新 `FIXLOG.md` 与 `.github/changelogs.json`。
-  - Git commit 并打 tag `v2.7.54`，推送到 GitHub 远程仓库，触发全平台 CI 构建发布。
+  - Git commit 并打 tag `v2.7.56`，推送到 GitHub 远程仓库，触发全平台 CI 构建发布。

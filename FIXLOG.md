@@ -1,5 +1,17 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.56 (2026-11-11)
+
+### 彻底修复TV端VendorConstants与Signer符号缺失 (cdid/signStandard/regenerate未解析) + 全端构建通过与发布
+
+#### 核心自愈与升级说明
+1. **紧急修复 TV 端编译报错自愈闭环 (Source-first 铁证)**：
+   - **TV 端 VendorConstants.kt 符号补齐**：同步植入专属设备身份动态生成与持久化字段（`cdid`、`installDeviceId`、`installIid`、`openUdid`、`clientUdid`、`processNonce`、`processStarted`）及 `regenerate()` 自动轮换自愈方法，彻底消除 `compileStandardReleaseKotlin` 与 `compileHisenseReleaseKotlin` 下的 `Unresolved reference 'cdid' / 'regenerate' / 'installDeviceId' / 'installIid'` 编译阻断；
+   - **TV 端 Signer.kt 标准签名扩展补齐**：完整同步 `signStandard()`、`signHongguo()` 及 `deviceProto(values)` 方法，彻底消除 `Unresolved reference 'signStandard'` 编译阻断；
+2. **构建发布规范**：
+   - 全平台构建产物全自动分发至独立发布仓库 `1736608552/LunaTV-Release`；
+   - 版本更新至 `v2.7.56`（versionCode: `20856`）。
+
 ## v2.7.55 (2026-11-11)
 
 ### 紧急修复TV端PlayerController引用未解析 (VideoDataSource/RemoteVideo缺失import) + 修复移动端原生符号兼容与标准库十六进制安全转换

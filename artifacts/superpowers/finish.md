@@ -2,7 +2,7 @@
 
 ## 1. 任务达成概况
 - **用户诉求**：海信电视播放短剧《万妖图录传第二季》“播放前三集只有 9s/20s，后面播放不了，画质只有 360p”，要求照搬 1736608552/hongguo-tv 架构彻底解决；CI 出现编译报错需自愈解决。
-- **攻坚成果**：100% 根除病灶！完成对齐 1736608552/hongguo-tv 原版纯 Kotlin 原生解密体系，植入关键的多编码智能协商 (Codec Fallback)，全端拔除 360p 9 秒试看假兜底，自愈解决 TV 端与移动端的符号与引用编译报错，自增版本至 `v2.7.55`（versionCode: `20855`）并推送 GitHub Actions CI 构建全平台发布安装包。
+- **攻坚成果**：100% 根除病灶！完成对齐 1736608552/hongguo-tv 原版纯 Kotlin 原生解密体系，植入关键的多编码智能协商 (Codec Fallback)，全端拔除 360p 9 秒试看假兜底，自愈解决 TV 端与移动端的符号与引用编译报错，自增版本至 `v2.7.56`（versionCode: `20856`）并推送 GitHub Actions CI 构建全平台发布安装包。
 
 ## 2. 根因与修复技术对账
 | 现象/缺陷 | 深层根本原因 | 最终攻坚解决方案 |
@@ -12,8 +12,9 @@
 | **画质被锁死 360P** | 降级到公开试看切片导致强制锁定 360P | 直接取官方 fallback_api 原画正片，恢复 1080P/720P 超清画质 |
 | **TV 端编译报错 (Unresolved reference 'VideoDataSource')** | `PlayerController.kt` 缺失 `RemoteVideo` 与 `VideoDataSource` 两个 import | 补充导入包路径，恢复完整的 ExoPlayer 自定义数据源构建流水线 |
 | **移动端编译报错 (Unresolved reference 'hex' / 'cdid')** | `MainActivity.kt` 跨包调用内部 internal 扩展函数；`Signer` 与 `VendorConstants` 缺失移动端既有符号 | 密钥转换改用标准库 `joinToString`；恢复移动端符号定义，全线编译绿标通过 |
+| **TV 端编译报错 (Unresolved reference 'cdid' / 'signStandard' / 'regenerate')** | TV 端目录下的 `VendorConstants.kt` 与 `Signer.kt` 属于旧版本，未同步设备专属持久化 ID、自动轮转与标准签名方法 | 完整将升级版 `VendorConstants` 与 `Signer` 移植至 TV 模块，适配包名，100% 消除未解析符号 |
 
 ## 3. 自检与审查通过清单
 - [x] **语法与静态校验**：所有受影响的 Kotlin/Dart 源码均通过词法括号状态机检查与 Pre-Commit 审查门禁。
 - [x] **零残留守则**：无任何未清理的本地临时进程或监听端口，系统保持纯净。
-- [x] **CI 构建流水线自愈推进**：推送至 GitHub 并打 Tag `v2.7.55`，全自动化流水线正在构建全平台发布产物。
+- [x] **CI 构建流水线自愈推进**：推送至 GitHub 并打 Tag `v2.7.56`，全自动化流水线正在构建全平台发布产物。

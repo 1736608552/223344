@@ -24,3 +24,8 @@
 - [x] **步骤 6：版本自增至 v2.7.55 并推送发布**
   - `pubspec.yaml` 升级为 `2.7.55+20855`；
   - 更新日志写入 `.github/changelogs.json` 与 `FIXLOG.md`。
+- [x] **步骤 7：自愈 TV 端符号缺失阻断 (v2.7.56 专项自愈)**
+  - **TV 端 VendorConstants.kt**：完整移植专属设备身份动态生成与持久化字段（`cdid`、`installDeviceId`、`installIid`、`openUdid`、`clientUdid`、`processNonce`、`processStarted`）与 `regenerate()` 自动轮换自愈方法，消除全部 8 处未解析符号；
+  - **TV 端 Signer.kt**：完整同步移植 `signStandard()`、`signHongguo()` 及 `deviceProto(values)` 方法，消除全部 2 处未解析符号；
+  - **本地静态扫描验证**：运行 Python AST 词法状态机核查 TV 端 158 个 Kotlin 文件，11 个 `VendorConstants` 属性和 2 个 `Signer` 方法 100% 存在，未解析符号清零；
+  - **发布推进**：更新 `pubspec.yaml` 至 `2.7.56+20856`，同步发布文档。
