@@ -4,7 +4,6 @@ package org.moontechlab.selenetv.hongguo
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
-import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -16,21 +15,8 @@ internal fun hex(value: String): ByteArray {
     return ByteArray(value.length / 2) { value.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
 }
 internal fun ByteArray.hex() = joinToString("") { "%02x".format(it.u()) }
-internal fun decode64(s: String): ByteArray {
-    val clean = s.replace('-', '+').replace('_', '/')
-    return try {
-        android.util.Base64.decode(clean, android.util.Base64.DEFAULT)
-    } catch (_: Throwable) {
-        Base64.getDecoder().decode(clean)
-    }
-}
-internal fun ByteArray.base64(): String {
-    return try {
-        android.util.Base64.encodeToString(this, android.util.Base64.NO_WRAP)
-    } catch (_: Throwable) {
-        Base64.getEncoder().encodeToString(this)
-    }
-}
+internal fun decode64(s: String): ByteArray = android.util.Base64.decode(s.replace('-', '+').replace('_', '/'), android.util.Base64.DEFAULT)
+internal fun ByteArray.base64(): String = android.util.Base64.encodeToString(this, android.util.Base64.NO_WRAP)
 internal fun le32(n: Int) = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(n).array()
 internal fun be32(n: Int) = ByteBuffer.allocate(4).putInt(n).array()
 internal fun le64(n: Long) = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(n).array()

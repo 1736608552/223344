@@ -952,34 +952,24 @@ object HongguoStreamResolver {
             }
         }
 
-        // 阶段 3 (终极平滑兜底): 官方 Web 试看直链探测 (免设备鉴权、免风控火山 CDN 直出，确保前几集 100% 秒开)
-        val publicWebUrl = "https://hongguoduanju.com/video/public/$cleanVid/360p.mp4"
-        var webPlayable = false
+        // 阶段 3 (原版 ContentRepository 高可用兜底): 官方正片 multi_video_model + fallback_api 1080P/720P 完整原画解析 (彻底根除 360P 9秒试看)
         try {
-            val probeReq = Request.Builder()
-                .url(publicWebUrl)
-                .header("User-Agent", VendorConstants.VIDEO_UA)
-                .header("Range", "bytes=0-1023")
-                .build()
-            client.newCall(probeReq).execute().use { probeResp ->
-                if (probeResp.isSuccessful || probeResp.code == 206) {
-                    webPlayable = true
-                }
-            }
-        } catch (_: Exception) {}
-
-        if (webPlayable) {
+            val repo = ContentRepository()
+            val info = repo.stream(cleanVid, maxQuality)
+            val qNum = Regex("(\\d+)").find(info.quality)?.groupValues?.get(1)?.toIntOrNull() ?: 1080
             return mapOf(
-                "url" to publicWebUrl,
-                "decryptionKey" to "",
-                "quality" to "360P（免密试看）",
-                "actualQuality" to 360,
-                "qualities" to listOf(360),
-                "multiMap" to mapOf("360P" to publicWebUrl),
-                "keys" to emptyMap<String, String>()
+                "url" to info.url,
+                "decryptionKey" to (info.key?.hex() ?: ""),
+                "quality" to info.quality,
+                "actualQuality" to qNum,
+                "qualities" to listOf(qNum),
+                "multiMap" to mapOf(info.quality to info.url),
+                "keys" to mapOf(info.quality to (info.key?.hex() ?: ""))
             )
+        } catch (e: Exception) {
+            android.util.Log.w("HongguoStreamResolver", "ContentRepository 兜底异常: ${e.message}")
         }
 
-        throw IOException("Empty response from all providers (video_tab, multi_video_model, video_model) for vid $cleanVid")
+        throw IOException("Empty response from all providers for vid $cleanVid")
     }
 }

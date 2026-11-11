@@ -165,7 +165,7 @@ class PlayerController(
         }
     }
 
-    private var currentRemoteVideo: HongguoRemoteVideo? = null
+    private var currentRemoteVideo: AutoCloseable? = null
     private val networkCleanupExecutor = Executors.newSingleThreadExecutor()
 
     private fun releaseCurrentRemoteVideo() {
@@ -180,6 +180,34 @@ class PlayerController(
     }
 
     init { exo.addListener(listener) }
+
+    @MainThread
+    override fun loadRemoteVideo(remote: Any, startMs: Long, playWhenReady: Boolean) {
+        releaseCurrentRemoteVideo()
+        error = null
+        hasStarted = false
+        lastStartMs = startMs
+        hasFallbackToRaw = false
+
+        if (remote is RemoteVideo) {
+            currentRemoteVideo = remote
+            lastUrl = remote.info.url
+            val mediaSource = ProgressiveMediaSource.Factory { VideoDataSource(remote) }
+                .createMediaSource(
+                    MediaItem.Builder()
+                        .setMediaId(remote.info.url)
+                        .setUri(Uri.parse("hongguotv://episode/${remote.info.url.hashCode()}"))
+                        .setMimeType(MimeTypes.VIDEO_MP4)
+                        .build()
+                )
+            exo.setMediaSource(mediaSource)
+            exo.prepare()
+            if (startMs > 0) exo.seekTo(startMs)
+            exo.playWhenReady = playWhenReady
+            syncProgress()
+            android.util.Log.i("PlayerController", "短剧原版纯内存解密硬解引擎启动成功 (MediaCodec 硬解): ${remote.info.quality}")
+        }
+    }
 
     @MainThread
     fun loadDirect(

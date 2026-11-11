@@ -32,8 +32,22 @@ class MainActivity : FlutterActivity() {
                     val seriesId = call.argument<String>("seriesId") ?: ""
                     Thread {
                         try {
-                            val coreRes = org.moontechlab.lunatv.hongguo.HongguoCoreManager.resolveMedia(this, seriesId, vid, maxQuality)
-                            val res = coreRes ?: org.moontechlab.lunatv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality, seriesId)
+                            val res = try {
+                                val repo = org.moontechlab.lunatv.hongguo.ContentRepository()
+                                val info = repo.stream(vid, maxQuality)
+                                val qNum = Regex("(\\d+)").find(info.quality)?.groupValues?.get(1)?.toIntOrNull() ?: 1080
+                                mapOf(
+                                    "url" to info.url,
+                                    "decryptionKey" to (info.key?.hex() ?: ""),
+                                    "quality" to info.quality,
+                                    "actualQuality" to qNum,
+                                    "qualities" to listOf(qNum),
+                                    "multiMap" to mapOf(info.quality to info.url),
+                                    "keys" to mapOf(info.quality to (info.key?.hex() ?: ""))
+                                )
+                            } catch (eRepo: Exception) {
+                                org.moontechlab.lunatv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality, seriesId)
+                            }
                             runOnUiThread { result.success(res) }
                         } catch (e: Exception) {
                             runOnUiThread { result.error("RESOLVE_ERROR", e.message, null) }
@@ -101,6 +115,5 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        org.moontechlab.lunatv.hongguo.HongguoCoreManager.stop()
     }
 }

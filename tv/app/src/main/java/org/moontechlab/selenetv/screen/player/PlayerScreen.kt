@@ -377,34 +377,41 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                     }
                 }
 
-                // 直链解析：优先调用 aston314/hongguo-tv 本地解密核心 (彻底杜绝 20 秒试看截断与硬解死锁)
+                // 100% 照搬 aston314/hongguoTV 官方原版 Kotlin 取流与内存解密架构 (彻底根治 9秒试看/360P/第4集失效)
                 if (vid.isNotEmpty()) {
                     val maxQ = 1080
-                    for (rAttempt in 0..1) {
+                    for (rAttempt in 0..2) {
                         try {
-                            val result = withContext(Dispatchers.IO) {
-                                val coreResult = org.moontechlab.selenetv.hongguo.HongguoCoreManager.resolveMedia(context, seriesId, vid, quality = maxQ)
-                                coreResult ?: org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ, seriesId = seriesId)
+                            val remote = withContext(Dispatchers.IO) {
+                                val repo = org.moontechlab.selenetv.hongguo.ContentRepository()
+                                val info = repo.stream(vid, maxQuality = maxQ)
+                                org.moontechlab.selenetv.hongguo.RemoteVideo(repo.http, info).prepare()
                             }
-                            resolvedUrl = result["url"] as? String ?: ""
-                            decryptionKey = result["decryptionKey"] as? String ?: ""
-                            if (resolvedUrl.isNotEmpty()) break
+                            dramaAutoRetryCount = 0
+                            controller.loadRemoteVideo(remote, safeStartMs, playWhenReady = true)
+                            return@launch
                         } catch (e: Exception) {
-                            android.util.Log.w("PlayerScreen", "短剧直链解析异常 (attempt $rAttempt): ${e.message}")
-                            if (rAttempt == 0) kotlinx.coroutines.delay(300)
+                            android.util.Log.w("PlayerScreen", "短剧原版取流与解密准备异常 (attempt $rAttempt): ${e.message}")
+                            if (rAttempt < 2) kotlinx.coroutines.delay(400)
                         }
+                    }
+
+                    // 备用兜底：尝试 HongguoStreamResolver 解析
+                    try {
+                        val result = withContext(Dispatchers.IO) {
+                            org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ, seriesId = seriesId)
+                        }
+                        resolvedUrl = result["url"] as? String ?: ""
+                        decryptionKey = result["decryptionKey"] as? String ?: ""
+                    } catch (e: Exception) {
+                        android.util.Log.w("PlayerScreen", "短剧备用取流异常: ${e.message}")
                     }
                 }
 
                 if (resolvedUrl.isNotEmpty() && (resolvedUrl.startsWith("http://") || resolvedUrl.startsWith("https://"))) {
                     dramaAutoRetryCount = 0
-                    // 若为本地核心服务已透明解密流 (127.0.0.1)，直接使用 load 直播秒开，绝不挂载额外 CENC 解密管道！
-                    if (resolvedUrl.contains("127.0.0.1") || resolvedUrl.contains("/minireel-proxy/media/")) {
-                        controller.load(resolvedUrl, safeStartMs, playWhenReady = true)
-                        return@launch
-                    }
                     val dramaHeaders = mapOf(
-                        "User-Agent" to org.moontechlab.selenetv.hongguo.PlaybackDeviceSession.PLAYBACK_UA,
+                        "User-Agent" to org.moontechlab.selenetv.hongguo.VendorConstants.VIDEO_UA,
                         "Referer" to "https://novel.snssdk.com/"
                     )
                     controller.load(resolvedUrl, safeStartMs, decryptionKey = decryptionKey, headers = dramaHeaders)

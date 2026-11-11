@@ -25,6 +25,7 @@ interface VideoPlayer {
     var resizeMode: VideoResizeMode
 
     fun load(url: String, startMs: Long, playWhenReady: Boolean = true)
+    fun loadRemoteVideo(remote: Any, startMs: Long, playWhenReady: Boolean = true) {}
     fun load(
         url: String,
         startMs: Long,

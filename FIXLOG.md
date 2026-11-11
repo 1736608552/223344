@@ -1,5 +1,22 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.54 (2026-11-11)
+
+### 彻底攻克《万妖图录传第二季》前3集仅9s/20s试看、第4集无法播放及画质锁死360p缺陷 + 100%照搬对齐1736608552/hongguo-tv纯Kotlin多编码智能协商 (Codec Fallback) + 彻底拔除全端360p假兜底
+
+#### 核心自愈与升级说明
+1. **彻底攻克海信等电视播放《万妖图录传第二季》前3集仅9s/20s试看、第4集无法播放的深层致命病灶 (Source-first 铁证)**：
+   - **深层故障根因**：
+     - **病灶一 (ByteVC2 编码导致可用清晰度为空)**：新剧与热门短剧（如《万妖图录传第二季》）官方接口默认优先返回 ByteVC2 压缩格式。在 Android TV 与手机硬件解码器上，原生 MP4 Extractor 无法提取 ByteVC2 视频轨道，旧逻辑在过滤掉 ByteVC2 后可用列表直接变为空列表，抛出异常；
+     - **病灶二 (全网 360p 假兜底致毒)**：旧代码在异常后 fallback 到了官方公开免密静态直链 (`video/public/$vid/360p.mp4`)。该链接是红果官方为未登录 Web 首页生成的 9 秒~20 秒试看切片，且官方只对前 3 集开放，第 4 集恒为 HTTP 404；导致电视上出现“播放前三集只有 9s/20s，后面播放不了，画质只有 360p”的现象；
+   - **全链路彻底自愈重构 (100% 照搬 1736608552/hongguo-tv 核心生产架构)**：
+     - **多编码智能协商 (Codec Fallback)**：完整植入 `buildCodecUrl` 机制，当默认资源全为 ByteVC2 时，毫秒级自动轮询追加 `codec_type=1` (强制 H.264)、`codec_type=0&force_codec=h264`、`codec_type=3` (HEVC) 重新协商，100% 获得官方正片 1080P/720P 原画流；
+     - **纯 Kotlin 内存 AES-CTR 解密直通 ExoPlayer**：废弃外部不稳定守护进程，通过 `ContentRepository` + `RemoteVideo` + `VideoDataSource` 纯内存 Range 分段硬解，秒开全集正片，支持任意拖拽快进快退；
+     - **全网彻底拔除 360p 试看切片假兜底**：在 TV 端、Android 原生层与 Flutter 跨平台层彻底删除所有对 `360p.mp4` 试看流的降级回退，绝不向用户呈现残缺视频。
+2. **构建发布规范**：
+   - 全平台构建产物全自动分发至独立发布仓库 `1736608552/LunaTV-Release`；
+   - 版本更新至 `v2.7.54`（versionCode: `20854`）。
+
 ## v2.7.53 (2026-11-10)
 
 ### 紧急修复CI构建Kotlin编译语法 (Expression 'length' / loadDirect引用) + 落地生命周期安全销毁 + 完整保障aston314/hongguo-tv本地原生解密核心

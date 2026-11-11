@@ -1457,62 +1457,6 @@ class DuanjuCoreBridge {
       return plan;
     }
 
-    // 通道 5 (终极降级兜底): 官方公开直链 (仅在上述高清/App/Go核心/Web全部失败时降级兜底，杜绝黑屏死机)
-    if (vid.isNotEmpty && vid != cleanId) {
-      final directUrl = 'https://hongguoduanju.com/video/public/$vid/360p.mp4';
-      bool isDirectAvailable = false;
-      try {
-        final headRes = await http.head(
-          Uri.parse(directUrl),
-          headers: {
-            'Referer': 'https://hongguoduanju.com/',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
-          },
-        ).timeout(const Duration(milliseconds: 1500));
-        if (headRes.statusCode == 200) {
-          isDirectAvailable = true;
-        }
-      } catch (_) {
-        if (episode <= 3) {
-          isDirectAvailable = true;
-        }
-      }
-
-      if (isDirectAvailable) {
-        final multiMap = <String, String>{
-          '360P': directUrl,
-          '标清': directUrl,
-          '自动': directUrl,
-        };
-        final plan = DuanjuPlaybackPlan(
-          url: directUrl,
-          decryptionKey: '',
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
-            'Referer': 'https://hongguoduanju.com/',
-          },
-          multiMap: multiMap,
-          resolution: '360P',
-          quality: quality > 0 ? quality : 360,
-          actualQuality: 360,
-          qualities: const [360],
-        );
-        _planCache[cacheKey] = plan;
-        _planCache['$cleanId-$episode'] = plan;
-        _planCache['hongguo:$cleanId-$episode'] = plan;
-        _playbackUrlCache[cacheKey] = directUrl;
-        _playbackUrlCache['$cleanId-$episode'] = directUrl;
-        _playbackMultiResCache[cacheKey] = multiMap;
-        _playbackMultiResCache['$cleanId-$episode'] = multiMap;
-        _playbackResolutionCache[cacheKey] = '360P';
-        _playbackResolutionCache['$cleanId-$episode'] = '360P';
-        if (kDebugMode) {
-          print('[DuanjuBridge] 官方公开直链降级兜底成功: ep=$episode, vid=$vid, url=$directUrl');
-        }
-        return plan;
-      }
-    }
-
     return null;
   }
 
@@ -1933,33 +1877,6 @@ class DuanjuCoreBridge {
       }
     }
 
-    // 通道 2.5: 官方 Web 试看直链免风控兜底 (火山 CDN 360P 免密直出，保障前几集极速秒开)
-    if (videoId.isNotEmpty) {
-      final webUrl = 'https://hongguoduanju.com/video/public/$videoId/360p.mp4';
-      try {
-        final headResp = await http.head(
-          Uri.parse(webUrl),
-          headers: {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'},
-        ).timeout(const Duration(seconds: 4));
-        if (headResp.statusCode == 200 || headResp.statusCode == 206) {
-          return DuanjuPlaybackPlan(
-            url: webUrl,
-            decryptionKey: '',
-            keys: const {},
-            headers: const {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-              'Referer': 'https://hongguoduanju.com/',
-            },
-            multiMap: {'360P': webUrl},
-            resolution: '360P（免密试看）',
-            quality: 360,
-            actualQuality: 360,
-            qualities: const [360],
-          );
-        }
-      } catch (_) {}
-    }
-
     return null;
   }
 
@@ -2156,16 +2073,6 @@ class DuanjuCoreBridge {
                     return mainUrl;
                   }
                 }
-
-                // 2. 仅在官方高清流缺失时，降级提取公开 SEO 静态试看直链
-                final seo = pageData['publicVideoSeo'];
-                if (seo is Map && seo['available'] == true) {
-                  final targetVid = seo['itemId']?.toString() ?? vid;
-                  final directUrl = 'https://hongguoduanju.com/video/public/$targetVid/360p.mp4';
-                  _playbackResolutionCache[cacheKey] = '360P';
-                  _playbackUrlCache[cacheKey] = directUrl;
-                  return directUrl;
-                }
               }
             }
           }
@@ -2230,16 +2137,6 @@ class DuanjuCoreBridge {
                   _playbackMultiResCache[nextCacheKey] = buildMultiResolutionUrls(mainUrl);
                   return;
                 }
-              }
-
-              final seo = pageData['publicVideoSeo'];
-              if (seo is Map && seo['available'] == true) {
-                final targetVid = seo['itemId']?.toString() ?? vid;
-                final directUrl = 'https://hongguoduanju.com/video/public/$targetVid/360p.mp4';
-                _playbackResolutionCache[nextCacheKey] = '360P';
-                _playbackUrlCache[nextCacheKey] = directUrl;
-                _playbackMultiResCache[nextCacheKey] = buildMultiResolutionUrls(directUrl);
-                return;
               }
             }
           }
