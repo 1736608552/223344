@@ -415,10 +415,22 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                             controller.loadRemoteVideo(remote, safeStartMs, playWhenReady = true)
                             return@launch
                         } catch (e: Exception) {
-                            android.util.Log.w("PlayerScreen", "RemoteVideo 内存硬解握手受阻，平滑降级至 ExoPlayer 原生解密管道: ${e.message}")
+                            android.util.Log.w("PlayerScreen", "RemoteVideo 内存硬解握手受阻，平滑降级至本地回环解密代理流: ${e.message}")
                         }
 
-                        // 降级策略 2: ExoPlayer 原生流直接播放 (搭载 16 字节正片解密密钥与鉴权头)
+                        // 降级策略 2 (100% 对齐标杆仓库): 本地回环解密代理流 (输出纯明文标准 MP4，彻底根除火山 encv 黑屏)
+                        try {
+                            val localPlayUrl = withContext(Dispatchers.IO) {
+                                org.moontechlab.selenetv.hongguo.HongguoLocalServer.instance.getPlayUrl(streamInfo, repoInstance.http)
+                            }
+                            dramaAutoRetryCount = 0
+                            controller.load(localPlayUrl, safeStartMs, decryptionKey = "", headers = emptyMap())
+                            return@launch
+                        } catch (eLocal: Exception) {
+                            android.util.Log.w("PlayerScreen", "本地回环代理流异常，回退至原生管道: ${eLocal.message}")
+                        }
+
+                        // 降级策略 3: ExoPlayer 原生流直接播放 (搭载 16 字节正片解密密钥与鉴权头)
                         dramaAutoRetryCount = 0
                         controller.load(streamInfo.url, safeStartMs, decryptionKey = keyHex, headers = dramaHeaders)
                         return@launch
@@ -429,8 +441,19 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                         val result = withContext(Dispatchers.IO) {
                             org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ, seriesId = seriesId)
                         }
-                        resolvedUrl = result["url"] as? String ?: ""
-                        decryptionKey = result["decryptionKey"] as? String ?: ""
+                        val rawResolved = result["url"] as? String ?: ""
+                        val decKey = result["decryptionKey"] as? String ?: ""
+                        if (rawResolved.isNotEmpty() && decKey.length == 32 && repoInstance != null) {
+                            val keyBytes = decKey.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                            val fakeInfo = org.moontechlab.selenetv.hongguo.StreamInfo(rawResolved, keyBytes, "${maxQ}P")
+                            resolvedUrl = withContext(Dispatchers.IO) {
+                                org.moontechlab.selenetv.hongguo.HongguoLocalServer.instance.getPlayUrl(fakeInfo, repoInstance.http)
+                            }
+                            decryptionKey = ""
+                        } else {
+                            resolvedUrl = rawResolved
+                            decryptionKey = decKey
+                        }
                     } catch (e: Exception) {
                         android.util.Log.w("PlayerScreen", "短剧备用取流异常: ${e.message}")
                     }

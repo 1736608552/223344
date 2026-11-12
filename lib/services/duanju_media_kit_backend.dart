@@ -192,12 +192,13 @@ class DuanjuMediaKitBackend implements PlayerBackend {
         final dynamic platform = _player.platform;
         final rawKey = decryptionKey?.trim() ?? '';
         final cleanKey = RegExp(r'^[0-9a-fA-F]{32}$').hasMatch(rawKey) ? rawKey.toLowerCase() : '';
+        final isLocalDecrypted = url.contains('127.0.0.1');
         final options = <String>[
           'seg_max_retry=3',
           'strict=experimental',
           'allowed_extensions=ALL',
           'protocol_whitelist=[http,https,tcp,tls,crypto,data,file]',
-          if (cleanKey.isNotEmpty) 'decryption_key=$cleanKey',
+          if (!isLocalDecrypted && cleanKey.isNotEmpty) 'decryption_key=$cleanKey',
         ].join(',');
 
         try {

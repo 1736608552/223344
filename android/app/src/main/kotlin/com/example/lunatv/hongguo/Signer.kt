@@ -310,6 +310,24 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         return Request(url, headers, body)
     }
 
+    /**
+     * 官方短剧播放接口专属签名 (100% 对齐 1736608552/hongguo-tv minireel_sign.go)：
+     * 播放类接口（multi_video_model / video_model）若携带 x-medusa 签名头，
+     * 会与服务端 551 envelope 协议冲突直接下发 0 字节空响应！
+     * 因此必须显式移除 x-medusa，并补齐 Sdk-Version、X-Xs-From-Web、X-Tt-Store-Region 规范头。
+     */
+    fun signPlayback(base: String, values: Map<String, String>, body: ByteArray? = null): Request {
+        val req = sign(base, values, body)
+        val headers = req.headers.toMutableMap()
+        headers.keys.filter { it.equals("x-medusa", ignoreCase = true) }.forEach { headers.remove(it) }
+        headers["Sdk-Version"] = "2"
+        headers["X-Xs-From-Web"] = "0"
+        headers["X-Tt-Dt"] = ""
+        headers["X-Tt-Store-Region"] = "cn"
+        headers["X-Tt-Store-Region-Src"] = "did"
+        return Request(req.url, headers, req.body)
+    }
+
     companion object {
         fun encode(values: Map<String, String>): String =
             values.entries.joinToString("&") { (k, v) -> "${encode(k)}=${encode(v)}" }

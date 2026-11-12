@@ -48,6 +48,7 @@ open class ContentRepository(
     private val clock: () -> Long = System::currentTimeMillis,
     private val playbackSession: PlaybackDeviceSession = PlaybackDeviceSession.shared
 ) {
+    private val signer = Signer(clock)
     private val site = "https://hongguoduanju.com"
 
     private fun text(url: String, signed: Signer.Request? = null): String {
@@ -139,74 +140,121 @@ open class ContentRepository(
     }
 
     /**
-     * 取官方短剧单集正片播放直链与密钥（100% 对齐 1736608552/hongguo-tv 官方生产架构）：
-     * 平台播放接口只认合法注册过的 device_id + install_id，未注册设备直接返回 0 字节。
-     * 因此由 PlaybackDeviceSession 提供合法注册凭据与 Cookie，不要任何签名头（避免被风控判为异常客户端）。
+     * 取官方短剧单集正片播放直链与密钥（100% 对齐 1736608552/hongguo-tv 核心生产设计）：
+     * 对齐 minireel_sign.go 三步尝试策略:
+     * 1. 签名 Primary 端点 (剔除 x-medusa 避免 551 envelope 冲突空响应)
+     * 2. 签名 Alternate 端点
+     * 3. 原始未签名兼容端点
+     * 4. 若全失败，自动调度 HongguoStreamResolver 进行高可用单集与三大通道兜底
      */
     fun stream(id: String, maxQuality: Int = 1080): StreamInfo {
         val cleanId = id.trim().removePrefix("hongguo:").trim()
         require(cleanId.matches(Regex("[0-9]{1,32}")))
         val payload = """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$cleanId"]}}""".toByteArray()
         val identity = playbackSession.profile(http)
-        val query = Signer.encode(identity.values + ("_rticket" to clock().toString()))
-        val playerUrl = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?$query"
-        val request = Request.Builder()
-            .url(playerUrl)
-            .header("User-Agent", PlaybackDeviceSession.PLAYBACK_UA)
-            .header("Accept", "application/json; charset=utf-8,application/x-protobuf")
-            .apply { if (identity.cookie.isNotBlank()) header("Cookie", identity.cookie) }
-            .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
 
-        val data = JSONObject(playbackText(request.build()))
-        val code = data.optInt("Code", data.optInt("code", 0))
-        if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
-        val map = data.optJSONObject("data") ?: throw IOException("播放信息为空")
-        val entry = map.optJSONObject(cleanId) ?: map.keys().asSequence().mapNotNull { map.optJSONObject(it) }.firstOrNull() ?: throw IOException("播放信息为空")
-        val model = entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
-        val raw = model.opt("fallback_api")
-        val fallback = when (raw) {
-            is JSONObject -> raw.str("fallback_api")
-            is JSONArray -> raw.optString(0)
-            else -> runCatching { JSONObject(raw.toString()).str("fallback_api") }.getOrDefault(raw.toString())
-        }
-        if (!fallback.startsWith("https://")) throw IOException("播放地址格式异常")
-        var info = JSONObject(text(fallback)).optJSONObject("video_info")?.optJSONObject("data") ?: throw IOException("没有播放资源")
-        var videoList = info.optJSONObject("video_list") ?: JSONObject()
-        var rows = extractPlayableRows(videoList)
+        val endpoints = listOf(
+            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/",
+            "https://api5-normal-hl.fqnovel.com/novel/player/multi_video_model/v1/",
+            "https://api5-normal-lq.fqnovel.com/novel/player/multi_video_model/v1/"
+        )
 
-        // 多编码智能协商 (Codec Fallback): 若默认资源全为 ByteVC2，自动协商请求 H.264/HEVC 正片原画 (彻底根治 20秒试看/死锁)
-        if (rows.isEmpty()) {
-            for (codec in listOf("codec_type=1", "codec_type=0&force_codec=h264", "codec_type=3")) {
-                try {
-                    val candidateUrl = buildCodecUrl(fallback, codec)
-                    val candidateInfo = JSONObject(text(candidateUrl)).optJSONObject("video_info")?.optJSONObject("data")
-                    val candidateList = candidateInfo?.optJSONObject("video_list")
-                    if (candidateList != null) {
-                        val candidateRows = extractPlayableRows(candidateList)
-                        if (candidateRows.isNotEmpty()) {
-                            info = candidateInfo
-                            videoList = candidateList
-                            rows = candidateRows
-                            break
+        var lastError: Exception? = null
+        for ((attempt, base) in endpoints.withIndex()) {
+            try {
+                val reqBuilder = Request.Builder()
+                if (attempt < 2) {
+                    val signed = signer.signPlayback(base, identity.values, payload)
+                    reqBuilder.url(signed.url)
+                    for ((k, v) in signed.headers) {
+                        if (!k.equals("x-medusa", ignoreCase = true)) {
+                            reqBuilder.header(k, v)
                         }
                     }
-                } catch (_: Exception) {}
+                } else {
+                    val query = Signer.encode(identity.values + ("_rticket" to clock().toString()))
+                    reqBuilder.url("$base?$query")
+                    reqBuilder.header("User-Agent", PlaybackDeviceSession.PLAYBACK_UA)
+                    reqBuilder.header("Accept", "application/json; charset=utf-8,application/x-protobuf")
+                }
+                if (identity.cookie.isNotBlank()) {
+                    reqBuilder.header("Cookie", identity.cookie)
+                }
+                reqBuilder.post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+
+                val respText = playbackText(reqBuilder.build())
+                if (respText.isNotBlank()) {
+                    val data = JSONObject(respText)
+                    val code = data.optInt("Code", data.optInt("code", 0))
+                    if (code == 0) {
+                        val map = data.optJSONObject("data")
+                        val entry = map?.optJSONObject(cleanId) ?: map?.keys()?.asSequence()?.mapNotNull { map.optJSONObject(it) }?.firstOrNull()
+                        val model = entry?.optJSONObject("video_model") ?: entry?.str("video_model")?.takeIf { it.isNotBlank() }?.let { JSONObject(it) }
+                        if (model != null) {
+                            val raw = model.opt("fallback_api")
+                            val fallback = when (raw) {
+                                is JSONObject -> raw.str("fallback_api")
+                                is JSONArray -> raw.optString(0)
+                                else -> runCatching { JSONObject(raw.toString()).str("fallback_api") }.getOrDefault(raw.toString())
+                            }
+                            if (fallback.startsWith("https://")) {
+                                var info = JSONObject(text(fallback)).optJSONObject("video_info")?.optJSONObject("data") ?: continue
+                                var videoList = info.optJSONObject("video_list") ?: JSONObject()
+                                var rows = extractPlayableRows(videoList)
+                                if (rows.isEmpty()) {
+                                    for (codec in listOf("codec_type=1", "codec_type=0&force_codec=h264", "codec_type=3")) {
+                                        try {
+                                            val candidateUrl = buildCodecUrl(fallback, codec)
+                                            val candidateInfo = JSONObject(text(candidateUrl)).optJSONObject("video_info")?.optJSONObject("data")
+                                            val candidateList = candidateInfo?.optJSONObject("video_list")
+                                            if (candidateList != null) {
+                                                val candidateRows = extractPlayableRows(candidateList)
+                                                if (candidateRows.isNotEmpty()) {
+                                                    info = candidateInfo
+                                                    videoList = candidateList
+                                                    rows = candidateRows
+                                                    break
+                                                }
+                                            }
+                                        } catch (_: Exception) {}
+                                    }
+                                }
+                                if (rows.isNotEmpty()) {
+                                    val selected = rows.firstOrNull { it.first <= maxQuality } ?: rows.lastOrNull() ?: continue
+                                    val item = selected.third
+                                    var url = cleanUrl(item.str("main_url"))
+                                    val seed = info.str("key_seed")
+                                    if (seed.isNotEmpty()) url = MediaCrypto.decryptUrl(url, decode64(seed))
+                                    if (url.startsWith("https://") || url.startsWith("http://")) {
+                                        val key = item.str("spade_a").takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
+                                        val quality = if (selected.first > 0) "${selected.first}P" + (if (selected.first > maxQuality) "（兼容资源）" else "") else "自动"
+                                        return StreamInfo(url, key, quality)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                lastError = e
             }
         }
 
-        if (rows.isEmpty()) {
-            throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
-        }
+        // 终极兜底：调用 HongguoStreamResolver 跨通道兜底解析
+        try {
+            val resolved = HongguoStreamResolver.resolve(cleanId, maxQuality)
+            val streamUrl = resolved["url"] as? String ?: ""
+            val keyHex = resolved["decryptionKey"] as? String ?: ""
+            val keyBytes = if (keyHex.length == 32) {
+                keyHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            } else null
+            val quality = resolved["quality"] as? String ?: "${maxQuality}P"
+            if (streamUrl.isNotBlank()) {
+                return StreamInfo(streamUrl, keyBytes, quality)
+            }
+        } catch (_: Exception) {}
 
-        val selected = rows.firstOrNull { it.first <= maxQuality } ?: rows.lastOrNull() ?: throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
-        val item = selected.third
-        var url = cleanUrl(item.str("main_url"))
-        val seed = info.str("key_seed")
-        if (seed.isNotEmpty()) url = MediaCrypto.decryptUrl(url, decode64(seed))
-        if (!url.startsWith("https://") && !url.startsWith("http://")) throw IOException("播放地址无效")
-        val key = item.str("spade_a").takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
-        val quality = if (selected.first > 0) "${selected.first}P" + (if (selected.first > maxQuality) "（兼容资源）" else "") else "自动"
-        return StreamInfo(url, key, quality)
+        throw (lastError ?: IOException("播放接口暂时返回空响应，请稍后重试"))
     }
 
     companion object {

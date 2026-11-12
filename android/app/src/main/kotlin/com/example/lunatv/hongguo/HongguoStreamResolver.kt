@@ -558,7 +558,7 @@ object HongguoStreamResolver {
         for (ep in candidateEndpoints) {
             try {
                 val signed = try {
-                    signer.sign(ep, profile.values, payload)
+                    signer.signPlayback(ep, profile.values, payload)
                 } catch (_: Exception) {
                     signer.signStandard(ep, profile.values, payload)
                 }
@@ -567,7 +567,9 @@ object HongguoStreamResolver {
                     .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
 
                 for ((k, v) in signed.headers) {
-                    reqBuilder.header(k, v)
+                    if (!k.equals("x-medusa", ignoreCase = true)) {
+                        reqBuilder.header(k, v)
+                    }
                 }
                 if (profile.cookie.isNotBlank()) {
                     reqBuilder.header("Cookie", profile.cookie)
@@ -646,7 +648,7 @@ object HongguoStreamResolver {
 
         val ep = "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/video_model/v1/"
         try {
-            val signed = signer.sign(ep, singleParams, payload)
+            val signed = signer.signPlayback(ep, singleParams, payload)
             val stamp = System.currentTimeMillis()
             val nonce = (Math.random() * 10000000).toLong()
 
@@ -655,7 +657,9 @@ object HongguoStreamResolver {
                 .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
 
             for ((k, v) in signed.headers) {
-                reqBuilder.header(k, v)
+                if (!k.equals("x-medusa", ignoreCase = true)) {
+                    reqBuilder.header(k, v)
+                }
             }
             reqBuilder.header("User-Agent", "com.phoenix.read/73932 (Linux; U; Android 14; zh_CN; 23127PN0CC; Build/UKQ1.230804.001; Cronet/TTNetVersion:8d40f833 2026-03-03 QuicVersion:21ac1950 2025-11-18)")
             reqBuilder.header("Content-Type", "application/json; charset=UTF-8")

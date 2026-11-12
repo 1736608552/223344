@@ -32,22 +32,40 @@ class MainActivity : FlutterActivity() {
                     val seriesId = call.argument<String>("seriesId") ?: ""
                     Thread {
                         try {
+                            val repo = org.moontechlab.lunatv.hongguo.ContentRepository()
+                            val localServer = org.moontechlab.lunatv.hongguo.HongguoLocalServer.instance
                             val res = try {
-                                val repo = org.moontechlab.lunatv.hongguo.ContentRepository()
                                 val info = repo.stream(vid, maxQuality)
                                 val qNum = Regex("(\\d+)").find(info.quality)?.groupValues?.get(1)?.toIntOrNull() ?: 1080
                                 val keyHex = info.key?.joinToString("") { "%02x".format(it.toInt() and 0xff) } ?: ""
+                                val localPlayUrl = localServer.getPlayUrl(info, repo.http)
                                 mapOf(
-                                    "url" to info.url,
+                                    "url" to localPlayUrl,
+                                    "rawUrl" to info.url,
                                     "decryptionKey" to keyHex,
                                     "quality" to info.quality,
                                     "actualQuality" to qNum,
                                     "qualities" to listOf(qNum),
-                                    "multiMap" to mapOf(info.quality to info.url),
+                                    "multiMap" to mapOf(info.quality to localPlayUrl),
                                     "keys" to mapOf(info.quality to keyHex)
                                 )
                             } catch (eRepo: Exception) {
-                                org.moontechlab.lunatv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality, seriesId)
+                                val fallback = org.moontechlab.lunatv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality, seriesId)
+                                val rawUrl = fallback["url"] as? String ?: ""
+                                val decKey = fallback["decryptionKey"] as? String ?: ""
+                                val qStr = fallback["quality"] as? String ?: "${maxQuality}P"
+                                if (rawUrl.isNotEmpty() && decKey.length == 32) {
+                                    val keyBytes = decKey.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                                    val fakeInfo = org.moontechlab.lunatv.hongguo.StreamInfo(rawUrl, keyBytes, qStr)
+                                    val localPlayUrl = localServer.getPlayUrl(fakeInfo, repo.http)
+                                    val mutable = fallback.toMutableMap()
+                                    mutable["url"] = localPlayUrl
+                                    mutable["rawUrl"] = rawUrl
+                                    mutable["multiMap"] = mapOf(qStr to localPlayUrl)
+                                    mutable
+                                } else {
+                                    fallback
+                                }
                             }
                             runOnUiThread { result.success(res) }
                         } catch (e: Exception) {
