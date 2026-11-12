@@ -1,5 +1,18 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.60 (2026-11-12)
+
+### 紧急修复Android与TV端CI构建语法错误 (Signer.kt双引号转义逃逸 + DeviceRegister.kt非法非内联return) + 顺利发布v2.7.60
+
+#### 核心根因定位与修复说明
+1. **彻底修复 `Signer.kt` 字符串转义逃逸语法阻断 (`Signer.kt:179`)**：
+   - 修复 `Signer.kt` 中 `medusa()` 函数第 179 行 `f(24, "{"cmr":...}")` 双引号未转义错误（转义符号遗漏导致 Kotlin 语法解析器误将其识别为 `do-while` 循环语句并报 `Syntax error: Expecting 'while'` / `Unresolved reference 'tk'`）；采用 Kotlin 原生三引号 `"""{"cmr":...}"""` 彻底杜绝任何转义歧义，双端语法 100% 修复闭环。
+2. **彻底修复 `DeviceRegister.kt` 编译阻断 (`DeviceRegister.kt:158`)**：
+   - 修复在非内联高阶函数 `RequestScope.execute` lambda 体内非法使用非局部返回 `return Registered(...)` 导致的 `'return' is prohibited here` 编译器阻断；重构为局部结果表达式解耦赋值与有效返回，彻底消除 Android 与 TV 双端编译失败问题。
+3. **构建与版本升级**：
+   - 版本更新至 `v2.7.60`（versionCode: `20860`），全平台构建产物全自动分发至独立发布仓库 `1736608552/LunaTV-Release`。
+
+
 ## v2.7.59 (2026-11-12)
 
 ### 100%深度复刻标杆仓库 1736608552/hongguo-tv 彻底修复红果短剧无法播放问题

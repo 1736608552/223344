@@ -144,7 +144,7 @@ object DeviceRegister {
                     .header("Accept", "application/json")
                     .post(bodyBytes.toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
-                RequestScope.execute(http.newCall(req)) { resp ->
+                val registered = RequestScope.execute(http.newCall(req)) { resp ->
                     if (resp.isSuccessful) {
                         val text = resp.body?.string().orEmpty()
                         val parsed = parse(text, resp.headers("Set-Cookie"))
@@ -155,16 +155,17 @@ object DeviceRegister {
                                 "store-region-src" to "did",
                             )
                             mergedCookies.putAll(parsed.cookies)
-                            return Registered(
+                            Registered(
                                 deviceId = parsed.deviceId,
                                 installId = parsed.installId,
                                 deviceToken = parsed.deviceToken,
                                 newUser = parsed.newUser,
                                 cookies = mergedCookies,
                             )
-                        }
-                    }
+                        } else null
+                    } else null
                 }
+                if (registered != null) return registered
             } catch (_: Exception) {
             }
         }
