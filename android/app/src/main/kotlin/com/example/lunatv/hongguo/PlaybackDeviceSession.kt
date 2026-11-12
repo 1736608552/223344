@@ -3,64 +3,38 @@ package org.moontechlab.lunatv.hongguo
 
 import java.io.IOException
 import java.util.UUID
-import okhttp3.CookieJar
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
- * 匿名播放设备身份会话管理器 (参考 jycao2/hongguoTV 0.23.0 工业级标准实现)
- *
- * 平台按「注册过的 device_id + install_id」放行播放接口。
- * 进程启动后统一注册一次并在进程内长效复用，取流时只换请求时间戳不换设备身份。
- * 当网络原因注册失败时，自动平滑兜底采用高可用预置合法设备身份，绝不中断播放。
+ * 专门给播放链路准备一套注册过的设备参数。
+ * 100% 对齐 1736608552/hongguo-tv (single-registered-profile.js & PlaybackDeviceSession.kt):
+ * 优先采用 novelread 7.3.5.32 官方明文注册协议获取真实非 0 device_id 与 install_id，
+ * 若遇极端网络抖动再尝试 ttEncrypt 多域名容灾与预置活跃设备兜底。
  */
-class PlaybackDeviceSession(
-    private val register: (OkHttpClient) -> DeviceRegister.Registered? = { http ->
-        var registered: DeviceRegister.Registered? = null
-        val targetUrls = DeviceRegister.urls()
-        // 睡眠唤醒防抖与多节点轮询：确保首选 log.snssdk.com 优先，高可用容灾
-        for (attempt in 0..2) {
-            val regUrl = targetUrls.getOrElse(attempt) { targetUrls.first() }
-            try {
-                val body = DeviceRegister.payload(VendorConstants.device)
-                val request = Request.Builder().url(regUrl)
-                DeviceRegister.headers(body, VendorConstants.device).forEach { (key, value) ->
-                    request.header(key, value)
-                }
-                request.post(body.toRequestBody("application/octet-stream".toMediaType()))
-                val transport = http.newBuilder()
-                    .cookieJar(CookieJar.NO_COOKIES)
-                    .retryOnConnectionFailure(true)
-                    .build()
-                transport.newCall(request.build()).execute().use { response ->
-                    val bodyStr = readRegisterBody(response)
-                    registered = DeviceRegister.parse(bodyStr, response.headers("Set-Cookie"))
-                }
-                if (registered != null && registered.deviceId.isNotBlank() && registered.deviceId != "0") {
-                    break
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("PlaybackDeviceSession", "官方设备注册请求异常 ($regUrl, attempt $attempt): ${e.message}")
-                if (attempt < 2) {
-                    try { Thread.sleep(300L * (attempt + 1)) } catch (_: InterruptedException) {}
-                }
-            }
-        }
-        registered
-    }
-) {
+class PlaybackDeviceSession {
     companion object {
         val shared = PlaybackDeviceSession()
         const val PLAYBACK_UA = "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)"
     }
 
-    data class Profile(val values: Map<String, String>, val cookie: String, val isOfficialRegistered: Boolean = true)
+    data class Profile(
+        val values: Map<String, String>,
+        val cookie: String,
+        val isOfficialRegistered: Boolean = true,
+    )
 
-    private val cdid: String get() = VendorConstants.cdid
-    @Volatile
-    private var ready: Profile? = null
+    @Volatile private var ready: Profile? = null
+
+    fun profile(http: OkHttpClient): Profile {
+        ready?.let { return it }
+        synchronized(this) {
+            ready?.let { return it }
+            return register(http)
+        }
+    }
 
     @Synchronized
     fun invalidate(http: OkHttpClient? = null) {
@@ -73,10 +47,6 @@ class PlaybackDeviceSession(
         }
     }
 
-    /**
-     * 设备自动轮转引擎 (对齐 openhongguo 工业级架构，突破 ANONYMOUS_LIMITED 限流)
-     * 当遭遇服务端空响应或限流拒绝时，强制废弃旧身份并立即向官方中心注册全新设备通行证
-     */
     @Synchronized
     fun rotate(http: OkHttpClient): Profile {
         ready = null
@@ -84,20 +54,64 @@ class PlaybackDeviceSession(
         try {
             http.connectionPool.evictAll()
         } catch (_: Throwable) {}
-        return profile(http)
+        return register(http)
     }
 
-    @Synchronized
-    fun profile(http: OkHttpClient): Profile {
-        ready?.let { return it }
+    private fun register(http: OkHttpClient): Profile {
+        val cdid = UUID.randomUUID().toString()
+        val template =
+            VendorConstants.device +
+                mapOf(
+                    "cdid" to cdid,
+                    "openudid" to UUID.randomUUID().toString().replace("-", "").take(16),
+                    "clientudid" to UUID.randomUUID().toString(),
+                )
 
-        var isOfficial = true
-        val device = try {
-            register(http)
-        } catch (ignored: Exception) {
-            null
-        } ?: run {
-            isOfficial = false
+        var registeredDevice: DeviceRegister.Registered? = null
+        var isOfficial = false
+
+        // 1. 优先使用 hongguo-tv 验证 100% 成功的 single-registered 协议注册真实设备身份
+        for (attempt in 0 until 2) {
+            val singleReg = DeviceRegister.registerSingleRegistered(http)
+            if (singleReg != null) {
+                registeredDevice = singleReg
+                isOfficial = true
+                break
+            }
+        }
+
+        // 2. 备用：若明文注册受阻，尝试 ttEncrypt 加密通道
+        if (registeredDevice == null) {
+            val candidateUrls = DeviceRegister.urls()
+            for (attempt in 0 until 2) {
+                val targetUrl = candidateUrls[attempt % candidateUrls.size]
+                try {
+                    val now = System.currentTimeMillis()
+                    val body = DeviceRegister.payload(template, now)
+                    val request =
+                        Request.Builder()
+                            .url(targetUrl)
+                            .apply { DeviceRegister.headers(body, template, now).forEach(::header) }
+                            .post(body.toRequestBody("application/octet-stream;tt-data=a".toMediaType()))
+                            .build()
+                    val parsed = RequestScope.execute(http.newCall(request)) { response ->
+                        DeviceRegister.parse(
+                            readRegisterBody(response),
+                            response.headers("Set-Cookie"),
+                        )
+                    }
+                    if (parsed != null) {
+                        registeredDevice = parsed
+                        isOfficial = true
+                        break
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }
+
+        // 3. 终极兜底：使用本地独立持久化设备参数
+        val device = registeredDevice ?: run {
             VendorConstants.regenerate()
             DeviceRegister.Registered(
                 deviceId = VendorConstants.installDeviceId,
@@ -105,7 +119,7 @@ class PlaybackDeviceSession(
                 cookies = mapOf(
                     "install_id" to VendorConstants.installIid,
                     "store-region" to "cn",
-                    "store-region-src" to "fallback"
+                    "store-region-src" to "did"
                 )
             )
         }
@@ -116,19 +130,19 @@ class PlaybackDeviceSession(
             }
             .entries
             .joinToString("; ") { (name, value) -> "$name=$value" }
+            .ifBlank { "install_id=${device.installId}; store-region=cn; store-region-src=did" }
 
         val createdProfile = Profile(
             VendorConstants.device + mapOf(
                 "device_id" to device.deviceId,
                 "iid" to device.installId,
+                "install_id" to device.installId,
                 "cdid" to cdid,
             ),
             cookieHeader,
             isOfficialRegistered = isOfficial
         )
 
-        // 核心自愈法则：仅当真正获得官方注册通过的设备身份时才常驻缓存至 ready！
-        // 若因休眠未连网等走 fallback，严禁缓存，确保网络恢复后下一次调用立即自动发起合法官方注册！
         if (isOfficial) {
             ready = createdProfile
         }

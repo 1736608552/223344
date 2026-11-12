@@ -111,15 +111,35 @@ class PlayerController(
     private var lastUrl: String = ""
     private var lastStartMs: Long = 0L
     private var lastHeaders: Map<String, String>? = null
+    private var lastKeyBytes: ByteArray? = null
     private var hasFallbackToRaw: Boolean = false
 
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    private fun resolveFallbackPlayUrl(): Pair<String, Map<String, String>?> {
+        val kb = lastKeyBytes
+        if (kb != null && kb.size == 16 && !lastUrl.contains("127.0.0.1")) {
+            val localUrl = runCatching {
+                org.moontechlab.selenetv.hongguo.HongguoLocalServer.instance.getPlayUrl(
+                    org.moontechlab.selenetv.hongguo.StreamInfo(lastUrl, kb, "1080P"),
+                    MediaHttp.httpClient,
+                    eagerWarm = true
+                )
+            }.getOrDefault("")
+            if (localUrl.startsWith("http://127.0.0.1")) {
+                return localUrl to null
+            }
+        }
+        return lastUrl to lastHeaders
+    }
+
     private val bufferingWatchdogRunnable = Runnable {
         if (isBuffering && positionMs == 0L && currentRemoteVideo != null && !hasFallbackToRaw && lastUrl.isNotEmpty()) {
-            android.util.Log.w("PlayerController", "短剧检测到硬件解码器首帧卡死缓冲超时，原地自愈无缝降级到原生网络流: $lastUrl")
+            val (fbUrl, fbHeaders) = resolveFallbackPlayUrl()
+            android.util.Log.w("PlayerController", "短剧检测到硬件解码器首帧缓冲超时，原地自愈降级到本地回环解密流: $fbUrl")
             hasFallbackToRaw = true
             releaseCurrentRemoteVideo()
-            loadDirect(lastUrl, lastStartMs, playWhenReady = true, lastHeaders)
+            loadDirect(fbUrl, lastStartMs, playWhenReady = true, fbHeaders)
         }
     }
 
@@ -140,7 +160,7 @@ class PlayerController(
             mainHandler.removeCallbacks(bufferingWatchdogRunnable)
             if (state == Player.STATE_BUFFERING && currentRemoteVideo != null && !hasFallbackToRaw) {
                 // 3.5 秒硬件解码死锁看门狗守护，专为海信等老旧电视 SOC 优化
-                mainHandler.postDelayed(bufferingWatchdogRunnable, 3500L)
+                mainHandler.postDelayed(bufferingWatchdogRunnable, 10000L)
             }
             if (state == Player.STATE_READY) {
                 error = null
@@ -156,11 +176,12 @@ class PlayerController(
             // 核心自愈机制：若在 CENC 解密管道加载中抛出异常（如缺少 saio/saiz 索引或 moov 不在开头），
             // 立即原地无缝回退到携带完整 headers (User-Agent + Referer) 的原生网络流播放，绝不黑屏挂死！
             if (currentRemoteVideo != null && !hasFallbackToRaw && lastUrl.isNotEmpty()) {
-                android.util.Log.w("PlayerController", "短剧 CENC 解密源播放失败，原地自愈无缝降级到原生网络流: $lastUrl")
+                val (fbUrl, fbHeaders) = resolveFallbackPlayUrl()
+                android.util.Log.w("PlayerController", "短剧纯内存解密源播放受阻，原地自愈无缝降级到本地回环解密流: $fbUrl")
                 hasFallbackToRaw = true
                 releaseCurrentRemoteVideo()
                 error = null
-                loadDirect(lastUrl, lastStartMs, playWhenReady = true, lastHeaders)
+                loadDirect(fbUrl, lastStartMs, playWhenReady = true, fbHeaders)
                 return
             }
             error = e.errorCodeName
@@ -194,6 +215,7 @@ class PlayerController(
         if (remote is RemoteVideo) {
             currentRemoteVideo = remote
             lastUrl = remote.info.url
+            lastKeyBytes = remote.info.key
             val mediaSource = ProgressiveMediaSource.Factory { VideoDataSource(remote) }
                 .createMediaSource(
                     MediaItem.Builder()
@@ -264,6 +286,7 @@ class PlayerController(
         if (rawKey.isNotEmpty()) {
             val keyBytes = MediaCrypto.resolveKeyBytes(rawKey)
             if (keyBytes != null && keyBytes.size == 16) {
+                lastKeyBytes = keyBytes
                 releaseCurrentRemoteVideo()
                 error = null
                 hasStarted = false

@@ -133,6 +133,17 @@ class MpvPlayerController(
         load(url, startMs, playWhenReady, null, null)
     }
 
+    override fun loadRemoteVideo(remote: Any, startMs: Long, playWhenReady: Boolean) {
+        if (remote is org.moontechlab.selenetv.hongguo.RemoteVideo) {
+            val localUrl = org.moontechlab.selenetv.hongguo.HongguoLocalServer.instance.getPlayUrl(
+                remote.info,
+                MediaHttp.httpClient,
+                eagerWarm = true
+            )
+            load(localUrl, startMs, playWhenReady, null, null)
+        }
+    }
+
     override fun load(
         url: String,
         startMs: Long,
@@ -169,13 +180,7 @@ class MpvPlayerController(
         val cleanKey = if (rawKey.matches(Regex("^[0-9a-fA-F]{32}$"))) rawKey.lowercase() else ""
         if (cleanKey.isNotEmpty()) {
             // 对齐手机端成熟的解密推流配置：必须包含 protocol_whitelist=[http,https,tcp,tls,crypto,data,file]
-            val lavfOptions = listOf(
-                "seg_max_retry=3",
-                "strict=experimental",
-                "allowed_extensions=ALL",
-                "protocol_whitelist=[http,https,tcp,tls,crypto,data,file]",
-                "decryption_key=$cleanKey"
-            ).joinToString(",")
+            val lavfOptions = if (!url.contains("127.0.0.1")) "decryption_key=$cleanKey" else "" 
             try {
                 mpv.setPropertyString("demuxer-lavf-o", lavfOptions)
                 mpv.setPropertyString("network-timeout", "10")

@@ -1,5 +1,21 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.59 (2026-11-12)
+
+### 100%深度复刻标杆仓库 1736608552/hongguo-tv 彻底修复红果短剧无法播放问题
+
+#### 核心根因定位与修复说明
+1. **修复设备注册返回 `device_id: 0` (`DeviceRegister.kt` / `PlaybackDeviceSession.kt`)**：
+   - 移植 `1736608552/hongguo-tv` (`single-registered-profile.js`) 的 `novelread 7.3.5.32` 官方注册协议，稳定获取真实非 0 `device_id` 与 `install_id`。
+2. **完整移植播放专属 `X-Argus` 与 `X-Ladon` 加密签名 (`Signer.kt`)**：
+   - 替换原 4 字节占位符，1:1 移植 `hongguo-tv` 的 `playbackArgus` (551 & 3ccc 双模式)、`playbackLadon`、`signSingleRegistered` 与 `signPlayback`。
+3. **新增 `single_registered` 首选通道并修复 `_rticket` 签名破坏 (`HongguoStreamResolver.kt` / `ContentRepository.kt`)**：
+   - 对齐 `hongguo-tv` 首选请求 `/novel/player/video_model/v1/`，一次拿齐 `360P~1080P` 正片流与 CENC 密钥；修复 `ContentRepository.playbackText` 篡改已签名 URL `_rticket` 导致 0 字节响应的缺陷。
+4. **修复 `libmpv` `demuxer-lavf-o` 协议白名单解析错误与大 `moov` 头截断 (`duanju_media_kit_backend.dart` / `MpvPlayerController.kt` / `RemoteVideo.kt` / `HongguoLocalServer.kt`)**：
+   - 移除 `demuxer-lavf-o` 中含逗号的 `protocol_whitelist=[http,https,...]`，避免 `libmpv` 将其截断为 `"[http"` 拒绝所有 HTTP/HTTPS 流；
+   - 修复 `RemoteVideo` 与 `HongguoRemoteVideo` 在 `ftyp + moov > 256KB` 时 `prefix` 未更新为完整 `header` 的问题，并将 `HongguoLocalServer` 预热改为后台异步执行，实现毫秒级起播。
+
+
 ## v2.7.58 (2026-11-11)
 
 ### 彻底根治手机端与TV端短剧无法播放顽疾 + 100%对齐标杆仓库minireel本地回环解密流代理 + 彻底剔除X-Medusa签名冲突空响应 + 毫秒级秒开全集超清发布

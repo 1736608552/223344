@@ -193,13 +193,11 @@ class DuanjuMediaKitBackend implements PlayerBackend {
         final rawKey = decryptionKey?.trim() ?? '';
         final cleanKey = RegExp(r'^[0-9a-fA-F]{32}$').hasMatch(rawKey) ? rawKey.toLowerCase() : '';
         final isLocalDecrypted = url.contains('127.0.0.1');
-        final options = <String>[
-          'seg_max_retry=3',
-          'strict=experimental',
-          'allowed_extensions=ALL',
-          'protocol_whitelist=[http,https,tcp,tls,crypto,data,file]',
-          if (!isLocalDecrypted && cleanKey.isNotEmpty) 'decryption_key=$cleanKey',
-        ].join(',');
+        // 注意：严禁在 demuxer-lavf-o 中注入带逗号的 protocol_whitelist=[http,https,...]，
+        // 因为 libmpv 按逗号分割键值后会将 protocol_whitelist 解析为 "[http"，导致所有 http/https 流被 FFmpeg 拦截报错！
+        final options = (!isLocalDecrypted && cleanKey.isNotEmpty)
+            ? 'decryption_key=$cleanKey'
+            : '';
 
         try {
           await platform.setProperty('demuxer-lavf-o', options);

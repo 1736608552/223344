@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit
 internal fun JSONArray.objects() = (0 until length()).mapNotNull { optJSONObject(it) }
 internal fun JSONObject.str(key: String) = if (isNull(key)) "" else optString(key, "").trim()
 internal fun cleanUrl(s: String) = s.replace("\\/","/").replace("\\u002F","/",ignoreCase=true).replace("\\u0026","&").replace("&amp;","&")
+
 data class Series(val id: String, val title: String, val cover: String = "", val description: String = "", val badge: String = "", val tags: String = "") {
     fun toJson() = JSONObject().put("id",id).put("title",title).put("cover",cover).put("description",description).put("badge",badge).put("tags",tags)
     companion object { fun fromJson(o: JSONObject) = Series(o.str("id"),o.str("title"),o.str("cover"),o.str("description"),o.str("badge"),o.str("tags")) }
@@ -26,12 +27,10 @@ class MemoryCookies : okhttp3.CookieJar {
     private fun List<okhttp3.Cookie>.replacedBy(cookies: List<okhttp3.Cookie>) =
         filter { kept -> cookies.none { it.name == kept.name && it.domain == kept.domain && it.path == kept.path } }
             .toMutableList().also { it += cookies }
-
     override fun saveFromResponse(url: okhttp3.HttpUrl, cookies: List<okhttp3.Cookie>) {
         if (cookies.isEmpty()) return
         store.compute(url.host) { _, kept -> kept.orEmpty().replacedBy(cookies) }
     }
-
     override fun loadForRequest(url: okhttp3.HttpUrl): List<okhttp3.Cookie> {
         val now = System.currentTimeMillis()
         return store[url.host].orEmpty().filter { it.expiresAt > now }
@@ -114,42 +113,54 @@ open class ContentRepository(
     private fun extractPlayableRows(videoList: JSONObject): List<Triple<Int, String, JSONObject>> {
         return videoList.keys().asSequence().mapNotNull { k -> videoList.optJSONObject(k)?.let { k to it } }.filter {
             it.second.str("main_url").isNotEmpty() && it.second.str("codec_type").lowercase() !in setOf("bytevc2", "bvc2")
-        }.map { (k, o) -> Triple(qualityNumber(o.str("quality_desc").ifEmpty { o.str("height").ifEmpty { o.str("vheight").ifEmpty { o.str("quality").ifEmpty { k } } } }), k, o) }.sortedByDescending { it.first }.toList()
+        }.map { (k, o) ->
+            val qLabel = o.str("definition").ifEmpty {
+                o.str("quality_desc").ifEmpty {
+                    o.str("height").ifEmpty {
+                        o.str("vheight").ifEmpty {
+                            o.str("quality").ifEmpty { k }
+                        }
+                    }
+                }
+            }
+            Triple(qualityNumber(qLabel), k, o)
+        }.sortedByDescending { it.first }.toList()
     }
 
     /**
-     * 播放信息接口退避读取（对齐原版 1736608552/hongguo-tv 核心生产设计）：
-     * 接口间歇性返回 HTTP 200 空体；按 0/700/1500 毫秒退避最多读取三次，只换时间戳不换设备身份。
+     * 严禁在已签名的 request 上篡改 _rticket（否则会导致 X-Gorgon / X-Argus 签名校验立刻失败返回 0 字节空响应）。
      */
     private fun playbackText(request: Request): String {
-        var attempt = 0
-        while (true) {
-            val next = request.newBuilder()
-                .url(request.url.newBuilder().setQueryParameter("_rticket", clock().toString()).build())
-                .build()
-            val body = RequestScope.execute(http.newCall(next)) { response ->
-                if (!response.isSuccessful) throw IOException("播放接口请求失败（HTTP ${response.code}）")
-                response.body?.string().orEmpty()
-            }
-            if (body.isNotBlank()) return body
-            val delay = listOf(700L, 1500L).getOrNull(attempt) ?: throw IOException("播放接口暂时返回空响应，请稍后重试")
-            if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放请求已取消")
-            Thread.sleep(delay)
-            attempt++
+        return RequestScope.execute(http.newCall(request)) { response ->
+            if (!response.isSuccessful) throw IOException("播放接口请求失败（HTTP ${response.code}）")
+            response.body?.string().orEmpty()
         }
     }
 
     /**
      * 取官方短剧单集正片播放直链与密钥（100% 对齐 1736608552/hongguo-tv 核心生产设计）：
-     * 对齐 minireel_sign.go 三步尝试策略:
-     * 1. 签名 Primary 端点 (剔除 x-medusa 避免 551 envelope 冲突空响应)
-     * 2. 签名 Alternate 端点
-     * 3. 原始未签名兼容端点
-     * 4. 若全失败，自动调度 HongguoStreamResolver 进行高可用单集与三大通道兜底
+     * 1. 优先通过 HongguoStreamResolver 四通道（single_registered -> multi_video_model -> video_model -> video_tab）极速解析；
+     * 2. 若需本类直连兜底，严格保持已签名 URL 与请求头完整一致，同时支持内联 video_list 与 fallback_api。
      */
     fun stream(id: String, maxQuality: Int = 1080): StreamInfo {
         val cleanId = id.trim().removePrefix("hongguo:").trim()
         require(cleanId.matches(Regex("[0-9]{1,32}")))
+
+        // 1. 优先调用已对齐 hongguo-tv single_registered / playback 551 的 HongguoStreamResolver
+        try {
+            val resolved = HongguoStreamResolver.resolve(cleanId, maxQuality)
+            val streamUrl = resolved["url"] as? String ?: ""
+            val keyHex = resolved["decryptionKey"] as? String ?: ""
+            val keyBytes = if (keyHex.length == 32) {
+                keyHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            } else null
+            val quality = resolved["quality"] as? String ?: "${maxQuality}P"
+            if (streamUrl.isNotBlank()) {
+                return StreamInfo(streamUrl, keyBytes, quality)
+            }
+        } catch (_: Exception) {}
+
+        // 2. 本类直连签名轮询兜底
         val payload = """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$cleanId"]}}""".toByteArray()
         val identity = playbackSession.profile(http)
 
@@ -191,6 +202,32 @@ open class ContentRepository(
                         val entry = map?.optJSONObject(cleanId) ?: map?.keys()?.asSequence()?.mapNotNull { map.optJSONObject(it) }?.firstOrNull()
                         val model = entry?.optJSONObject("video_model") ?: entry?.str("video_model")?.takeIf { it.isNotBlank() }?.let { JSONObject(it) }
                         if (model != null) {
+                            // 优先检查内联 video_list
+                            val inlineList = model.optJSONObject("video_list")
+                            if (inlineList != null) {
+                                val inlineRows = extractPlayableRows(inlineList)
+                                if (inlineRows.isNotEmpty()) {
+                                    val selected = inlineRows.firstOrNull { it.first <= maxQuality } ?: inlineRows.lastOrNull()
+                                    if (selected != null) {
+                                        val item = selected.third
+                                        var url = cleanUrl(item.str("main_url"))
+                                        val seed = model.str("key_seed")
+                                        if (seed.isNotEmpty() && !url.startsWith("http")) {
+                                            url = runCatching { MediaCrypto.decryptUrl(url, decode64(seed)) }.getOrDefault(url)
+                                        }
+                                        if (!url.startsWith("http")) {
+                                            url = runCatching { String(decode64(url), Charsets.UTF_8) }.getOrDefault(url)
+                                        }
+                                        if (url.startsWith("https://") || url.startsWith("http://")) {
+                                            val spade = item.optJSONObject("encrypt_info")?.str("spade_a")?.ifEmpty { item.str("spade_a") } ?: item.str("spade_a")
+                                            val key = spade.takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
+                                            val quality = if (selected.first > 0) "${selected.first}P" else "1080P"
+                                            return StreamInfo(url, key, quality)
+                                        }
+                                    }
+                                }
+                            }
+
                             val raw = model.opt("fallback_api")
                             val fallback = when (raw) {
                                 is JSONObject -> raw.str("fallback_api")
@@ -239,21 +276,6 @@ open class ContentRepository(
                 lastError = e
             }
         }
-
-        // 终极兜底：调用 HongguoStreamResolver 跨通道兜底解析
-        try {
-            val resolved = HongguoStreamResolver.resolve(cleanId, maxQuality)
-            val streamUrl = resolved["url"] as? String ?: ""
-            val keyHex = resolved["decryptionKey"] as? String ?: ""
-            val keyBytes = if (keyHex.length == 32) {
-                keyHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-            } else null
-            val quality = resolved["quality"] as? String ?: "${maxQuality}P"
-            if (streamUrl.isNotBlank()) {
-                return StreamInfo(streamUrl, keyBytes, quality)
-            }
-        } catch (_: Exception) {}
-
         throw (lastError ?: IOException("播放接口暂时返回空响应，请稍后重试"))
     }
 

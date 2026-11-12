@@ -106,7 +106,7 @@ class HongguoLocalServer private constructor() {
     /**
      * 将 StreamInfo 注册到本地服务，返回标准明文 MP4 本地播放 URL
      */
-    fun getPlayUrl(info: StreamInfo, http: OkHttpClient): String {
+    fun getPlayUrl(info: StreamInfo, http: OkHttpClient, eagerWarm: Boolean = true): String {
         // 若流未加密，直接返回原始 URL
         if (info.key == null || info.key.isEmpty()) {
             return info.url
@@ -120,22 +120,26 @@ class HongguoLocalServer private constructor() {
 
         // 以 URL 的哈希或确定性标识作为 token，复用已初始化的 RemoteVideo 避免重复握手
         val token = "stream_" + Integer.toHexString(info.url.hashCode()) + "_" + (info.quality.filter { it.isLetterOrDigit() })
-        
-        var remote = activeStreams[token]
+
+        val remote = activeStreams[token]
         if (remote == null) {
             val newRemote = RemoteVideo(http, info)
-            try {
-                // 预热与解析 MP4 头 (耗时约 50~150ms)
-                newRemote.prepare()
-                newRemote.warm()
-            } catch (e: Exception) {
-                Log.w(TAG, "RemoteVideo prepare 预热异常，仍注册以供按需重试: ${e.message}")
-            }
             registerRemote(token, newRemote)
+            if (eagerWarm) {
+                workerExecutor?.execute {
+                    try {
+                        newRemote.prepare()
+                        newRemote.warm()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "RemoteVideo 异步预热异常，后续按需重试: ${e.message}")
+                    }
+                }
+            }
         } else {
-            // 更新活跃度
-            streamAccessOrder.remove(token)
-            streamAccessOrder.add(token)
+            synchronized(activeStreams) {
+                streamAccessOrder.remove(token)
+                streamAccessOrder.add(token)
+            }
         }
 
         return "http://127.0.0.1:$port/hongguo/media/$token.mp4"

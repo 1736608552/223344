@@ -96,7 +96,7 @@ class HongguoRemoteVideo(
     }
 
     companion object {
-        private const val CHUNK_SIZE = 2048 * 1024 // 2MB 高吞吐平滑滑动块，专为 1080P 原画流设计
+        private const val CHUNK_SIZE = 1024 * 1024 // 1MB 高吞吐低延迟滑动块，兼顾首帧秒开与 1080P 流畅度
     }
 
     private class DecryptedChunk(
@@ -195,7 +195,7 @@ class HongguoRemoteVideo(
         prefix = first.bytes
         val end = MediaCrypto.headerEnd(first.bytes, total)
         val header = if (end > first.bytes.size) {
-            first.bytes + range(first.bytes.size.toLong(), end - 1L).bytes
+            (first.bytes + range(first.bytes.size.toLong(), end - 1L).bytes).also { prefix = it }
         } else {
             first.bytes.copyOf(end)
         }

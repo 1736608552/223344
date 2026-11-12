@@ -1,25 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package org.moontechlab.selenetv.hongguo
 
-import java.io.ByteArrayOutputStream
-import java.util.UUID
-import java.util.zip.GZIPOutputStream
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.net.URLEncoder
+import java.util.UUID
+import java.util.zip.GZIPOutputStream
 
-/**
- * 设备注册（POST /service/2/device_register/）。
- *
- * 参考 jycao2/hongguoTV 0.23.0 工业级标准实践：
- * 平台的内容接口按设备放行，认的是「服务端注册过的 device_id + install_id 这一对」：
- * 未注册设备的播放接口一律返回 HTTP 200 + 0 字节，注册后返回 code 0 与完整播放模型。
- * 注册本身是匿名的，不要账号、不要签名头。
- */
 object DeviceRegister {
-    private const val HOST = "https://log.snssdk.com"
+    const val HOST = "https://log.snssdk.com"
     val REGISTER_HOSTS = listOf(
         "https://log.snssdk.com",
         "https://log5-applog-lq.fqnovel.com",
@@ -38,6 +32,9 @@ object DeviceRegister {
             "4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58"
         )
 
+    const val SINGLE_REG_UA =
+        "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
+
     /** 注册结果：平台下发的设备身份 + 需要回写的那几个 Cookie。 */
     data class Registered(
         val deviceId: String,
@@ -46,6 +43,133 @@ object DeviceRegister {
         val newUser: Boolean = false,
         val cookies: Map<String, String> = emptyMap(),
     )
+
+    /**
+     * 100% 对齐 1736608552/hongguo-tv (single-registered-profile.js / minireel_single_registered.go):
+     * 采用 novelread 7.3.5.32 标准明文 JSON 注册协议，稳定返回非 0 真实 device_id 与 install_id。
+     */
+    fun registerSingleRegistered(
+        http: OkHttpClient,
+        now: Long = System.currentTimeMillis(),
+    ): Registered? {
+        val reqId = UUID.randomUUID().toString()
+        val openudid = UUID.randomUUID().toString().replace("-", "").take(16)
+        val clientudid = UUID.randomUUID().toString()
+        val cdid = UUID.randomUUID().toString()
+
+        val queryMap = linkedMapOf(
+            "aid" to "8662",
+            "app_name" to "novelread",
+            "version_code" to "73532",
+            "version_name" to "7.3.5.32",
+            "manifest_version_code" to "73532",
+            "update_version_code" to "73532",
+            "channel" to "update_64",
+            "device_platform" to "android",
+            "os" to "android",
+            "ssmix" to "a",
+            "device_type" to "25053RT47C",
+            "device_brand" to "Redmi",
+            "language" to "zh",
+            "os_api" to "36",
+            "os_version" to "16",
+            "resolution" to "1280*2772",
+            "dpi" to "520",
+            "ac" to "wifi",
+            "_rticket" to now.toString(),
+            "req_id" to reqId,
+        )
+        val queryStr = queryMap.entries
+            .sortedBy { it.key }
+            .joinToString("&") { (k, v) ->
+                val ek = URLEncoder.encode(k, "UTF-8").replace("+", "%20").replace("%7E", "~").replace("*", "%2A")
+                val ev = URLEncoder.encode(v, "UTF-8").replace("+", "%20").replace("%7E", "~").replace("*", "%2A")
+                "$ek=$ev"
+            }
+
+        val payloadJson = JSONObject().apply {
+            put("magic_tag", "ss_app_log")
+            put(
+                "header",
+                JSONObject().apply {
+                    put("display_name", "红果免费短剧")
+                    put("aid", 8662)
+                    put("app_name", "novelread")
+                    put("channel", "update_64")
+                    put("package", "com.phoenix.read")
+                    put("app_version", "7.3.5.32")
+                    put("version_code", 73532)
+                    put("update_version_code", 73532)
+                    put("manifest_version_code", 73532)
+                    put("os", "Android")
+                    put("os_version", "16")
+                    put("os_api", 36)
+                    put("device_model", "25053RT47C")
+                    put("device_brand", "Redmi")
+                    put("device_manufacturer", "Xiaomi")
+                    put("cpu_abi", "arm64-v8a")
+                    put("density_dpi", 520)
+                    put("display_density", "xxhdpi")
+                    put("resolution", "2772x1280")
+                    put("language", "zh")
+                    put("mc", "02:00:00:00:00:00")
+                    put("timezone", 8)
+                    put("access", "wifi")
+                    put("not_request_sender", 0)
+                    put("carrier", "China Mobile")
+                    put("mcc_mnc", "46000")
+                    put("rom", "OS2.0")
+                    put("rom_version", "BP2A.250605.031.A3")
+                    put("openudid", openudid)
+                    put("clientudid", clientudid)
+                    put("cdid", cdid)
+                    put("req_id", reqId)
+                    put("region", "CN")
+                    put("tz_name", "Asia/Shanghai")
+                    put("tz_offset", 28800)
+                    put("sim_region", "cn")
+                    put("device_platform", "android")
+                },
+            )
+            put("_gen_time", now)
+        }
+        val bodyBytes = payloadJson.toString().toByteArray(Charsets.UTF_8)
+
+        for (host in REGISTER_HOSTS) {
+            try {
+                val req = Request.Builder()
+                    .url("$host$PATH?$queryStr")
+                    .header("User-Agent", SINGLE_REG_UA)
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Accept", "application/json")
+                    .post(bodyBytes.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+                RequestScope.execute(http.newCall(req)) { resp ->
+                    if (resp.isSuccessful) {
+                        val text = resp.body?.string().orEmpty()
+                        val parsed = parse(text, resp.headers("Set-Cookie"))
+                        if (parsed != null) {
+                            val mergedCookies = linkedMapOf(
+                                "install_id" to parsed.installId,
+                                "store-region" to "cn",
+                                "store-region-src" to "did",
+                            )
+                            mergedCookies.putAll(parsed.cookies)
+                            return Registered(
+                                deviceId = parsed.deviceId,
+                                installId = parsed.installId,
+                                deviceToken = parsed.deviceToken,
+                                newUser = parsed.newUser,
+                                cookies = mergedCookies,
+                            )
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+        return null
+    }
 
     /**
      * ttEncrypt：MAGIC || rnd[32] || AES-128-CBC(SHA512(SHA512(rnd)+KDF_SALT) 前 32 字节, PKCS7(SHA512(data)||data))。
@@ -68,10 +192,15 @@ object DeviceRegister {
         return MAGIC + rnd + encrypted
     }
 
-    private fun gzip(data: ByteArray): ByteArray =
-        ByteArrayOutputStream()
+    private fun gzip(data: ByteArray): ByteArray {
+        val raw = ByteArrayOutputStream()
             .also { out -> GZIPOutputStream(out).use { it.write(data) } }
             .toByteArray()
+        if (raw.size >= 10) {
+            raw[9] = 0
+        }
+        return raw
+    }
 
     /** 组装注册请求体：ttEncrypt(gzip(JSON))。device_id / install_id 由服务端下发。 */
     fun payload(device: Map<String, String>, now: Long = System.currentTimeMillis()): ByteArray {

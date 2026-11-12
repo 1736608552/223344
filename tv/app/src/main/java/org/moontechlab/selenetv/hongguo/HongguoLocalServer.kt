@@ -19,12 +19,13 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * TV 端红果短剧微型本地回环解密流服务 (Local MP4 Stream Loopback Server)
+ * 红果短剧微型本地回环解密流服务 (Local MP4 Stream Loopback Server)
  * 100% 对齐标杆仓库 1736608552/hongguo-tv (minireel_range.go):
  * 针对火山引擎 CDN 的 ISO-BMFF CENC (encv/enca + AES-128-CTR) 加密短剧，
  * 在本地 127.0.0.1 端口启动微型 HTTP Range 代理服务。
- * 当 ExoPlayer 请求分段数据时，透明完成 moov box 修复 (avc1/mp4a) 与媒体样本动态解密，
- * 输出完全标准的纯明文 MP4 字节流，为电视端提供零黑屏、零崩溃的硬解秒开体验。
+ * 当播放器 (Flutter media_kit/libmpv, ExoPlayer 等) 请求分段数据时，
+ * 透明完成 moov box 修复 (avc1/mp4a) 与媒体样本动态解密，向底层播放器输出
+ * 完全标准的纯明文 MP4 字节流，彻底消灭黑屏、解码器不支持与起播转圈缺陷，实现毫秒级秒开。
  */
 class HongguoLocalServer private constructor() {
     companion object {
@@ -53,6 +54,7 @@ class HongguoLocalServer private constructor() {
             return
         }
         try {
+            // 绑定 127.0.0.1 本地回环接口，端口 0 由系统动态分配空闲端口
             val loopback = InetAddress.getByName("127.0.0.1")
             val socket = ServerSocket(0, 50, loopback)
             serverSocket = socket
@@ -60,19 +62,19 @@ class HongguoLocalServer private constructor() {
             isRunning.set(true)
 
             acceptExecutor = Executors.newSingleThreadExecutor { r ->
-                Thread(r, "HongguoLocalServer-TV-Accept").apply { isDaemon = true }
+                Thread(r, "HongguoLocalServer-Accept").apply { isDaemon = true }
             }
             workerExecutor = Executors.newFixedThreadPool(8) { r ->
-                Thread(r, "HongguoLocalServer-TV-Worker").apply { isDaemon = true }
+                Thread(r, "HongguoLocalServer-Worker").apply { isDaemon = true }
             }
 
             acceptExecutor?.submit {
-                Log.i(TAG, "TV 本地解密流服务启动成功，监听地址: http://127.0.0.1:$port")
+                Log.i(TAG, "本地解密流服务启动成功，监听地址: http://127.0.0.1:$port")
                 while (isRunning.get() && !socket.isClosed) {
                     try {
                         val client = socket.accept()
                         client.tcpNoDelay = true
-                        client.soTimeout = 30000
+                        client.soTimeout = 30000 // 30 秒超时
                         workerExecutor?.submit { handleClient(client) }
                     } catch (e: Exception) {
                         if (isRunning.get() && !socket.isClosed) {
@@ -82,7 +84,7 @@ class HongguoLocalServer private constructor() {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "TV 本地流服务启动失败: ${e.message}", e)
+            Log.e(TAG, "本地流服务启动失败: ${e.message}", e)
         }
     }
 
@@ -98,38 +100,46 @@ class HongguoLocalServer private constructor() {
         activeStreams.values.forEach { runCatching { it.close() } }
         activeStreams.clear()
         streamAccessOrder.clear()
-        Log.i(TAG, "TV 本地解密流服务已停止")
+        Log.i(TAG, "本地解密流服务已停止")
     }
 
     /**
      * 将 StreamInfo 注册到本地服务，返回标准明文 MP4 本地播放 URL
      */
-    fun getPlayUrl(info: StreamInfo, http: OkHttpClient): String {
+    fun getPlayUrl(info: StreamInfo, http: OkHttpClient, eagerWarm: Boolean = true): String {
+        // 若流未加密，直接返回原始 URL
         if (info.key == null || info.key.isEmpty()) {
             return info.url
         }
 
-        start()
+        start() // 确保服务活跃
         if (port <= 0) {
             Log.w(TAG, "服务端口无效，降级回原始直链")
             return info.url
         }
 
+        // 以 URL 的哈希或确定性标识作为 token，复用已初始化的 RemoteVideo 避免重复握手
         val token = "stream_" + Integer.toHexString(info.url.hashCode()) + "_" + (info.quality.filter { it.isLetterOrDigit() })
-        
-        var remote = activeStreams[token]
+
+        val remote = activeStreams[token]
         if (remote == null) {
             val newRemote = RemoteVideo(http, info)
-            try {
-                newRemote.prepare()
-                newRemote.warm()
-            } catch (e: Exception) {
-                Log.w(TAG, "TV RemoteVideo prepare 预热异常: ${e.message}")
-            }
             registerRemote(token, newRemote)
+            if (eagerWarm) {
+                workerExecutor?.execute {
+                    try {
+                        newRemote.prepare()
+                        newRemote.warm()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "RemoteVideo 异步预热异常，后续按需重试: ${e.message}")
+                    }
+                }
+            }
         } else {
-            streamAccessOrder.remove(token)
-            streamAccessOrder.add(token)
+            synchronized(activeStreams) {
+                streamAccessOrder.remove(token)
+                streamAccessOrder.add(token)
+            }
         }
 
         return "http://127.0.0.1:$port/hongguo/media/$token.mp4"
@@ -137,6 +147,7 @@ class HongguoLocalServer private constructor() {
 
     private fun registerRemote(token: String, remote: RemoteVideo) {
         synchronized(activeStreams) {
+            // 淘汰超额的最老流
             while (streamAccessOrder.size >= MAX_ACTIVE_STREAMS) {
                 val oldest = streamAccessOrder.removeAt(0)
                 activeStreams.remove(oldest)?.let { old ->
@@ -167,6 +178,7 @@ class HongguoLocalServer private constructor() {
                 }
             }
 
+            // 处理 CORS OPTIONS 预检请求
             if (method == "OPTIONS") {
                 val out = BufferedOutputStream(socket.getOutputStream())
                 out.write("HTTP/1.1 204 No Content\r\n".toByteArray())
@@ -178,6 +190,7 @@ class HongguoLocalServer private constructor() {
                 return
             }
 
+            // 解析路由: /hongguo/media/{token}.mp4
             val cleanPath = rawPath.substringBefore('?')
             val prefix = "/hongguo/media/"
             if (!cleanPath.startsWith(prefix) || !cleanPath.endsWith(".mp4")) {
@@ -192,10 +205,11 @@ class HongguoLocalServer private constructor() {
                 return
             }
 
+            // 确保 remote 已完成 prepare
             try {
                 remote.prepare()
             } catch (e: Exception) {
-                Log.e(TAG, "TV 远程流准备失败: ${e.message}")
+                Log.e(TAG, "远程流延迟准备失败: ${e.message}")
                 sendError(socket, 502, "Bad Gateway")
                 return
             }
@@ -206,6 +220,7 @@ class HongguoLocalServer private constructor() {
                 return
             }
 
+            // 解析 HTTP Range 头
             val rangeHeader = headers["range"]
             var start = 0L
             var end = total - 1
@@ -223,6 +238,7 @@ class HongguoLocalServer private constructor() {
                             end = minOf(eStr.toLongOrNull() ?: (total - 1), total - 1)
                         }
                     } else if (eStr.isNotEmpty()) {
+                        // suffix range: bytes=-500
                         val suffix = eStr.toLongOrNull() ?: 0L
                         start = maxOf(0L, total - suffix)
                     }
@@ -260,6 +276,7 @@ class HongguoLocalServer private constructor() {
                 return
             }
 
+            // 循环按 256KB 分块解密并流式下发
             var currentPos = start
             while (currentPos <= end && isRunning.get()) {
                 val readLen = minOf(BUFFER_CHUNK_SIZE.toLong(), end - currentPos + 1).toInt()
@@ -270,9 +287,11 @@ class HongguoLocalServer private constructor() {
             }
             out.flush()
         } catch (_: SocketException) {
+            // 客户端 Seek 或切集主动断开连接，属于正常播放行为
         } catch (_: IOException) {
+            // 连接异常中止
         } catch (e: Exception) {
-            Log.w(TAG, "TV 流处理异常: ${e.message}")
+            Log.w(TAG, "流处理异常: ${e.message}")
         } finally {
             runCatching { socket.close() }
         }

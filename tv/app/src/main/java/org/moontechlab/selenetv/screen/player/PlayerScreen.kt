@@ -381,16 +381,13 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                 if (vid.isNotEmpty()) {
                     val maxQ = 1080
                     var streamInfo: org.moontechlab.selenetv.hongguo.StreamInfo? = null
-                    var repoInstance: org.moontechlab.selenetv.hongguo.ContentRepository? = null
+                    var repoInstance: org.moontechlab.selenetv.hongguo.ContentRepository? = org.moontechlab.selenetv.hongguo.ContentRepository()
 
                     for (rAttempt in 0..2) {
                         try {
-                            val (repo, info) = withContext(Dispatchers.IO) {
-                                val repo = org.moontechlab.selenetv.hongguo.ContentRepository()
-                                val info = repo.stream(vid, maxQuality = maxQ)
-                                Pair(repo, info)
+                            val info = withContext(Dispatchers.IO) {
+                                repoInstance!!.stream(vid, maxQuality = maxQ)
                             }
-                            repoInstance = repo
                             streamInfo = info
                             break
                         } catch (e: Exception) {

@@ -1567,6 +1567,118 @@ class DuanjuCoreBridge {
     return '2${List.generate(15, (_) => rnd.nextInt(10)).join()}';
   }
 
+  static String _randomUuidV4() {
+    final rnd = math.Random();
+    final bytes = List<int>.generate(16, (_) => rnd.nextInt(256));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+  }
+
+  /// 对齐 1736608552/hongguo-tv single-registered-profile.js：跨平台直连官方 log.snssdk.com 注册真实非 0 设备身份
+  static Future<(String, String)?> _registerHongguoDeviceViaHttp() async {
+    try {
+      final stamp = DateTime.now().millisecondsSinceEpoch;
+      final reqId = _randomUuidV4();
+      final cdid = _randomUuidV4();
+      final clientudid = _randomUuidV4();
+      final openudid = cdid.replaceAll('-', '').substring(0, 16);
+      final q = <String, String>{
+        '_rticket': '$stamp',
+        'ac': 'wifi',
+        'aid': '8662',
+        'app_name': 'novelread',
+        'channel': 'update_64',
+        'device_brand': 'Redmi',
+        'device_platform': 'android',
+        'device_type': '25053RT47C',
+        'dpi': '520',
+        'language': 'zh',
+        'manifest_version_code': '73532',
+        'os': 'android',
+        'os_api': '36',
+        'os_version': '16',
+        'req_id': reqId,
+        'resolution': '1280*2772',
+        'ssmix': 'a',
+        'update_version_code': '73532',
+        'version_code': '73532',
+        'version_name': '7.3.5.32',
+      };
+      final sortedKeys = q.keys.toList()..sort();
+      final qs = sortedKeys
+          .map((k) => '${Uri.encodeQueryComponent(k)}=${Uri.encodeQueryComponent(q[k]!).replaceAll('*', '%2A')}')
+          .join('&');
+      final body = jsonEncode({
+        'magic_tag': 'ss_app_log',
+        'header': {
+          'display_name': '红果免费短剧',
+          'aid': 8662,
+          'app_version': '7.3.5.32',
+          'version_code': 73532,
+          'manifest_version_code': 73532,
+          'update_version_code': 73532,
+          'channel': 'update_64',
+          'package': 'com.phoenix.read',
+          'app_language': 'zh',
+          'os': 'Android',
+          'os_version': '16',
+          'os_api': 36,
+          'device_model': '25053RT47C',
+          'device_brand': 'Redmi',
+          'device_manufacturer': 'Xiaomi',
+          'cpu_abi': 'arm64-v8a',
+          'density_dpi': 520,
+          'display_density': 'xxhdpi',
+          'resolution': '2772x1280',
+          'language': 'zh',
+          'timezone': 8,
+          'access': 'wifi',
+          'openudid': openudid,
+          'clientudid': clientudid,
+          'cdid': cdid,
+          'region': 'CN',
+          'tz_name': 'Asia/Shanghai',
+          'tz_offset': 28800,
+          'sim_region': 'cn',
+          'device_platform': 'android',
+          'not_request_sender': 0,
+          'is_system_app': 0,
+          'sdk_flavor': 'china',
+          'rom': 'OS2.0',
+          'rom_version': 'BP2A.250605.031.A3',
+        },
+        '_gen_time': stamp,
+      });
+      final resp = await http.post(
+        Uri.parse('https://log.snssdk.com/service/2/device_register/?$qs'),
+        headers: {
+          'User-Agent': 'com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)',
+          'Accept': 'application/json',
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+        body: utf8.encode(body),
+      ).timeout(const Duration(seconds: 6));
+      if (resp.statusCode == 200 && resp.body.isNotEmpty) {
+        final safeBody = resp.body.replaceAllMapped(
+          RegExp(r'("(?:device_id|install_id)"\s*:\s*)(\d{16,})'),
+          (m) => '${m.group(1)}"${m.group(2)}"',
+        );
+        final parsed = jsonDecode(safeBody);
+        if (parsed is Map) {
+          final d = (parsed['device_id_str'] ?? parsed['device_id'] ?? '').toString().trim();
+          final i = (parsed['install_id_str'] ?? parsed['install_id'] ?? '').toString().trim();
+          if (d.isNotEmpty && d != '0' && i.isNotEmpty && i != '0') {
+            _hongguoPersistentCookie = 'install_id=$i; store-region=cn; store-region-src=did';
+            return (d, i);
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
   static String _hongguoPersistentCookie = '';
 
   /// 异步从 SharedPreferences 加载或分配并持久化每台设备的专属独立 ID (优先从原生端同步官方注册成功的真实设备凭据)
@@ -1600,10 +1712,11 @@ class DuanjuCoreBridge {
       var devId = prefs.getString(_kHongguoDevIdKey) ?? '';
       var iid = prefs.getString(_kHongguoIidKey) ?? '';
 
-      // 若老设备此前残留被封黑名单 ID 或为空，全自动重新分配全新独立 ID 并持久化写入
+      // 若老设备此前残留被封黑名单 ID 或为空，优先向官方 log.snssdk.com 注册真实合法设备 ID
       if (devId.isEmpty || iid.isEmpty || _kHongguoBlacklist.contains(devId)) {
-        devId = _generateUnique16Id();
-        iid = _generateUnique16Id();
+        final reg = await _registerHongguoDeviceViaHttp();
+        devId = reg?.$1 ?? _generateUnique16Id();
+        iid = reg?.$2 ?? _generateUnique16Id();
         await prefs.setString(_kHongguoDevIdKey, devId);
         await prefs.setString(_kHongguoIidKey, iid);
       }
