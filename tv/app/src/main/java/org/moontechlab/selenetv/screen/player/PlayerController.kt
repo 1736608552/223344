@@ -113,6 +113,7 @@ class PlayerController(
     private var lastHeaders: Map<String, String>? = null
     private var lastKeyBytes: ByteArray? = null
     private var hasFallbackToRaw: Boolean = false
+    private var hasRenderedFirstFrameThisLoad: Boolean = false
 
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
@@ -134,9 +135,9 @@ class PlayerController(
     }
 
     private val bufferingWatchdogRunnable = Runnable {
-        if (isBuffering && positionMs == 0L && currentRemoteVideo != null && !hasFallbackToRaw && lastUrl.isNotEmpty()) {
+        if (!hasRenderedFirstFrameThisLoad && positionMs <= 100L && currentRemoteVideo != null && !hasFallbackToRaw && lastUrl.isNotEmpty()) {
             val (fbUrl, fbHeaders) = resolveFallbackPlayUrl()
-            android.util.Log.w("PlayerController", "短剧检测到硬件解码器首帧缓冲超时，原地自愈降级到本地回环解密流: $fbUrl")
+            android.util.Log.w("PlayerController", "短剧检测到硬件解码器首帧未渲染或卡在00:00，原地自愈降级到本地回环解密流: $fbUrl")
             hasFallbackToRaw = true
             releaseCurrentRemoteVideo()
             loadDirect(fbUrl, lastStartMs, playWhenReady = true, fbHeaders)
@@ -152,15 +153,16 @@ class PlayerController(
             }
         }
         override fun onRenderedFirstFrame() {
-            // 首帧渲染上屏，彻底清空任何历史报错状态
+            // 首帧渲染上屏，彻底清空任何历史报错状态并解除首帧死锁看门狗
+            hasRenderedFirstFrameThisLoad = true
+            mainHandler.removeCallbacks(bufferingWatchdogRunnable)
             error = null
         }
         override fun onPlaybackStateChanged(state: Int) {
             isBuffering = state == Player.STATE_BUFFERING
-            mainHandler.removeCallbacks(bufferingWatchdogRunnable)
-            if (state == Player.STATE_BUFFERING && currentRemoteVideo != null && !hasFallbackToRaw) {
-                // 3.5 秒硬件解码死锁看门狗守护，专为海信等老旧电视 SOC 优化
-                mainHandler.postDelayed(bufferingWatchdogRunnable, 10000L)
+            if (state == Player.STATE_BUFFERING && !hasRenderedFirstFrameThisLoad && currentRemoteVideo != null && !hasFallbackToRaw) {
+                mainHandler.removeCallbacks(bufferingWatchdogRunnable)
+                mainHandler.postDelayed(bufferingWatchdogRunnable, 4500L)
             }
             if (state == Player.STATE_READY) {
                 error = null
@@ -168,7 +170,10 @@ class PlayerController(
                 val d = exo.duration
                 if (d > 0) durationMs = d
             }
-            if (state == Player.STATE_ENDED) onEnded()
+            if (state == Player.STATE_ENDED) {
+                mainHandler.removeCallbacks(bufferingWatchdogRunnable)
+                onEnded()
+            }
         }
         override fun onPlayerError(e: PlaybackException) {
             mainHandler.removeCallbacks(bufferingWatchdogRunnable)
@@ -209,6 +214,10 @@ class PlayerController(
         releaseCurrentRemoteVideo()
         error = null
         hasStarted = false
+        hasRenderedFirstFrameThisLoad = false
+        positionMs = startMs.coerceAtLeast(0L)
+        durationMs = 0L
+        bufferedMs = 0L
         lastStartMs = startMs
         hasFallbackToRaw = false
 
@@ -228,6 +237,8 @@ class PlayerController(
             exo.prepare()
             if (startMs > 0) exo.seekTo(startMs)
             exo.playWhenReady = playWhenReady
+            mainHandler.removeCallbacks(bufferingWatchdogRunnable)
+            mainHandler.postDelayed(bufferingWatchdogRunnable, 4500L)
             syncProgress()
             android.util.Log.i("PlayerController", "短剧原版纯内存解密硬解引擎启动成功 (MediaCodec 硬解): ${remote.info.quality}")
         }
@@ -243,6 +254,10 @@ class PlayerController(
         releaseCurrentRemoteVideo()
         error = null
         hasStarted = false
+        hasRenderedFirstFrameThisLoad = false
+        positionMs = startMs.coerceAtLeast(0L)
+        durationMs = 0L
+        bufferedMs = 0L
         lastUrl = url
         lastStartMs = startMs
         lastHeaders = headers

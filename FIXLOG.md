@@ -1,5 +1,23 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.61 (2026-11-17)
+
+### 彻底解决红果短剧切换下一集偶发卡等一分钟、海信电视卡在00:00(-01:01)黑屏不播及待机断WiFi唤醒刷爆宽带IP风控问题 + 官方注册身份持久化与12s冷却锁守护 + 发布v2.7.61
+
+#### 核心根因定位与修复说明
+1. **彻底根除海信电视切集偶发卡在 `00:00`（右下角显示 `-01:01` 总时长、进度条全白但黑屏不走）的死锁顽疾 (`PlayerScreen.kt` / `PlayerController.kt`)**：
+   - **根因**：此前 TV 端优先使用自定义 `VideoDataSource`（`hongguotv://episode/...`），当 `RemoteVideo.prepare()` 将前 256KB `moov` 头载入内存后，ExoPlayer 瞬间进入 `STATE_READY`（计算出 `-01:01` 总时长）并立即执行 `removeCallbacks(bufferingWatchdogRunnable)` 取消了看门狗；随后海信电视硬件解码器在自定义 DataSource 下发生首帧死锁停在 `00:00`，因看门狗已被取消而永远无法降级到 `HongguoLocalServer`；
+   - **修复**：TV 端与手机端及标杆仓库 100% 统一，**将 `HongguoLocalServer` 本地 HTTP 127.0.0.1 回环标准明文 MP4 流提升为第一优先播放策略**；同时将 `PlayerController` 看门狗升级为基于 `onRenderedFirstFrame` 的首帧上屏看门狗，未真正渲染首帧前绝不提前取消。
+2. **彻底斩断双向递归死循环套娃与请求风暴，保护家庭宽带公网 IP 不被触发 `DEVICE_REGISTER_INVALID` (100字节) 限流 (`HongguoStreamResolver.kt` / `ContentRepository.kt` / `DeviceRegister.kt`)**：
+   - **根因**：此前 `ContentRepository.stream()` 调用 `HongguoStreamResolver.resolve()`，而 `resolve()` 阶段 3 竟又反向调用 `ContentRepository().stream()`，在切集配额耗尽或机顶盒待机断 WiFi 唤醒时触发无限套娃请求风暴，不仅卡死 60 秒，还在数秒内刷爆同一家庭宽带 IP 的字节 `device_register` 配额（导致服务器返回 `HTTP 200 · 100 字节 device_id:0`）；
+   - **修复**：彻底移除阶段 3 反向套娃调用；`registerSingleRegistered` 仅请求唯一支持明文 JSON 的 `log.snssdk.com`（剔除必返 100 字节 `device_id:0` 的 `log5-applog-*` 域名）；收敛 OkHttp 超时为 `4s/5s/8s` 并开启 `pingInterval(10s)` 自动清理断网死连接。
+3. **官方真实注册设备身份本地持久化 + 12 秒注册冷却锁 + 机顶盒待机断 WiFi 唤醒保护 (`VendorConstants.kt` / `PlaybackDeviceSession.kt`)**：
+   - 注册成功的真实非 0 `device_id`、`install_id` 与 `Cookie` 自动持久化至本地 `SharedPreferences`，重启应用或待机唤醒直接零请求复用；
+   - 移植标杆仓库 `refreshAfter` 冷却锁（12s）与并发去重，在 `single_registered` 收到确认的 HTTP 200 空响应时原地极速换号重试（0.3s 完成）；若遇机顶盒待机刚唤醒 WiFi 尚未连上或 IP 冷却期，严禁清空或覆盖已有合法设备身份，并在 TV 端自动等待 WiFi 重连就绪后再拉流。
+4. **解除 `RemoteVideo.warm()` 同步锁竞争与扩展本地流服务线程池 (`RemoteVideo.kt` / `HongguoLocalServer.kt`)**：
+   - 移除 `warm()` 的 `@Synchronized` 粗粒度锁，防止后台 1MB 预热阻塞播放器首帧 `prepare()` 读取；`HongguoLocalServer` 工作线程池升级为 `newCachedThreadPool`。
+
+
 ## v2.7.60 (2026-11-12)
 
 ### 紧急修复Android与TV端CI构建语法错误 (Signer.kt双引号转义逃逸 + DeviceRegister.kt非法非内联return) + 顺利发布v2.7.60

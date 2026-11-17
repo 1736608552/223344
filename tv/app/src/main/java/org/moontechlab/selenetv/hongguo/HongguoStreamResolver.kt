@@ -11,8 +11,11 @@ import java.util.concurrent.TimeUnit
 
 object HongguoStreamResolver {
     val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
+        .connectTimeout(4, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .writeTimeout(5, TimeUnit.SECONDS)
+        .callTimeout(8, TimeUnit.SECONDS)
+        .pingInterval(10, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
@@ -22,6 +25,9 @@ object HongguoStreamResolver {
     fun evictConnections() {
         try {
             client.connectionPool.evictAll()
+        } catch (_: Throwable) {}
+        try {
+            ContentRepository.defaultHttp.connectionPool.evictAll()
         } catch (_: Throwable) {}
     }
 
@@ -453,39 +459,38 @@ object HongguoStreamResolver {
      * 使用已注册设备凭据 + 3ccc X-Argus + X-Ladon + X-Gorgon 签名直连 /novel/player/video_model/v1/，
      * 一次请求稳定返回 360p/480p/540p/720p/1080p 全档位正片流与 CENC 密钥！
      */
-    private fun executeSingleRegisteredVideoModel(vid: String, profile: PlaybackDeviceSession.Profile): JSONObject? {
-        val deviceId = profile.values["device_id"] ?: ""
-        val installId = profile.values["iid"] ?: profile.values["install_id"] ?: ""
-        if (deviceId.isBlank() || installId.isBlank()) return null
-
-        val queryParams = linkedMapOf(
-            "aid" to "8662",
-            "app_name" to "novelread",
-            "version_code" to "73532",
-            "version_name" to "7.3.5.32",
-            "manifest_version_code" to "73532",
-            "update_version_code" to "73532",
-            "channel" to "update_64",
-            "device_platform" to "android",
-            "os" to "android",
-            "ssmix" to "a",
-            "device_type" to "25053RT47C",
-            "device_brand" to "Redmi",
-            "language" to "zh",
-            "os_api" to "36",
-            "os_version" to "16",
-            "resolution" to "1280*2772",
-            "dpi" to "520",
-            "ac" to "wifi",
-            "device_id" to deviceId,
-            "iid" to installId,
-        )
+    private fun executeSingleRegisteredVideoModel(vid: String, initialProfile: PlaybackDeviceSession.Profile): JSONObject? {
+        var currentProfile = initialProfile
+        val ep = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/video_model/v1/"
         val payload = """{"video_id":"$vid","content_type":1,"biz_param":{"need_all_video_definition":true,"video_platform":3}}""".toByteArray(Charsets.UTF_8)
-        val endpoints = listOf(
-            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/video_model/v1/",
-            "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/video_model/v1/",
-        )
-        for (ep in endpoints) {
+
+        for (attempt in 0..1) {
+            val deviceId = currentProfile.values["device_id"] ?: ""
+            val installId = currentProfile.values["iid"] ?: currentProfile.values["install_id"] ?: ""
+            if (deviceId.isBlank() || installId.isBlank() || deviceId == "0" || installId == "0") break
+
+            val queryParams = linkedMapOf(
+                "aid" to "8662",
+                "app_name" to "novelread",
+                "version_code" to "73532",
+                "version_name" to "7.3.5.32",
+                "manifest_version_code" to "73532",
+                "update_version_code" to "73532",
+                "channel" to "update_64",
+                "device_platform" to "android",
+                "os" to "android",
+                "ssmix" to "a",
+                "device_type" to "25053RT47C",
+                "device_brand" to "Redmi",
+                "language" to "zh",
+                "os_api" to "36",
+                "os_version" to "16",
+                "resolution" to "1280*2772",
+                "dpi" to "520",
+                "ac" to "wifi",
+                "device_id" to deviceId,
+                "iid" to installId,
+            )
             try {
                 val signed = signer.signSingleRegistered(ep, queryParams, payload)
                 val reqBuilder = Request.Builder()
@@ -494,36 +499,43 @@ object HongguoStreamResolver {
                 for ((k, v) in signed.headers) {
                     reqBuilder.header(k, v)
                 }
-                if (profile.cookie.isNotBlank()) {
-                    reqBuilder.header("Cookie", profile.cookie)
-                }
                 val resp = client.newCall(reqBuilder.build()).execute()
-                if (resp.isSuccessful) {
-                    val body = resp.body?.string().orEmpty()
-                    if (body.isNotBlank()) {
-                        val root = JSONObject(body)
-                        val code = root.optInt("Code", root.optInt("code", -1))
-                        if (code == 0) {
-                            val d = root.optJSONObject("data")
-                            val vm = d?.opt("video_model") ?: root.opt("video_model")
-                            val model = when (vm) {
-                                is JSONObject -> vm
-                                is String -> {
-                                    val trimmed = vm.trim()
-                                    if (trimmed.startsWith("{")) {
-                                        runCatching { JSONObject(trimmed) }.getOrNull()
-                                    } else {
-                                        runCatching { JSONObject(String(decode64(trimmed), Charsets.UTF_8)) }.getOrNull()
-                                    }
+                val statusCode = resp.code
+                val body = resp.body?.string().orEmpty()
+                if (resp.isSuccessful && body.isNotBlank()) {
+                    val root = JSONObject(body)
+                    val code = root.optInt("Code", root.optInt("code", -1))
+                    if (code == 0) {
+                        val d = root.optJSONObject("data")
+                        val vm = d?.opt("video_model") ?: root.opt("video_model")
+                        val model = when (vm) {
+                            is JSONObject -> vm
+                            is String -> {
+                                val trimmed = vm.trim()
+                                if (trimmed.startsWith("{")) {
+                                    runCatching { JSONObject(trimmed) }.getOrNull()
+                                } else {
+                                    runCatching { JSONObject(String(decode64(trimmed), Charsets.UTF_8)) }.getOrNull()
                                 }
-                                else -> null
                             }
-                            if (model != null) return model
+                            else -> if (d != null && (d.has("video_list") || d.has("fallback_api"))) d else null
                         }
+                        if (model != null) return model
                     }
                 }
+                // 对齐 minireel_single_registered.go 第 101-106 行：
+                // 仅当收到确认的 HTTP 200 空响应（单设备免费配额耗尽）时，原地极速换发新设备重试一次（0.3s 完成）
+                if (attempt == 0 && statusCode == 200 && body.isBlank()) {
+                    val rotated = PlaybackDeviceSession.shared.rotate(client, failedDeviceId = deviceId)
+                    if (rotated.values["device_id"] != deviceId) {
+                        currentProfile = rotated
+                        continue
+                    }
+                }
+                break
             } catch (e: Exception) {
-                android.util.Log.w("HongguoStreamResolver", "single_registered $ep 异常: ${e.message}")
+                android.util.Log.w("HongguoStreamResolver", "single_registered 异常: ${e.message}")
+                break
             }
         }
         return null
@@ -632,9 +644,7 @@ object HongguoStreamResolver {
         val payload = """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"dr_scene":"preload","mixed_video_id_map":{"1004":["$vid"]}}""".toByteArray()
         val candidateEndpoints = listOf(
             "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/",
-            "https://api5-normal-hl.fqnovel.com/novel/player/multi_video_model/v1/",
-            "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1/",
-            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1/"
+            "https://api5-normal-hl.fqnovel.com/novel/player/multi_video_model/v1/"
         )
 
         for (ep in candidateEndpoints) {
@@ -1064,8 +1074,10 @@ object HongguoStreamResolver {
             return extractPlaybackOptions(model, cleanVid, maxQuality)
         }
 
-        // 阶段 1: 按智能优先级序列依次尝试三大通道
+        // 按智能优先级序列依次尝试四大通道（single_registered 内置空响应极速换号）
         for (provider in providers) {
+            // 每次尝试读取最新会话身份（若在前序通道中已触发换号则自动同步）
+            identity = PlaybackDeviceSession.shared.profile(client)
             val result = tryExecuteProvider(provider, identity)
             if (result != null) {
                 recordSourceSuccess(seriesId, provider)
@@ -1074,35 +1086,21 @@ object HongguoStreamResolver {
             }
         }
 
-        // 阶段 2: 若当前设备身份下三大通道均受限，自动换发合法注册凭据并二次轮询
-        android.util.Log.w("HongguoStreamResolver", "当前设备凭证全通道未获流，执行设备轮换...")
-        identity = PlaybackDeviceSession.shared.rotate(client)
-        for (provider in providers) {
-            val result = tryExecuteProvider(provider, identity)
-            if (result != null) {
-                recordSourceSuccess(seriesId, provider)
-                android.util.Log.i("HongguoStreamResolver", "轮换设备取流成功 [通道: $provider, 画质: ${result["quality"]}]")
-                return result
-            }
+        // 若记忆通道失效，清除旧通道记忆并尝试受冷却锁保护的单次设备刷新重试首选通道
+        if (preferred != null) {
+            seriesSourceMemory.remove(seriesId.trim().removePrefix("hongguo:").trim())
         }
-
-        // 阶段 3 (原版 ContentRepository 高可用兜底): 官方正片 multi_video_model + fallback_api 1080P/720P 完整原画解析 (彻底根除 360P 9秒试看)
-        try {
-            val repo = ContentRepository()
-            val info = repo.stream(cleanVid, maxQuality)
-            val qNum = Regex("(\\d+)").find(info.quality)?.groupValues?.get(1)?.toIntOrNull() ?: 1080
-            val keyHex = info.key?.joinToString("") { "%02x".format(it.toInt() and 0xff) } ?: ""
-            return mapOf(
-                "url" to info.url,
-                "decryptionKey" to keyHex,
-                "quality" to info.quality,
-                "actualQuality" to qNum,
-                "qualities" to listOf(qNum),
-                "multiMap" to mapOf(info.quality to info.url),
-                "keys" to mapOf(info.quality to keyHex)
-            )
-        } catch (e: Exception) {
-            android.util.Log.w("HongguoStreamResolver", "ContentRepository 兜底异常: ${e.message}")
+        val oldDevId = identity.values["device_id"] ?: ""
+        val rotated = PlaybackDeviceSession.shared.rotate(client, failedDeviceId = oldDevId)
+        if (rotated.values["device_id"] != oldDevId) {
+            for (provider in listOf(PROVIDER_SINGLE_REGISTERED, PROVIDER_MULTI_VIDEO_MODEL, PROVIDER_SINGLE_VIDEO_MODEL)) {
+                val result = tryExecuteProvider(provider, rotated)
+                if (result != null) {
+                    recordSourceSuccess(seriesId, provider)
+                    android.util.Log.i("HongguoStreamResolver", "刷新设备后取流成功 [通道: $provider, 画质: ${result["quality"]}]")
+                    return result
+                }
+            }
         }
 
         throw IOException("Empty response from all providers for vid $cleanVid")

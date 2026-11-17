@@ -18,6 +18,7 @@ class PlaybackDeviceSession {
     companion object {
         val shared = PlaybackDeviceSession()
         const val PLAYBACK_UA = "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)"
+        private const val REFRESH_COOLDOWN_MS = 12_000L
     }
 
     data class Profile(
@@ -27,19 +28,39 @@ class PlaybackDeviceSession {
     )
 
     @Volatile private var ready: Profile? = null
+    @Volatile private var lastRefreshAtMs: Long = 0L
+
+    private fun loadPersistedOfficialProfile(): Profile? {
+        if (!VendorConstants.isOfficialRegistered()) return null
+        val devId = VendorConstants.installDeviceId
+        val iid = VendorConstants.installIid
+        val cookie = VendorConstants.getOfficialCookie()
+        return Profile(
+            values = VendorConstants.device + mapOf(
+                "device_id" to devId,
+                "iid" to iid,
+                "install_id" to iid,
+                "cdid" to VendorConstants.cdid,
+            ),
+            cookie = cookie,
+            isOfficialRegistered = true,
+        )
+    }
 
     fun profile(http: OkHttpClient): Profile {
         ready?.let { return it }
         synchronized(this) {
             ready?.let { return it }
+            loadPersistedOfficialProfile()?.let { persisted ->
+                ready = persisted
+                return persisted
+            }
             return register(http)
         }
     }
 
     @Synchronized
     fun invalidate(http: OkHttpClient? = null) {
-        ready = null
-        VendorConstants.regenerate()
         if (http != null) {
             try {
                 http.connectionPool.evictAll()
@@ -48,81 +69,100 @@ class PlaybackDeviceSession {
     }
 
     @Synchronized
-    fun rotate(http: OkHttpClient): Profile {
-        ready = null
-        VendorConstants.regenerate()
+    fun rotate(http: OkHttpClient, failedDeviceId: String = ""): Profile {
+        val previous = ready?.takeIf { it.isOfficialRegistered } ?: loadPersistedOfficialProfile()
+        // 若另一并发线程已换发了新设备号，直接复用新设备号，绝不重复发起注册请求
+        if (failedDeviceId.isNotBlank() && previous != null && previous.values["device_id"] != failedDeviceId) {
+            ready = previous
+            return previous
+        }
+        val now = System.currentTimeMillis()
+        // 对齐标杆仓库 minireel.go refreshAfter 冷却锁：防止断网或风控期间并发请求刷爆同宽带 IP 注册配额
+        if (now - lastRefreshAtMs < REFRESH_COOLDOWN_MS && previous != null) {
+            ready = previous
+            return previous
+        }
+        lastRefreshAtMs = now
         try {
             http.connectionPool.evictAll()
         } catch (_: Throwable) {}
-        return register(http)
+
+        val fresh = register(http)
+        if (fresh.isOfficialRegistered) {
+            return fresh
+        }
+        // 若因机顶盒待机断 WiFi 尚未连上或 IP 冷却导致未能注册新号，保留并恢复原有合法注册身份，严禁降级为未注册假号
+        if (previous != null) {
+            ready = previous
+            return previous
+        }
+        return fresh
     }
 
     private fun register(http: OkHttpClient): Profile {
         val cdid = UUID.randomUUID().toString()
+        val openudid = UUID.randomUUID().toString().replace("-", "").take(16)
+        val clientudid = UUID.randomUUID().toString()
         val template =
             VendorConstants.device +
                 mapOf(
                     "cdid" to cdid,
-                    "openudid" to UUID.randomUUID().toString().replace("-", "").take(16),
-                    "clientudid" to UUID.randomUUID().toString(),
+                    "openudid" to openudid,
+                    "clientudid" to clientudid,
                 )
 
         var registeredDevice: DeviceRegister.Registered? = null
         var isOfficial = false
 
-        // 1. 优先使用 hongguo-tv 验证 100% 成功的 single-registered 协议注册真实设备身份
-        for (attempt in 0 until 2) {
-            val singleReg = DeviceRegister.registerSingleRegistered(http)
-            if (singleReg != null) {
-                registeredDevice = singleReg
-                isOfficial = true
-                break
-            }
+        // 1. 优先使用 hongguo-tv 验证 100% 成功的 single-registered 协议注册真实设备身份（单次快速尝试，不循环轰炸）
+        val singleReg = DeviceRegister.registerSingleRegistered(http)
+        if (singleReg != null) {
+            registeredDevice = singleReg
+            isOfficial = true
         }
 
-        // 2. 备用：若明文注册受阻，尝试 ttEncrypt 加密通道
+        // 2. 备用：若明文注册未返回，单次尝试 ttEncrypt 加密通道
         if (registeredDevice == null) {
-            val candidateUrls = DeviceRegister.urls()
-            for (attempt in 0 until 2) {
-                val targetUrl = candidateUrls[attempt % candidateUrls.size]
-                try {
-                    val now = System.currentTimeMillis()
-                    val body = DeviceRegister.payload(template, now)
-                    val request =
-                        Request.Builder()
-                            .url(targetUrl)
-                            .apply { DeviceRegister.headers(body, template, now).forEach(::header) }
-                            .post(body.toRequestBody("application/octet-stream;tt-data=a".toMediaType()))
-                            .build()
-                    val parsed = RequestScope.execute(http.newCall(request)) { response ->
-                        DeviceRegister.parse(
-                            readRegisterBody(response),
-                            response.headers("Set-Cookie"),
-                        )
-                    }
-                    if (parsed != null) {
-                        registeredDevice = parsed
-                        isOfficial = true
-                        break
-                    }
-                } catch (_: Exception) {
+            try {
+                val now = System.currentTimeMillis()
+                val body = DeviceRegister.payload(template, now)
+                val request =
+                    Request.Builder()
+                        .url(DeviceRegister.url())
+                        .apply { DeviceRegister.headers(body, template, now).forEach(::header) }
+                        .post(body.toRequestBody("application/octet-stream;tt-data=a".toMediaType()))
+                        .build()
+                val parsed = RequestScope.execute(http.newCall(request)) { response ->
+                    DeviceRegister.parse(
+                        readRegisterBody(response),
+                        response.headers("Set-Cookie"),
+                    )
                 }
+                if (parsed != null) {
+                    registeredDevice = parsed
+                    isOfficial = true
+                }
+            } catch (_: Exception) {
             }
         }
 
-        // 3. 终极兜底：使用本地独立持久化设备参数
-        val device = registeredDevice ?: run {
-            VendorConstants.regenerate()
-            DeviceRegister.Registered(
-                deviceId = VendorConstants.installDeviceId,
-                installId = VendorConstants.installIid,
-                cookies = mapOf(
-                    "install_id" to VendorConstants.installIid,
-                    "store-region" to "cn",
-                    "store-region-src" to "did"
-                )
-            )
+        // 3. 若本次因断网或 IP 冷却未拿到新号，优先回退使用本地已持久化的真实身份
+        if (registeredDevice == null) {
+            loadPersistedOfficialProfile()?.let { persisted ->
+                ready = persisted
+                return persisted
+            }
         }
+
+        val device = registeredDevice ?: DeviceRegister.Registered(
+            deviceId = VendorConstants.installDeviceId,
+            installId = VendorConstants.installIid,
+            cookies = mapOf(
+                "install_id" to VendorConstants.installIid,
+                "store-region" to "cn",
+                "store-region-src" to "did"
+            )
+        )
 
         val cookieHeader = device.cookies
             .filterKeys {
@@ -132,12 +172,23 @@ class PlaybackDeviceSession {
             .joinToString("; ") { (name, value) -> "$name=$value" }
             .ifBlank { "install_id=${device.installId}; store-region=cn; store-region-src=did" }
 
+        if (isOfficial) {
+            VendorConstants.saveOfficialIdentity(
+                deviceId = device.deviceId,
+                iid = device.installId,
+                cdidVal = cdid,
+                openUdidVal = openudid,
+                cookieVal = cookieHeader,
+            )
+        }
+
         val createdProfile = Profile(
             VendorConstants.device + mapOf(
                 "device_id" to device.deviceId,
                 "iid" to device.installId,
                 "install_id" to device.installId,
                 "cdid" to cdid,
+                "openudid" to openudid,
             ),
             cookieHeader,
             isOfficialRegistered = isOfficial

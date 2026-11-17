@@ -38,12 +38,7 @@ class MemoryCookies : okhttp3.CookieJar {
 }
 
 open class ContentRepository(
-    val http: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .callTimeout(45, TimeUnit.SECONDS)
-        .cookieJar(MemoryCookies())
-        .build(),
+    val http: OkHttpClient = defaultHttp,
     private val clock: () -> Long = System::currentTimeMillis,
     private val playbackSession: PlaybackDeviceSession = PlaybackDeviceSession.shared
 ) {
@@ -280,6 +275,16 @@ open class ContentRepository(
     }
 
     companion object {
+        val defaultHttp: OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .writeTimeout(8, TimeUnit.SECONDS)
+            .callTimeout(12, TimeUnit.SECONDS)
+            .pingInterval(10, TimeUnit.SECONDS)
+            .cookieJar(MemoryCookies())
+            .retryOnConnectionFailure(true)
+            .build()
+
         fun extractRouter(html: String): JSONObject {
             val marker = html.indexOf("_ROUTER_DATA")
             if (marker < 0) throw IOException("页面没有内容数据")

@@ -68,11 +68,19 @@ class RemoteVideo(private val http: OkHttpClient, val info: StreamInfo): Closeab
         return this
     }
 
-    /** Bounded warm-up. Retains raw bytes so decryption still uses the absolute sample offset. */
-    @Synchronized fun warm(): RemoteVideo {
+    /** Bounded warm-up without blocking prepare() lock for concurrent player readers. */
+    fun warm(): RemoteVideo {
         prepare()
         val size = minOf(total, 1024 * 1024L).toInt()
-        if (prefix.size < size) prefix = prefix + range(prefix.size.toLong(), size - 1L).bytes
+        val cur = prefix
+        if (cur.size < size && !closed) {
+            val extra = range(cur.size.toLong(), size - 1L).bytes
+            synchronized(this) {
+                if (prefix.size == cur.size) {
+                    prefix = cur + extra
+                }
+            }
+        }
         return this
     }
 

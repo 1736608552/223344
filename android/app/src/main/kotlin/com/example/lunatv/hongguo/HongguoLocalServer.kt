@@ -64,7 +64,7 @@ class HongguoLocalServer private constructor() {
             acceptExecutor = Executors.newSingleThreadExecutor { r ->
                 Thread(r, "HongguoLocalServer-Accept").apply { isDaemon = true }
             }
-            workerExecutor = Executors.newFixedThreadPool(8) { r ->
+            workerExecutor = Executors.newCachedThreadPool { r ->
                 Thread(r, "HongguoLocalServer-Worker").apply { isDaemon = true }
             }
 

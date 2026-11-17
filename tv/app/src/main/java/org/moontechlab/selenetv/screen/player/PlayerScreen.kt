@@ -353,6 +353,20 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         val safeStartMs = if (isShort && startMs > 10 * 60 * 1000L) 0L else startMs
         playEpisodeJob = scope.launch {
             if (isShort || src?.source == "hongguo" || src?.source == "shortdrama" || src?.sourceName?.contains("精品短剧") == true || src?.typeName == "短剧") {
+                // 机顶盒待机断 WiFi 唤醒保护：若检测到当前 WiFi 正在重连中，轻量等待网络就绪后再请求，严禁断网期盲目刷接口
+                val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+                var waitedNetwork = false
+                for (w in 0 until 16) {
+                    val activeNet = cm?.activeNetworkInfo
+                    if (activeNet != null && activeNet.isConnected) break
+                    waitedNetwork = true
+                    kotlinx.coroutines.delay(500)
+                }
+                if (waitedNetwork) {
+                    org.moontechlab.selenetv.hongguo.HongguoStreamResolver.evictConnections()
+                    org.moontechlab.selenetv.service.MediaHttp.evictConnections()
+                }
+
                 // 短剧专属直解：精准调用单集专属直链解析通道 (支持 1080P/720P/480P 超清直出 + CENC 硬件解密)
                 val seriesId = src?.id ?: ""
                 var resolvedUrl = ""
@@ -373,37 +387,65 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                         if (vid.isNotEmpty()) break
                     } catch (e: Exception) {
                         android.util.Log.w("PlayerScreen", "获取短剧 vid 异常 (attempt $vAttempt): ${e.message}")
-                        if (vAttempt == 0) kotlinx.coroutines.delay(200)
+                        if (vAttempt == 0) kotlinx.coroutines.delay(300)
                     }
                 }
 
-                // 100% 照搬 1736608552/hongguo-tv 官方原版生产架构 (彻底根治 9秒试看/360P/第4集失效)
+                // 100% 对齐 1736608552/hongguo-tv 与手机端生产架构：优先通过本地 HTTP 回环服务输出纯明文 MP4 流
                 if (vid.isNotEmpty()) {
                     val maxQ = 1080
                     var streamInfo: org.moontechlab.selenetv.hongguo.StreamInfo? = null
-                    var repoInstance: org.moontechlab.selenetv.hongguo.ContentRepository? = org.moontechlab.selenetv.hongguo.ContentRepository()
+                    val repoInstance = org.moontechlab.selenetv.hongguo.ContentRepository()
 
-                    for (rAttempt in 0..2) {
+                    for (rAttempt in 0..1) {
                         try {
                             val info = withContext(Dispatchers.IO) {
-                                repoInstance!!.stream(vid, maxQuality = maxQ)
+                                val resolved = org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ, seriesId = seriesId)
+                                val streamUrl = resolved["url"] as? String ?: ""
+                                val keyHex = resolved["decryptionKey"] as? String ?: ""
+                                val keyBytes = if (keyHex.length == 32) {
+                                    keyHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                                } else null
+                                val quality = resolved["quality"] as? String ?: "${maxQ}P"
+                                if (streamUrl.isNotBlank()) {
+                                    org.moontechlab.selenetv.hongguo.StreamInfo(streamUrl, keyBytes, quality)
+                                } else {
+                                    repoInstance.stream(vid, maxQuality = maxQ)
+                                }
                             }
                             streamInfo = info
                             break
                         } catch (e: Exception) {
-                            android.util.Log.w("PlayerScreen", "短剧原版取流异常 (attempt $rAttempt): ${e.message}")
-                            if (rAttempt < 2) kotlinx.coroutines.delay(400)
+                            android.util.Log.w("PlayerScreen", "短剧取流异常 (attempt $rAttempt): ${e.message}")
+                            if (rAttempt == 0) {
+                                org.moontechlab.selenetv.hongguo.HongguoStreamResolver.evictConnections()
+                                kotlinx.coroutines.delay(400)
+                            }
                         }
                     }
 
-                    if (streamInfo != null && repoInstance != null) {
+                    if (streamInfo != null) {
                         val keyHex = streamInfo.key?.joinToString("") { "%02x".format(it.toInt() and 0xff) } ?: ""
                         val dramaHeaders = mapOf(
                             "User-Agent" to org.moontechlab.selenetv.hongguo.VendorConstants.VIDEO_UA,
                             "Referer" to "https://novel.snssdk.com/"
                         )
 
-                        // 优先策略 1: 纯内存 Range 分段硬解直喂 ExoPlayer (零磁盘残留，毫秒级秒开)
+                        // 优先策略 1 (100% 对齐标杆仓库与手机端): 本地 HTTP 回环解密代理流 (输出纯明文标准 MP4，彻底根除海信电视自定义 DataSource 卡 00:00 黑屏死锁)
+                        try {
+                            val localPlayUrl = withContext(Dispatchers.IO) {
+                                org.moontechlab.selenetv.hongguo.HongguoLocalServer.instance.getPlayUrl(streamInfo, repoInstance.http, eagerWarm = true)
+                            }
+                            if (localPlayUrl.startsWith("http://127.0.0.1")) {
+                                dramaAutoRetryCount = 0
+                                controller.load(localPlayUrl, safeStartMs, decryptionKey = "", headers = emptyMap())
+                                return@launch
+                            }
+                        } catch (eLocal: Exception) {
+                            android.util.Log.w("PlayerScreen", "本地回环代理流异常，降级至内存 Range 硬解: ${eLocal.message}")
+                        }
+
+                        // 降级策略 2: 纯内存 Range 分段硬解直喂 ExoPlayer (带 4.5s 首帧渲染看门狗保护)
                         try {
                             val remote = withContext(Dispatchers.IO) {
                                 org.moontechlab.selenetv.hongguo.RemoteVideo(repoInstance.http, streamInfo).prepare()
@@ -412,47 +454,13 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                             controller.loadRemoteVideo(remote, safeStartMs, playWhenReady = true)
                             return@launch
                         } catch (e: Exception) {
-                            android.util.Log.w("PlayerScreen", "RemoteVideo 内存硬解握手受阻，平滑降级至本地回环解密代理流: ${e.message}")
-                        }
-
-                        // 降级策略 2 (100% 对齐标杆仓库): 本地回环解密代理流 (输出纯明文标准 MP4，彻底根除火山 encv 黑屏)
-                        try {
-                            val localPlayUrl = withContext(Dispatchers.IO) {
-                                org.moontechlab.selenetv.hongguo.HongguoLocalServer.instance.getPlayUrl(streamInfo, repoInstance.http)
-                            }
-                            dramaAutoRetryCount = 0
-                            controller.load(localPlayUrl, safeStartMs, decryptionKey = "", headers = emptyMap())
-                            return@launch
-                        } catch (eLocal: Exception) {
-                            android.util.Log.w("PlayerScreen", "本地回环代理流异常，回退至原生管道: ${eLocal.message}")
+                            android.util.Log.w("PlayerScreen", "RemoteVideo 内存硬解受阻，降级至原生管道: ${e.message}")
                         }
 
                         // 降级策略 3: ExoPlayer 原生流直接播放 (搭载 16 字节正片解密密钥与鉴权头)
                         dramaAutoRetryCount = 0
                         controller.load(streamInfo.url, safeStartMs, decryptionKey = keyHex, headers = dramaHeaders)
                         return@launch
-                    }
-
-                    // 备用兜底：尝试 HongguoStreamResolver 解析
-                    try {
-                        val result = withContext(Dispatchers.IO) {
-                            org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ, seriesId = seriesId)
-                        }
-                        val rawResolved = result["url"] as? String ?: ""
-                        val decKey = result["decryptionKey"] as? String ?: ""
-                        if (rawResolved.isNotEmpty() && decKey.length == 32 && repoInstance != null) {
-                            val keyBytes = decKey.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-                            val fakeInfo = org.moontechlab.selenetv.hongguo.StreamInfo(rawResolved, keyBytes, "${maxQ}P")
-                            resolvedUrl = withContext(Dispatchers.IO) {
-                                org.moontechlab.selenetv.hongguo.HongguoLocalServer.instance.getPlayUrl(fakeInfo, repoInstance.http)
-                            }
-                            decryptionKey = ""
-                        } else {
-                            resolvedUrl = rawResolved
-                            decryptionKey = decKey
-                        }
-                    } catch (e: Exception) {
-                        android.util.Log.w("PlayerScreen", "短剧备用取流异常: ${e.message}")
                     }
                 }
 

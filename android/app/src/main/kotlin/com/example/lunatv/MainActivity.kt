@@ -157,6 +157,11 @@ class MainActivity : FlutterActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    override fun onResume() {
+        super.onResume()
+        org.moontechlab.lunatv.hongguo.HongguoStreamResolver.evictConnections()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
     }

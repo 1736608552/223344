@@ -15,6 +15,8 @@ internal object VendorConstants {
     private const val KEY_OPENUDID = "key_openudid"
     private const val KEY_CLIENTUDID = "key_clientudid"
     private const val KEY_CDID = "key_cdid"
+    private const val KEY_OFFICIAL_REGISTERED = "key_official_registered"
+    private const val KEY_OFFICIAL_COOKIE = "key_official_cookie"
     private val BLACKLIST_IDS = setOf("3748291048294829104", "0")
 
     private fun getAppContext(): Context? {
@@ -59,6 +61,41 @@ internal object VendorConstants {
         return str
     }
 
+    fun isOfficialRegistered(): Boolean {
+        val sp = getPrefs() ?: return false
+        return sp.getBoolean(KEY_OFFICIAL_REGISTERED, false) &&
+            installDeviceId.isNotBlank() && installDeviceId !in BLACKLIST_IDS &&
+            installIid.isNotBlank() && installIid !in BLACKLIST_IDS
+    }
+
+    fun getOfficialCookie(): String {
+        val saved = getPrefs()?.getString(KEY_OFFICIAL_COOKIE, null).orEmpty()
+        return saved.ifBlank { "install_id=$installIid; store-region=cn; store-region-src=did" }
+    }
+
+    fun saveOfficialIdentity(
+        deviceId: String,
+        iid: String,
+        cdidVal: String = cdid,
+        openUdidVal: String = openUdid,
+        cookieVal: String = "",
+    ) {
+        if (deviceId.isBlank() || deviceId == "0" || iid.isBlank() || iid == "0") return
+        installDeviceId = deviceId
+        installIid = iid
+        if (cdidVal.isNotBlank()) cdid = cdidVal
+        if (openUdidVal.isNotBlank()) openUdid = openUdidVal
+        val finalCookie = cookieVal.ifBlank { "install_id=$iid; store-region=cn; store-region-src=did" }
+        getPrefs()?.edit()
+            ?.putString(KEY_DEVICE_ID, installDeviceId)
+            ?.putString(KEY_INSTALL_IID, installIid)
+            ?.putString(KEY_CDID, cdid)
+            ?.putString(KEY_OPENUDID, openUdid)
+            ?.putBoolean(KEY_OFFICIAL_REGISTERED, true)
+            ?.putString(KEY_OFFICIAL_COOKIE, finalCookie)
+            ?.apply()
+    }
+
     fun regenerate() {
         installIid = randomInstallId()
         installDeviceId = randomInstallId()
@@ -74,6 +111,7 @@ internal object VendorConstants {
             ?.putString(KEY_OPENUDID, openUdid)
             ?.putString(KEY_CLIENTUDID, clientUdid)
             ?.putString(KEY_CDID, cdid)
+            ?.putBoolean(KEY_OFFICIAL_REGISTERED, false)
             ?.apply()
     }
 

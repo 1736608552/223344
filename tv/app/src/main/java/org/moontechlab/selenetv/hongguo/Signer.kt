@@ -477,8 +477,10 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         val baseSig = signHongguo(query, body, stamp)
         val headers = linkedMapOf(
             "User-Agent" to DeviceRegister.SINGLE_REG_UA,
-            "Accept" to "application/json; charset=utf-8,application/x-protobuf",
+            "Accept" to "application/json",
             "Content-Type" to "application/json; charset=utf-8",
+            "X-XS-From-Web" to "0",
+            "Sdk-Version" to "2",
             "X-Argus" to playbackArgus(query, body, ts, rand(), registered = true),
             "X-Ladon" to playbackLadon(ts, values["aid"] ?: "8662", rand()),
             "X-Gorgon" to (baseSig["X-Gorgon"] ?: ""),

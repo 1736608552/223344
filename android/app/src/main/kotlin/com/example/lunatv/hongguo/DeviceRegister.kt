@@ -135,39 +135,39 @@ object DeviceRegister {
         }
         val bodyBytes = payloadJson.toString().toByteArray(Charsets.UTF_8)
 
-        for (host in REGISTER_HOSTS) {
-            try {
-                val req = Request.Builder()
-                    .url("$host$PATH?$queryStr")
-                    .header("User-Agent", SINGLE_REG_UA)
-                    .header("Content-Type", "application/json; charset=utf-8")
-                    .header("Accept", "application/json")
-                    .post(bodyBytes.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                    .build()
-                val registered = RequestScope.execute(http.newCall(req)) { resp ->
-                    if (resp.isSuccessful) {
-                        val text = resp.body?.string().orEmpty()
-                        val parsed = parse(text, resp.headers("Set-Cookie"))
-                        if (parsed != null) {
-                            val mergedCookies = linkedMapOf(
-                                "install_id" to parsed.installId,
-                                "store-region" to "cn",
-                                "store-region-src" to "did",
-                            )
-                            mergedCookies.putAll(parsed.cookies)
-                            Registered(
-                                deviceId = parsed.deviceId,
-                                installId = parsed.installId,
-                                deviceToken = parsed.deviceToken,
-                                newUser = parsed.newUser,
-                                cookies = mergedCookies,
-                            )
-                        } else null
+        // 仅向官方唯一支持明文 JSON 注册的 HOST (log.snssdk.com) 发起单次请求，
+        // 严禁向 log5-applog-* 发送明文 JSON（避免必返 100 字节 device_id:0 消耗同 IP 注册风控配额）
+        try {
+            val req = Request.Builder()
+                .url("$HOST$PATH?$queryStr")
+                .header("User-Agent", SINGLE_REG_UA)
+                .header("Content-Type", "application/json; charset=utf-8")
+                .header("Accept", "application/json")
+                .post(bodyBytes.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+            val registered = RequestScope.execute(http.newCall(req)) { resp ->
+                if (resp.isSuccessful) {
+                    val text = resp.body?.string().orEmpty()
+                    val parsed = parse(text, resp.headers("Set-Cookie"))
+                    if (parsed != null) {
+                        val mergedCookies = linkedMapOf(
+                            "install_id" to parsed.installId,
+                            "store-region" to "cn",
+                            "store-region-src" to "did",
+                        )
+                        mergedCookies.putAll(parsed.cookies)
+                        Registered(
+                            deviceId = parsed.deviceId,
+                            installId = parsed.installId,
+                            deviceToken = parsed.deviceToken,
+                            newUser = parsed.newUser,
+                            cookies = mergedCookies,
+                        )
                     } else null
-                }
-                if (registered != null) return registered
-            } catch (_: Exception) {
+                } else null
             }
+            if (registered != null) return registered
+        } catch (_: Exception) {
         }
         return null
     }
