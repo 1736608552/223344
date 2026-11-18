@@ -1219,13 +1219,18 @@ class DuanjuCoreBridge {
     return null;
   }
 
-  /// 异步预取单集或相邻集的播放计划，提前注入内存缓存，实现秒开起播
+  /// 异步预取单集或相邻集的播放计划，提前注入内存缓存，实现秒开起播 (微延迟防抖，避开起播争抢)
   Future<void> prefetchEpisode(String dramaId, int episode, {int quality = 0}) async {
     final cleanId = dramaId.trim();
     if (cleanId.isEmpty || episode < 1) return;
     final cacheKey = quality == 0 ? '$cleanId-$episode' : '$cleanId-$episode-$quality';
     if (_planCache.containsKey(cacheKey)) return;
-    unawaited(getPlaybackPlan(dramaId: cleanId, episode: episode, quality: quality));
+    unawaited(() async {
+      await Future.delayed(const Duration(milliseconds: 600));
+      if (!_planCache.containsKey(cacheKey)) {
+        await getPlaybackPlan(dramaId: cleanId, episode: episode, quality: quality);
+      }
+    }());
   }
 
   /// 获取红果短剧原生播放诊断报告 (对齐标杆 hongguo-tv 诊断面板)
@@ -1953,7 +1958,7 @@ class DuanjuCoreBridge {
 
         final cookieHeader = _hongguoPersistentCookie.isNotEmpty
             ? _hongguoPersistentCookie
-            : 'store-region=cn; store-region-src=fallback; install_id=$iid';
+            : 'install_id=$iid; ttreq=1; store-region=cn; store-region-src=did';
 
         http.Response? resp;
         for (final ep in playEndpoints) {

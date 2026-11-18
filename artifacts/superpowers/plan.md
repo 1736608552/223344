@@ -1,27 +1,28 @@
-# 手机端与TV端短剧“卡在选集打不开播放页”及设备注册失效 (DEVICE_REGISTER_INVALID) 彻底自愈计划
+# 彻底攻克短剧四大取流通道 0 字节丢包与卡在选集打不开缺陷专项自愈计划 (v2.7.67)
 
-## 1. 故障核心定位 (Root Cause Analysis)
-1. **视图状态机死锁 (`_phase` 无法切换)**：
-   - 手机端从短剧专区或搜索进入 `PlayerScreen` 时，初始状态为 `_phase = 'detail'`，且 `initState` 中未自动触发起播；
-   - 用户在详情页选集网格点击某一集时，调用 `_playEpisode(index)`，但由于网络延迟或取流受阻，代码在第 4257 行因为 `!actualSourceUrl.startsWith('http')` 直接执行了 `return`，而 `_phase = 'playing'` 位于第 4345 行，导致永远无法切换到播放器视图，用户被死死卡在选集网格中；
-2. **设备注册风控与空身份拦截 (`DEVICE_REGISTER_INVALID`)**：
-   - 字节红果服务器在同一宽带 IP 频繁请求时，对 `device_register` 返回 `HTTP 200 · 响应 100 字节`（包含 `device_id: 0`），导致原生层四通道取流排空；
-   - 缺少免设备注册的官方 Web 穿透兜底与预置合法会话池轮换；
-3. **日记与诊断入口隐蔽过深**：
-   - 原日记入口只在播放态（`_phase == 'playing'`）的齿轮设置菜单中，用户在详情态根本无法看到和使用。
+## 1. 现场实测与日志铁证分析 (Source-First Root Cause)
+用户真机现场提取的完整报错日志：
+- **请求剧集**：`烛九阴第九季`（seriesId: `7707659627189521470`，第 12 集，vid: `7707659639470427161`）；
+- **设备注册**：正常下发合法身份 `did=2873504156414138`；
+- **核心故障 1（四大 Provider 0 字节丢包）**：
+  - `single_registered`、`video_tab`、`multi_video_model`、`video_model` 四大通道全部返回 `code=200 len=0` 空响应；
+  - 根因分析：
+    1. 原生请求构建器缺少鉴权 `Cookie`，字节跳动服务端在缺失 `Cookie: install_id=$installId; ttreq=1; store-region=cn; store-region-src=did` 时静默丢弃请求，下发 0 字节；
+    2. 进页瞬间 `player_screen.dart` 在后台并发调用预取（第 13、14 集），主线程与后台预取在同一毫秒使用同一 `did` 并发向官方发包，触发服务端高频风控限制；
+- **核心故障 2（卡在选集页面打不开）**：
+  - 进页后没有自动调度 `_playEpisode`；
+  - 手动点击某集后因取流返回空，直接弹出 SnackBar 并中断，没有起播降级容错机制。
 
-## 2. 实施步骤规划 (Implementation Steps)
-- **步骤 1：重构 `player_screen.dart` 的起播与视图状态流转**
-  - 短剧点击后立即在下一帧自动起播目标集数（支持记忆恢复）；
-  - 进入 `_playEpisode` 时第一时间将 `_phase` 切为 `'playing'`，展示沉浸式播放器全屏界面；
-  - 若解析受阻，全屏播放器中央展示优雅的错误与诊断卡片（包含【一键复制诊断日记】、【重试】、【换源】等按钮）；
-  - 在详情页（`_buildDetailView`）顶部及选集区增加醒目的【播放诊断/日记】按钮。
-- **步骤 2：在 `short_drama_screen.dart` 中增加全局日记/诊断入口**
-  - 在短剧专区右上角增加【诊断日记】图标，支持随时随地一键复制日志。
-- **步骤 3：增强 Android 原生层与 Flutter 端设备注册风控抵御 (`DeviceRegister.kt` / `DuanjuCoreBridge.dart`)**
-  - 在遭遇 `DEVICE_REGISTER_INVALID` 时，启用预置高权重合法设备指纹池（Preset Official Profiles），杜绝 `device_id=0`；
-  - 完善 Web 官方免注册通道穿透，当设备注册临时受阻时无缝降级直取官方原画流。
-- **步骤 4：代码语法静态检查、AST 验证与自检闭环**
-  - 运行静态检查，确认无括号缺失与类型错误。
-- **步骤 5：升级版本至 `v2.7.63+20863`，同步更新更新日志与发布工件**
-  - 提交并推送 GitHub 触发自动化构建发布。
+## 2. 实施方案与闭环规划
+- **步骤 1：补齐四大 Provider 默认鉴权 Cookie**
+  - 在 Android 移动端与 TV 端 `HongguoStreamResolver.kt` 的四大通道中统一注入标准鉴权 Cookie：
+    `"install_id=$installId; ttreq=1; store-region=cn; store-region-src=did"`；
+- **步骤 2：引入 `resolveLock` 串行互斥锁**
+  - 在移动端与 TV 端 `HongguoStreamResolver.kt` 中添加重入互斥锁，确保所有取流调用串行有序执行，消除多线程并发争抢同一设备号触发风控；
+- **步骤 3：预取防抖解耦与自动起播恢复**
+  - 移除进页瞬间的盲目预取，为 `prefetchEpisode` 增加 600ms 防抖；
+  - 恢复短剧进入后自动秒开起播逻辑；
+  - 增加起播平滑降级容错：当前历史分集因风控受阻且 `index > 0` 时，自动降级以第 1 集（公开免费集）秒开起播，保障播放器 100% 顺利打开。
+- **步骤 4：工件更新、版本升级与全自动构建发布**
+  - 版本提升至 `v2.7.67+20867`；
+  - 提交推送到 GitHub，触发 CI 自动化打包发布至 Release 仓库。

@@ -71,6 +71,7 @@ object HongguoStreamResolver {
 
     private data class SourceMemoryEntry(val provider: String, val timestamp: Long)
     private val seriesSourceMemory = java.util.concurrent.ConcurrentHashMap<String, SourceMemoryEntry>()
+    private val resolveLock = java.util.concurrent.locks.ReentrantLock(true)
 
     fun recordSourceSuccess(seriesId: String, provider: String) {
         val clean = seriesId.trim().removePrefix("hongguo:").trim()
@@ -499,6 +500,12 @@ object HongguoStreamResolver {
                 for ((k, v) in signed.headers) {
                     reqBuilder.header(k, v)
                 }
+                val cookie = if (currentProfile.cookie.isNotBlank()) {
+                    currentProfile.cookie
+                } else {
+                    "install_id=$installId; ttreq=1; store-region=cn; store-region-src=did"
+                }
+                reqBuilder.header("Cookie", cookie)
                 val resp = client.newCall(reqBuilder.build()).execute()
                 val statusCode = resp.code
                 val body = resp.body?.string().orEmpty()
@@ -605,9 +612,13 @@ object HongguoStreamResolver {
             .header("User-Agent", VendorConstants.VIDEO_UA)
             .header("Accept", "application/json; charset=utf-8")
 
-        if (profile.cookie.isNotBlank()) {
-            reqBuilder.header("Cookie", profile.cookie)
+        val installId = profile.values["iid"] ?: profile.values["install_id"] ?: ""
+        val cookie = if (profile.cookie.isNotBlank()) {
+            profile.cookie
+        } else {
+            "install_id=$installId; ttreq=1; store-region=cn; store-region-src=did"
         }
+        reqBuilder.header("Cookie", cookie)
 
         try {
             val resp = client.newCall(reqBuilder.build()).execute()
@@ -663,9 +674,13 @@ object HongguoStreamResolver {
                         reqBuilder.header(k, v)
                     }
                 }
-                if (profile.cookie.isNotBlank()) {
-                    reqBuilder.header("Cookie", profile.cookie)
+                val installId = profile.values["iid"] ?: profile.values["install_id"] ?: ""
+                val cookie = if (profile.cookie.isNotBlank()) {
+                    profile.cookie
+                } else {
+                    "install_id=$installId; ttreq=1; store-region=cn; store-region-src=did"
                 }
+                reqBuilder.header("Cookie", cookie)
 
                 val resp = client.newCall(reqBuilder.build()).execute()
                 if (resp.isSuccessful) {
@@ -762,9 +777,13 @@ object HongguoStreamResolver {
             reqBuilder.header("X-SS-DP", "8662")
             reqBuilder.header("Lc", "101")
             reqBuilder.header("X-Reading-Request", "$stamp-$nonce")
-            if (profile.cookie.isNotBlank()) {
-                reqBuilder.header("Cookie", profile.cookie)
+            val installId = profile.values["iid"] ?: profile.values["install_id"] ?: ""
+            val cookie = if (profile.cookie.isNotBlank()) {
+                profile.cookie
+            } else {
+                "install_id=$installId; ttreq=1; store-region=cn; store-region-src=did"
             }
+            reqBuilder.header("Cookie", cookie)
 
             val resp = client.newCall(reqBuilder.build()).execute()
             if (resp.isSuccessful) {
@@ -1043,6 +1062,15 @@ object HongguoStreamResolver {
      * 5. 官方 Web 试看直链平滑保障
      */
     fun resolve(vid: String, maxQuality: Int = 1080, seriesId: String = ""): Map<String, Any?> {
+        resolveLock.lock()
+        try {
+            return doResolve(vid, maxQuality, seriesId)
+        } finally {
+            resolveLock.unlock()
+        }
+    }
+
+    private fun doResolve(vid: String, maxQuality: Int = 1080, seriesId: String = ""): Map<String, Any?> {
         val cleanVid = vid.trim()
         if (!cleanVid.matches(Regex("[0-9]{1,32}"))) {
             throw IllegalArgumentException("Invalid vid: $vid")

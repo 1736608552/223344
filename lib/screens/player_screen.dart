@@ -537,7 +537,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           } catch (_) {}
         }());
 
-        // 关键自愈：进入后默认展示详情页与完整选集，预选中历史或首集，不强制自动切全屏
+        // 关键自愈：进入后预选中历史或首集，并自动秒开起播进入播放状态，消除卡在选集页面的体验缺陷
         if (mounted) {
           final targetEp = widget.videoInfo.index > 0
               ? (widget.videoInfo.index - 1).clamp(0, (widget.initialDetail!.episodes.length - 1).clamp(0, 9999))
@@ -545,6 +545,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           setState(() {
             _currentEpisodeIndex = targetEp;
           });
+          _playEpisode(targetEp);
         }
       }
     } else {
@@ -575,16 +576,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
     _bindPlayerListeners();
 
-    // 短剧进入时立刻在后台异步预拉取当前集与下一集的播放计划，消除首播等待
-    if (isShortDrama) {
-      final dramaId = widget.videoInfo.id.isNotEmpty
-          ? widget.videoInfo.id
-          : (_selectedSource?.id ?? '');
-      if (dramaId.isNotEmpty) {
-        unawaited(DuanjuCoreBridge.instance.prefetchEpisode(dramaId, _currentEpisodeIndex + 1));
-        unawaited(DuanjuCoreBridge.instance.prefetchEpisode(dramaId, _currentEpisodeIndex + 2));
-      }
-    }
+    // 短剧起播由 _playEpisode 统一调度，当前集起播成功后再异步预取下一集，杜绝进页瞬间并发抢占同一设备号触发风控
 
     // ★ v2.5.65: 高精度进度条轮询 (100ms 一次, 让白点跟实际位置同步)
     _positionPollTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
@@ -3032,6 +3024,8 @@ class _PlayerScreenState extends State<PlayerScreen>
         setState(() {
           _currentEpisodeIndex = targetEpisodeIndex;
         });
+        // 短剧历史恢复后自动秒开起播，绝不将用户卡在详情选集页
+        _playEpisode(targetEpisodeIndex);
       }
       return;
     }
@@ -4281,6 +4275,24 @@ class _PlayerScreenState extends State<PlayerScreen>
     // 绝对安全防线：若尚未成功解析为 http 直链，绝不将纯数字占位符传给播放内核
     if (!actualSourceUrl.startsWith('http')) {
       if (mounted) {
+        // 自愈防线：若当前集（如第12集）因风控暂未取得有效流且 index > 0，自动降级以第1集秒开起播，确保播放器一定能打开并进入播放状态
+        if (isShortDrama && index > 0) {
+          DiaryService.add('[短剧] 第${index + 1}集暂受官方风控，自动平滑降级起播第1集');
+          _playEpisode(0);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('第${index + 1}集暂受官方接口风控，已为您秒开体验集，稍后可重试'),
+              duration: const Duration(seconds: 4),
+              action: SnackBarAction(
+                label: '查看日记',
+                textColor: const Color(0xFF38BDF8),
+                onPressed: _showPlaybackDiagnosticSheet,
+              ),
+            ),
+          );
+          return;
+        }
+
         final hintText = (isShortDrama && index >= 3)
             ? '第${index + 1}集为官方VIP保护剧集，前3集可免费秒开体验'
             : '第${index + 1}集视频地址解析中或受设备风控，可点击复制日记发给开发者修复';
