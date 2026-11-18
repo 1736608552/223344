@@ -197,7 +197,7 @@ internal object VendorConstants {
             "is_android_pad_screen" to "0"
         )
     // === 红果官方内核免重装热更新引擎 (带 APK 升级防冲突版本锁) ===
-    const val BUILTIN_APP_VERSION_CODE = 20871
+    const val BUILTIN_APP_VERSION_CODE = 20872
     private const val KEY_HOT_BASE_APP_VER = "key_hot_base_app_ver"
     private const val KEY_HOT_CONFIG_JSON = "key_hot_config_json"
 
@@ -334,7 +334,11 @@ internal object VendorConstants {
 
         // 通道 A: 拉取仓库托管的标准热更新 JSON 清单
         val manifestUrls = listOf(
+            "https://fastly.jsdelivr.net/gh/1736608552/223344@main/assets/hongguo_hot_config.json",
+            "https://cdn.jsdelivr.net/gh/1736608552/223344@main/assets/hongguo_hot_config.json",
+            "https://testingcf.jsdelivr.net/gh/1736608552/223344@main/assets/hongguo_hot_config.json",
             "https://ghfast.top/https://raw.githubusercontent.com/1736608552/223344/main/assets/hongguo_hot_config.json",
+            "https://ghproxy.net/https://raw.githubusercontent.com/1736608552/223344/main/assets/hongguo_hot_config.json",
             "https://raw.githubusercontent.com/1736608552/223344/main/assets/hongguo_hot_config.json"
         )
         for (url in manifestUrls) {
@@ -351,11 +355,19 @@ internal object VendorConstants {
 
         // 通道 B: 直接从上游 aston314/hongguo-tv 最新源码实时提取参数与 V5 密钥常量 (即使未发版也能秒跟进上游)
         val goModelUrls = listOf(
+            "https://fastly.jsdelivr.net/gh/aston314/hongguo-tv@main/core/cmd/hongguotv/minireel_mobile_v5.go",
+            "https://cdn.jsdelivr.net/gh/aston314/hongguo-tv@main/core/cmd/hongguotv/minireel_mobile_v5.go",
+            "https://testingcf.jsdelivr.net/gh/aston314/hongguo-tv@main/core/cmd/hongguotv/minireel_mobile_v5.go",
             "https://ghfast.top/https://raw.githubusercontent.com/aston314/hongguo-tv/main/core/cmd/hongguotv/minireel_mobile_v5.go",
+            "https://ghproxy.net/https://raw.githubusercontent.com/aston314/hongguo-tv/main/core/cmd/hongguotv/minireel_mobile_v5.go",
             "https://raw.githubusercontent.com/aston314/hongguo-tv/main/core/cmd/hongguotv/minireel_mobile_v5.go"
         )
         val goConstUrls = listOf(
+            "https://fastly.jsdelivr.net/gh/aston314/hongguo-tv@main/core/cmd/hongguotv/playback_v5_constants.go",
+            "https://cdn.jsdelivr.net/gh/aston314/hongguo-tv@main/core/cmd/hongguotv/playback_v5_constants.go",
+            "https://testingcf.jsdelivr.net/gh/aston314/hongguo-tv@main/core/cmd/hongguotv/playback_v5_constants.go",
             "https://ghfast.top/https://raw.githubusercontent.com/aston314/hongguo-tv/main/core/cmd/hongguotv/playback_v5_constants.go",
+            "https://ghproxy.net/https://raw.githubusercontent.com/aston314/hongguo-tv/main/core/cmd/hongguotv/playback_v5_constants.go",
             "https://raw.githubusercontent.com/aston314/hongguo-tv/main/core/cmd/hongguotv/playback_v5_constants.go"
         )
         var goModel = ""

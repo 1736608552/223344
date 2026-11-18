@@ -773,10 +773,50 @@ object AppDataService {
         prefs.edit().putBoolean(KEY_BANGUMI_PROXY_ENABLED, enabled).apply()
     }
 
+    private const val KEY_GITHUB_DATA_SOURCE = "github_data_source"
+
+    enum class GithubDataSource(val key: String, val displayName: String) {
+        CDN("cdn", "CDN 加速"),
+        WORKER("github_proxy", "GitHub Worker 加速"),
+        DIRECT("direct", "直连");
+
+        companion object {
+            fun fromKey(key: String?): GithubDataSource =
+                entries.find { it.key == key } ?: CDN
+
+            fun fromDisplayName(name: String?): GithubDataSource =
+                entries.find { it.displayName == name } ?: CDN
+        }
+    }
+
+    fun getGithubDataSourceSync(): GithubDataSource {
+        val saved = prefs.getString(KEY_GITHUB_DATA_SOURCE, null)
+        if (!saved.isNullOrBlank()) {
+            return GithubDataSource.fromKey(saved)
+        }
+        val legacyEnabled = prefs.getBoolean(KEY_GITHUB_PROXY_ENABLED, true)
+        return if (legacyEnabled) GithubDataSource.CDN else GithubDataSource.DIRECT
+    }
+
+    fun getGithubDataSourceDisplayName(): String =
+        getGithubDataSourceSync().displayName
+
+    suspend fun saveGithubDataSource(displayName: String) = withContext(Dispatchers.IO) {
+        val src = GithubDataSource.fromDisplayName(displayName)
+        prefs.edit()
+            .putString(KEY_GITHUB_DATA_SOURCE, src.key)
+            .putBoolean(KEY_GITHUB_PROXY_ENABLED, src != GithubDataSource.DIRECT)
+            .apply()
+    }
+
     fun isGithubProxyEnabledSync(): Boolean =
-        prefs.getBoolean(KEY_GITHUB_PROXY_ENABLED, true)
+        getGithubDataSourceSync() != GithubDataSource.DIRECT
 
     suspend fun setGithubProxyEnabled(enabled: Boolean) = withContext(Dispatchers.IO) {
-        prefs.edit().putBoolean(KEY_GITHUB_PROXY_ENABLED, enabled).apply()
+        val next = if (enabled) GithubDataSource.CDN else GithubDataSource.DIRECT
+        prefs.edit()
+            .putString(KEY_GITHUB_DATA_SOURCE, next.key)
+            .putBoolean(KEY_GITHUB_PROXY_ENABLED, enabled)
+            .apply()
     }
 }

@@ -48,7 +48,7 @@ class _UserMenuState extends State<UserMenu> {
   String _bangumiImageSource = 'direct';
   // v2.5.29: 短剧 + GitHub 数据源选择项 (跟 TMDB/Bangumi 同 UX)
   String _shortDramaDataSource = 'direct';
-  String _githubDataSource = 'direct';
+  String _githubDataSource = 'cdn';
   String _version = '';
   bool _preferSpeedTest = true;
   bool _localSearch = false;
@@ -1920,6 +1920,7 @@ class _UserMenuState extends State<UserMenu> {
                 currentValue: UserDataService.getGithubDataSourceDisplayName(
                     _githubDataSource),
                 options: const [
+                  'CDN 加速',
                   'GitHub Worker 加速',
                   '直连',
                 ],
@@ -1931,15 +1932,15 @@ class _UserMenuState extends State<UserMenu> {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
                         content: Text(
-                          '请先在下方「代理 URL」输入 worker 地址, 已自动回落「直连」',
+                          '请先在下方「代理 URL」输入 worker 地址, 已自动切换为「CDN 加速」',
                         ),
                         duration: Duration(seconds: 3),
                       ),
                     );
-                    await UserDataService.saveGithubDataSource('direct');
+                    await UserDataService.saveGithubDataSource('cdn');
                     if (!mounted) return;
                     setState(() {
-                      _githubDataSource = 'direct';
+                      _githubDataSource = 'cdn';
                     });
                     return;
                   }
@@ -1950,12 +1951,11 @@ class _UserMenuState extends State<UserMenu> {
                   });
                 },
                 icon: LucideIcons.code,
-                // v2.5.32: github -> code. lucide_icons_flutter 不含 github (Simple Icons 才
-                //   有), v2.5.29 加这个选项时就编译不过, 所有 build 失败都卡 user_menu.dart:1816.
-                //   code icon 视觉上跟 <> 风格接近, 表达代码/开发/github 概念够用.
-                iconColor: _tmdbProxyDomain.isEmpty
-                    ? const Color(0xFF9ca3af)
-                    : const Color(0xFF22C55E),
+                iconColor: (_githubDataSource == 'cdn' ||
+                        (_githubDataSource == 'github_proxy' &&
+                            _tmdbProxyDomain.isNotEmpty))
+                    ? const Color(0xFF22C55E)
+                    : const Color(0xFF9ca3af),
               ),
               _buildDivider(),
               // v2.1.41: 代理 URL 输入行 — 用户自部署 [djseven/tmdb-proxy]

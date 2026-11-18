@@ -1,5 +1,19 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.72 (2026-11-18)
+
+### 手机端与TV端「GitHub加速源」全面新增「CDN 加速」免配置默认项 + 短剧热更新接入多路全球CDN镜像
+
+#### 核心自愈与升级说明
+1. **手机端与 TV 端「GitHub 数据源 / GitHub 加速」新增「CDN 加速」选项**：
+   - **手机端 (`user_menu.dart` / `user_data_service.dart` / `version_service.dart`)**：在「设置 → GitHub 数据源」中新增并默认启用 **「CDN 加速」**（形成 `CDN 加速` / `GitHub Worker 加速` / `直连` 三选一），无需配置任何私有 Cloudflare Worker URL 即可通过 `jsDelivr`（`fastly` / `cdn` / `testingcf`）与 `ghfast.top` / `ghproxy.net` 毫秒级检查更新与高速下载 APK；
+   - **TV 电视端 (`SettingsTab.kt` / `AppDataService.kt` / `UpdateService.kt`)**：在「设置 → 网络加速 → GitHub 加速 (更新/下载)」中升级为弹窗选择 **「CDN 加速」**（默认）、**「GitHub Worker 加速」**、**「直连」** 三种模式。
+2. **短剧免重装热更内核接入多路 CDN 镜像 (`VendorConstants.kt`)**：
+   - 为短剧热更新通道注入 `fastly.jsdelivr.net`、`cdn.jsdelivr.net`、`testingcf.jsdelivr.net`、`ghfast.top`、`ghproxy.net` 多级 CDN 自动轮询加速。
+3. **版本升级**：
+   - 版本更新至 `v2.7.72`（versionCode: `20872`），全平台构建产物自动分发至 `1736608552/LunaTV-Release`。
+
+
 ## v2.7.71 (2026-11-18)
 
 ### 新增短剧栏目 App 内一键免重装热更新红果官方内核 (手机+TV双端) + APK跨版本升级防冲突保护锁 + 正常播放零开销

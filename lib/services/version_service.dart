@@ -61,11 +61,17 @@ class VersionService {
 
       debugPrint('[VersionService] checking update, currentVersion: $currentVersion');
 
-      // 通道 1：优先尝试 GitHub API（支持用户自建 Proxy 或直连）
-      VersionInfo? info = await _checkViaGithubApi(currentVersion);
-
-      // 通道 2：若 GitHub API 遇到 GFW 拦截、DNS 污染或 403 频限，无缝降级走全球 jsDelivr 极速 CDN
-      info ??= await _checkViaCdnMirrors(currentVersion);
+      final ghSource = UserDataService.getGithubDataSourceSync();
+      VersionInfo? info;
+      if (ghSource == 'cdn') {
+        // CDN 加速模式：优先走全球 jsDelivr / CDN 镜像秒级读取，失败再降级 GitHub API
+        info = await _checkViaCdnMirrors(currentVersion);
+        info ??= await _checkViaGithubApi(currentVersion);
+      } else {
+        // Worker 加速或直连模式：优先尝试 GitHub API，失败无缝降级 CDN 镜像
+        info = await _checkViaGithubApi(currentVersion);
+        info ??= await _checkViaCdnMirrors(currentVersion);
+      }
 
       if (info != null) {
         DiaryService.add('[Version] update found: current=$currentVersion, latest=${info.latestVersion}');
@@ -222,8 +228,9 @@ class VersionService {
   static Future<VersionInfo?> _checkViaGithubApi(String currentVersion) async {
     try {
       final osName = Platform.operatingSystem;
+      final targetApiUrl = UserDataService.buildGithubApiUrl(githubApiUrl);
       final response = await http.get(
-        Uri.parse(githubApiUrl),
+        Uri.parse(targetApiUrl),
         headers: {
           'Accept': 'application/vnd.github.v3+json',
           'User-Agent': 'LunaTV/$currentVersion ($osName)',

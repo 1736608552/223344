@@ -204,8 +204,10 @@ fun SettingsTab(
     var workerProxyUrl by remember { mutableStateOf("") }
     var tmdbProxyEnabled by remember { mutableStateOf(true) }
     var bangumiProxyEnabled by remember { mutableStateOf(true) }
-    var githubProxyEnabled by remember { mutableStateOf(true) }
+    var githubDataSource by remember { mutableStateOf("CDN 加速") }
+    var showGithubDataSourceDialog by remember { mutableStateOf(false) }
     val workerProxyFocusRequester = remember { FocusRequester() }
+    val githubDataSourceFocusRequester = remember { FocusRequester() }
 
     // 缓存清理确认弹框状态
     var showClearDoubanCacheDialog by remember { mutableStateOf(false) }
@@ -277,7 +279,7 @@ fun SettingsTab(
         workerProxyUrl = AppDataService.getWorkerProxyUrlSync()
         tmdbProxyEnabled = AppDataService.isTmdbProxyEnabledSync()
         bangumiProxyEnabled = AppDataService.isBangumiProxyEnabledSync()
-        githubProxyEnabled = AppDataService.isGithubProxyEnabledSync()
+        githubDataSource = AppDataService.getGithubDataSourceDisplayName()
     }
 
     Column(
@@ -461,13 +463,10 @@ fun SettingsTab(
                 )
                 SettingRow(
                     label = "GitHub 加速 (更新/下载)",
-                    value = if (githubProxyEnabled) "开启" else "关闭",
+                    value = githubDataSource.ifEmpty { "CDN 加速" },
                     showDivider = false,
-                    onClick = {
-                        val next = !githubProxyEnabled
-                        githubProxyEnabled = next
-                        coroutineScope.launch { AppDataService.setGithubProxyEnabled(next) }
-                    }
+                    onClick = { showGithubDataSourceDialog = true },
+                    modifier = Modifier.focusRequester(githubDataSourceFocusRequester)
                 )
 
                 if (!isLocalMode) {
@@ -746,6 +745,27 @@ fun SettingsTab(
                     .apply { if (on) add(key) else remove(key) }
                 coroutineScope.launch { AppDataService.setDanmakuSourceEnabled(key, on) }
             },
+        )
+    }
+
+    // GitHub 加速源选择弹框 (CDN 加速 / GitHub Worker 加速 / 直连)
+    AnimatedSelectDialog(
+        visible = showGithubDataSourceDialog,
+        onDismiss = { showGithubDataSourceDialog = false },
+        onClosed = { githubDataSourceFocusRequester.requestFocus() }
+    ) { onClose ->
+        SourceSelectDialogContent(
+            title = "选择 GitHub 加速源",
+            options = AppDataService.GithubDataSource.entries.map { it.displayName },
+            currentValue = githubDataSource,
+            onSelected = { displayName ->
+                coroutineScope.launch {
+                    AppDataService.saveGithubDataSource(displayName)
+                    githubDataSource = displayName
+                }
+                onClose()
+            },
+            onDismiss = onClose
         )
     }
 

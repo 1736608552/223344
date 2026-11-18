@@ -692,11 +692,13 @@ class UserDataService {
     String cleaned;
     if (key == 'github_proxy') {
       final proxy = getTmdbProxyDomainSync();
-      cleaned = proxy.isNotEmpty ? 'github_proxy' : 'direct';
+      cleaned = proxy.isNotEmpty ? 'github_proxy' : 'cdn';
+    } else if (key == 'cdn') {
+      cleaned = 'cdn';
     } else if (key == 'direct') {
       cleaned = 'direct';
     } else {
-      cleaned = 'direct';
+      cleaned = 'cdn';
     }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_githubDataSourceKey, cleaned);
@@ -707,12 +709,12 @@ class UserDataService {
     if (_githubDataSourceCache != null) return _githubDataSourceCache!;
     final prefs = await SharedPreferences.getInstance();
     final v = prefs.getString(_githubDataSourceKey);
-    if (v != null && (v == 'github_proxy' || v == 'direct')) {
+    if (v != null && (v == 'cdn' || v == 'github_proxy' || v == 'direct')) {
       _githubDataSourceCache = v;
       return v;
     }
     final proxy = getTmdbProxyDomainSync();
-    final def = proxy.isNotEmpty ? 'github_proxy' : 'direct';
+    final def = proxy.isNotEmpty ? 'github_proxy' : 'cdn';
     _githubDataSourceCache = def;
     return def;
   }
@@ -720,11 +722,13 @@ class UserDataService {
   static String getGithubDataSourceSync() {
     if (_githubDataSourceCache != null) return _githubDataSourceCache!;
     final proxy = getTmdbProxyDomainSync();
-    return proxy.isNotEmpty ? 'github_proxy' : 'direct';
+    return proxy.isNotEmpty ? 'github_proxy' : 'cdn';
   }
 
   static String getGithubDataSourceDisplayName(String key) {
     switch (key) {
+      case 'cdn':
+        return 'CDN 加速';
       case 'github_proxy':
         return 'GitHub Worker 加速';
       case 'direct':
@@ -735,6 +739,8 @@ class UserDataService {
 
   static String getGithubDataSourceKeyFromDisplayName(String name) {
     switch (name) {
+      case 'CDN 加速':
+        return 'cdn';
       case 'GitHub Worker 加速':
         return 'github_proxy';
       case '直连':
@@ -1377,7 +1383,12 @@ class UserDataService {
       final repo = m.group(2);
       final tag = m.group(3);
       final asset = m.group(4);
-      if (proxy.isNotEmpty) {
+      if (githubSource == 'cdn') {
+        final wrapped = 'https://ghfast.top/$originalUrl';
+        DiaryService.add('[GitHub] buildAssetUrl: source=cdn, out=$wrapped');
+        _githubAssetUrlCache[originalUrl] = wrapped;
+        return wrapped;
+      } else if (proxy.isNotEmpty) {
         final wrapped = '$proxy/github/asset/$owner/$repo/$tag/$asset';
         DiaryService.add(
             '[GitHub] buildAssetUrl: source=github_proxy, worker=$proxy');
@@ -1496,11 +1507,11 @@ class UserDataService {
     if (_githubDataSourceCache == null) {
       final prefs = await SharedPreferences.getInstance();
       final stored = prefs.getString(_githubDataSourceKey);
-      if (stored == 'github_proxy' || stored == 'direct') {
+      if (stored == 'cdn' || stored == 'github_proxy' || stored == 'direct') {
         _githubDataSourceCache = stored;
       } else {
         final proxy = _tmdbProxyDomainCache ?? '';
-        _githubDataSourceCache = proxy.isNotEmpty ? 'github_proxy' : 'direct';
+        _githubDataSourceCache = proxy.isNotEmpty ? 'github_proxy' : 'cdn';
       }
     }
     // v2.5.25: 缓存 serverUrl + cookies — 之前每次 API 请求都异步读

@@ -37,12 +37,17 @@ object UpdateService {
                model.contains("hisense", ignoreCase = true)
     }
 
-    /** 构造 GitHub API URL（不走用户私有代理，保障官方更新独立可用） */
+    /** 构造 GitHub API URL（支持 Worker 加速与直连） */
     fun buildGithubApiUrl(originalUrl: String): String {
+        val mode = AppDataService.getGithubDataSourceSync()
+        val worker = AppDataService.getWorkerProxyUrlSync()
+        if (mode == AppDataService.GithubDataSource.WORKER && worker.isNotEmpty() && originalUrl.startsWith("https://api.github.com")) {
+            return originalUrl.replaceFirst("https://api.github.com", "$worker/github")
+        }
         return originalUrl
     }
 
-    /** 构造 GitHub Release 资产下载 URL（默认全走国内极速 CDN 加速，不依赖代理） */
+    /** 构造 GitHub Release 资产下载 URL（支持 CDN 加速 / GitHub Worker 加速 / 直连） */
     fun buildGithubAssetUrl(originalUrl: String): String {
         if (originalUrl.isEmpty()) return originalUrl
         if (originalUrl.contains("ghfast.top") ||
@@ -54,6 +59,18 @@ object UpdateService {
             "https://github.com/" + originalUrl.substringAfter("github.com/")
         } else {
             originalUrl
+        }
+        val mode = AppDataService.getGithubDataSourceSync()
+        val worker = AppDataService.getWorkerProxyUrlSync()
+        if (mode == AppDataService.GithubDataSource.WORKER && worker.isNotEmpty()) {
+            val m = Regex("^https://github\\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/([^?#]+)$").find(raw)
+            if (m != null) {
+                val (owner, repo, tag, asset) = m.destructured
+                return "$worker/github/asset/$owner/$repo/$tag/$asset"
+            }
+        }
+        if (mode == AppDataService.GithubDataSource.DIRECT) {
+            return raw
         }
         return "https://ghfast.top/$raw"
     }
