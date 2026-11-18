@@ -233,7 +233,8 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         if (controller.isPlaying) saveProgress(force = true)
         controller.togglePlay(); flashTick++; wake()
     }
-    fun openPanel() { controlsVisible = true; panelTab = PanelTab.Detail; panelOpen = true }
+    fun openPanel() { controlsVisible = true; panelTab = if (controller.error != null) PanelTab.Diagnostic else PanelTab.Detail; panelOpen = true }
+    fun openDiagnostic() { controlsVisible = true; panelTab = PanelTab.Diagnostic; panelOpen = true }
 
     // 优选测速:并发测速 → 实时按分重排面板 sources → 每源出分;完成「只重排不切源」(不动 currentSourceKey)。
     val startSpeedTest: () -> Unit = handler@{
@@ -372,6 +373,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                 var resolvedUrl = ""
                 var decryptionKey = ""
                 var vid = ""
+                org.moontechlab.selenetv.hongguo.HongguoDiagnostic.setContext(title, index + 1, vid)
 
                 // 分集 vid 解析（带网络抖动自愈重试）
                 for (vAttempt in 0..1) {
@@ -384,7 +386,10 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                             }
                             vids.getOrNull(index) ?: ""
                         }
-                        if (vid.isNotEmpty()) break
+                        if (vid.isNotEmpty()) {
+                            org.moontechlab.selenetv.hongguo.HongguoDiagnostic.setContext(title, index + 1, vid)
+                            break
+                        }
                     } catch (e: Exception) {
                         android.util.Log.w("PlayerScreen", "获取短剧 vid 异常 (attempt $vAttempt): ${e.message}")
                         if (vAttempt == 0) kotlinx.coroutines.delay(300)
@@ -1078,7 +1083,12 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                     .background(Color(0xCC000000))
                     .padding(horizontal = 20.dp, vertical = 12.dp),
             ) {
-                Text(text = "此源播放失败，请尝试换源", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.W600)
+                Text(
+                    text = if (isDramaMode) "短剧播放异常 · 按菜单键呼出面板查看【日记】" else "此源播放失败，请尝试换源",
+                    color = Color.White,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.W600,
+                )
             }
         }
 

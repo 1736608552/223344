@@ -149,20 +149,29 @@ class PlaybackDeviceSession {
         // 3. 若本次因断网或 IP 冷却未拿到新号，优先回退使用本地已持久化的真实身份
         if (registeredDevice == null) {
             loadPersistedOfficialProfile()?.let { persisted ->
+                HongguoDiagnostic.log("INFO", "session", "RESTORE_PERSISTED_PROFILE", "从本地存储复用上一次成功的注册身份: did=${persisted.values["device_id"]}")
+                HongguoDiagnostic.updateReport(
+                    stage = "session",
+                    code = "RESTORE_OK",
+                    summary = "复用本地有效设备身份 (did=${persisted.values["device_id"]})"
+                )
                 ready = persisted
                 return persisted
             }
         }
 
-        val device = registeredDevice ?: DeviceRegister.Registered(
-            deviceId = VendorConstants.installDeviceId,
-            installId = VendorConstants.installIid,
-            cookies = mapOf(
-                "install_id" to VendorConstants.installIid,
-                "store-region" to "cn",
-                "store-region-src" to "did"
+        val device = registeredDevice ?: run {
+            HongguoDiagnostic.log("WARN", "session", "FALLBACK_VIRTUAL_DEVICE", "所有注册通道均未返回有效设备，降级使用内置备用虚拟身份 (did=${VendorConstants.installDeviceId})")
+            DeviceRegister.Registered(
+                deviceId = VendorConstants.installDeviceId,
+                installId = VendorConstants.installIid,
+                cookies = mapOf(
+                    "install_id" to VendorConstants.installIid,
+                    "store-region" to "cn",
+                    "store-region-src" to "did"
+                )
             )
-        )
+        }
 
         val cookieHeader = device.cookies
             .filterKeys {

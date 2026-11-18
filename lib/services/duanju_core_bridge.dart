@@ -13,6 +13,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:luna_tv/danmaku/models/danmaku_comment.dart';
 import 'package:luna_tv/danmaku/models/hongguo_danmaku_emojis.dart';
+import 'package:luna_tv/services/diary_service.dart';
 
 /// 短剧播放计划与CENC解密包模型 (100%对齐红果鉴)
 class DuanjuPlaybackPlan {
@@ -1227,6 +1228,48 @@ class DuanjuCoreBridge {
     unawaited(getPlaybackPlan(dramaId: cleanId, episode: episode, quality: quality));
   }
 
+  /// 获取红果短剧原生播放诊断报告 (对齐标杆 hongguo-tv 诊断面板)
+  Future<String> getDiagnosticReport() async {
+    if (Platform.isAndroid) {
+      try {
+        const channel = MethodChannel('com.example.lunatv/hongguo_resolver');
+        final res = await channel.invokeMethod<Map<dynamic, dynamic>>('getDiagnosticReport');
+        if (res != null && res['summary'] != null) {
+          return res['summary'].toString();
+        }
+      } catch (e) {
+        return '获取原生诊断报告异常: $e';
+      }
+    }
+    return '非 Android 原生通道或未初始化';
+  }
+
+  /// 获取红果短剧原生格式化全量日志
+  Future<String> getDiagnosticLogs() async {
+    if (Platform.isAndroid) {
+      try {
+        const channel = MethodChannel('com.example.lunatv/hongguo_resolver');
+        final res = await channel.invokeMethod<Map<dynamic, dynamic>>('getDiagnosticLogs');
+        if (res != null && res['formatted'] != null) {
+          return res['formatted'].toString();
+        }
+      } catch (e) {
+        return '获取原生日志异常: $e';
+      }
+    }
+    return '';
+  }
+
+  /// 清空原生与短剧诊断日志
+  Future<void> clearDiagnosticLogs() async {
+    if (Platform.isAndroid) {
+      try {
+        const channel = MethodChannel('com.example.lunatv/hongguo_resolver');
+        await channel.invokeMethod<bool>('clearDiagnosticLogs');
+      } catch (_) {}
+    }
+  }
+
   /// 获取单集短剧的完整播放计划（包含直链、CENC解密密钥与多分辨率映射 + In-Flight合并）
   Future<DuanjuPlaybackPlan?> getPlaybackPlan({
     required String dramaId,
@@ -1260,6 +1303,7 @@ class DuanjuCoreBridge {
     String cacheKey,
   ) async {
     // 获取短剧选集 vid 列表
+    DiaryService.add('[短剧] 开始获取第$episode集播放计划 (cleanId=$cleanId, quality=$quality)');
     final vidList = await fetchEpisodeVidList(cleanId);
     String vid = '';
     if (vidList.isNotEmpty) {
@@ -1268,10 +1312,12 @@ class DuanjuCoreBridge {
     } else if (RegExp(r'^\d{10,25}$').hasMatch(cleanId)) {
       vid = cleanId;
     }
+    DiaryService.add('[短剧] 匹配选集 vid=$vid (总集数=${vidList.length})');
 
     // 通道 1 (最高优先级): Android 原生层红果短剧签名与解密通道 (官方 preload/v1 超清直取，支持 1080P/720P/480P + CENC 解密)
     if (Platform.isAndroid && vid.isNotEmpty) {
       try {
+        DiaryService.add('[短剧] 通道1: 调用 Android 原生 HongguoStreamResolver 签名取流');
         const channel = MethodChannel('com.example.lunatv/hongguo_resolver');
         final res = await channel.invokeMethod<Map<dynamic, dynamic>>('resolveStream', {
           'vid': vid,
@@ -1324,13 +1370,19 @@ class DuanjuCoreBridge {
             _playbackMultiResCache['$cleanId-$episode'] = multiMap;
             _playbackResolutionCache[cacheKey] = '${actQ}P';
             _playbackResolutionCache['$cleanId-$episode'] = '${actQ}P';
+            DiaryService.add('[短剧] 通道1 原生取流成功: ep=$episode, actQ=${actQ}P, keyLen=${decKey.length}, url=${streamUrl.substring(0, math.min(streamUrl.length, 55))}...');
             if (kDebugMode) {
               print('[DuanjuBridge] 原生 HongguoStreamResolver 极速取流解密成功: ep=$episode, vid=$vid, actQ=${actQ}P, decKey=$decKey, url=$streamUrl');
             }
             return plan;
+          } else {
+            DiaryService.add('[短剧] 通道1 原生返回地址无效: url=$streamUrl');
           }
+        } else {
+          DiaryService.add('[短剧] 通道1 原生返回空');
         }
       } catch (e) {
+        DiaryService.add('[短剧] 通道1 原生取流异常: $e');
         if (kDebugMode) {
           print('[DuanjuBridge] 原生 HongguoStreamResolver 解析异常: $e');
         }
@@ -1339,16 +1391,20 @@ class DuanjuCoreBridge {
 
     // 通道 2: 官方 App 原生预加载接口（带 X-Gorgon 签名 + preload/v1 提取全分辨率与真实 CENC Key）
     if (vid.isNotEmpty) {
+      DiaryService.add('[短剧] 通道2: 尝试官方 App 原生预加载接口 (preload/v1)');
       final appPlan = await _fetchHongguoAppPlaybackPlan(cleanId, vid, episode, quality: quality);
       if (appPlan != null && appPlan.url.isNotEmpty) {
         _planCache[cacheKey] = appPlan;
         _playbackUrlCache[cacheKey] = appPlan.url;
         _playbackMultiResCache[cacheKey] = appPlan.multiMap;
         _playbackResolutionCache[cacheKey] = appPlan.resolution;
+        DiaryService.add('[短剧] 通道2 官方App预加载解析成功: ep=$episode, decKey=${appPlan.decryptionKey.isNotEmpty}, url=${appPlan.url.substring(0, math.min(appPlan.url.length, 55))}...');
         if (kDebugMode) {
           print('[DuanjuBridge] 官方App接口解析成功: ep=$episode, decKey=${appPlan.decryptionKey}, url=${appPlan.url}, quality=${appPlan.resolution}, qualities=${appPlan.qualities}');
         }
         return appPlan;
+      } else {
+        DiaryService.add('[短剧] 通道2 官方App预加载接口返回空');
       }
     }
 

@@ -30,6 +30,7 @@ class MainActivity : FlutterActivity() {
                     val vid = call.argument<String>("vid") ?: ""
                     val maxQuality = call.argument<Int>("maxQuality") ?: 1080
                     val seriesId = call.argument<String>("seriesId") ?: ""
+                    org.moontechlab.lunatv.hongguo.HongguoDiagnostic.setContext(seriesId, 1, vid)
                     Thread {
                         try {
                             val repo = org.moontechlab.lunatv.hongguo.ContentRepository()
@@ -97,6 +98,28 @@ class MainActivity : FlutterActivity() {
                             runOnUiThread { result.error("RESOLVE_ERROR", e.message, null) }
                         }
                     }.start()
+                }
+                "getDiagnosticLogs" -> {
+                    Thread {
+                        val logs = org.moontechlab.lunatv.hongguo.HongguoDiagnostic.getFormattedLogs()
+                        val list = org.moontechlab.lunatv.hongguo.HongguoDiagnostic.getLogs().map { it.toMap() }
+                        runOnUiThread {
+                            result.success(mapOf("formatted" to logs, "logs" to list))
+                        }
+                    }.start()
+                }
+                "getDiagnosticReport" -> {
+                    Thread {
+                        val report = org.moontechlab.lunatv.hongguo.HongguoDiagnostic.currentReport.toMap()
+                        val summary = org.moontechlab.lunatv.hongguo.HongguoDiagnostic.getDiagnosticReportSummary()
+                        runOnUiThread {
+                            result.success(mapOf("report" to report, "summary" to summary))
+                        }
+                    }.start()
+                }
+                "clearDiagnosticLogs" -> {
+                    org.moontechlab.lunatv.hongguo.HongguoDiagnostic.clear()
+                    result.success(true)
                 }
                 "fetchEpisodeVids" -> {
                     val seriesId = call.argument<String>("seriesId") ?: ""

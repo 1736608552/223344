@@ -20,6 +20,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import org.moontechlab.selenetv.hongguo.HongguoDiagnostic
 import org.moontechlab.selenetv.hongguo.HongguoRemoteVideo
 import org.moontechlab.selenetv.hongguo.HongguoVideoDataSource
 import org.moontechlab.selenetv.hongguo.MediaCrypto
@@ -157,9 +158,23 @@ class PlayerController(
             hasRenderedFirstFrameThisLoad = true
             mainHandler.removeCallbacks(bufferingWatchdogRunnable)
             error = null
+            HongguoDiagnostic.log("INFO", "player", "FIRST_FRAME", "首帧画面渲染成功 (起播正常)")
+            HongguoDiagnostic.updateReport(
+                stage = "player",
+                code = "PLAYING",
+                summary = "播放正常 (首帧已成功上屏渲染)"
+            )
         }
         override fun onPlaybackStateChanged(state: Int) {
             isBuffering = state == Player.STATE_BUFFERING
+            val stateName = when (state) {
+                Player.STATE_IDLE -> "IDLE"
+                Player.STATE_BUFFERING -> "BUFFERING"
+                Player.STATE_READY -> "READY"
+                Player.STATE_ENDED -> "ENDED"
+                else -> "UNKNOWN($state)"
+            }
+            HongguoDiagnostic.log("INFO", "player", "STATE_CHANGED", "播放器状态变更: $stateName")
             if (state == Player.STATE_BUFFERING && !hasRenderedFirstFrameThisLoad && currentRemoteVideo != null && !hasFallbackToRaw) {
                 mainHandler.removeCallbacks(bufferingWatchdogRunnable)
                 mainHandler.postDelayed(bufferingWatchdogRunnable, 4500L)
@@ -177,12 +192,21 @@ class PlayerController(
         }
         override fun onPlayerError(e: PlaybackException) {
             mainHandler.removeCallbacks(bufferingWatchdogRunnable)
-            android.util.Log.e("PlayerController", "ExoPlayer 异常: ${e.errorCodeName}, msg=${e.message}")
+            val errSummary = "ExoPlayer 异常: ${e.errorCodeName}(${e.errorCode}) ${e.message}"
+            android.util.Log.e("PlayerController", errSummary)
+            HongguoDiagnostic.log("ERROR", "player", "EXOPLAYER_ERROR", errSummary, mapOf("code" to e.errorCode, "name" to e.errorCodeName))
+            HongguoDiagnostic.updateReport(
+                stage = "player",
+                code = "EXOPLAYER_ERROR",
+                summary = errSummary,
+                lastError = e.message
+            )
             // 核心自愈机制：若在 CENC 解密管道加载中抛出异常（如缺少 saio/saiz 索引或 moov 不在开头），
             // 立即原地无缝回退到携带完整 headers (User-Agent + Referer) 的原生网络流播放，绝不黑屏挂死！
             if (currentRemoteVideo != null && !hasFallbackToRaw && lastUrl.isNotEmpty()) {
                 val (fbUrl, fbHeaders) = resolveFallbackPlayUrl()
                 android.util.Log.w("PlayerController", "短剧纯内存解密源播放受阻，原地自愈无缝降级到本地回环解密流: $fbUrl")
+                HongguoDiagnostic.log("WARN", "player", "FALLBACK_LOCAL_STREAM", "播放受阻，降级至本地回环代理流: $fbUrl")
                 hasFallbackToRaw = true
                 releaseCurrentRemoteVideo()
                 error = null
@@ -212,6 +236,7 @@ class PlayerController(
     @MainThread
     override fun loadRemoteVideo(remote: Any, startMs: Long, playWhenReady: Boolean) {
         releaseCurrentRemoteVideo()
+        HongguoDiagnostic.log("INFO", "player", "LOAD_REMOTE", "加载内存解密流: startMs=$startMs")
         error = null
         hasStarted = false
         hasRenderedFirstFrameThisLoad = false
@@ -252,6 +277,7 @@ class PlayerController(
         headers: Map<String, String>? = null,
     ) {
         releaseCurrentRemoteVideo()
+        HongguoDiagnostic.log("INFO", "player", "LOAD_DIRECT", "加载直接播放流: url=${url.take(80)}... startMs=$startMs")
         error = null
         hasStarted = false
         hasRenderedFirstFrameThisLoad = false

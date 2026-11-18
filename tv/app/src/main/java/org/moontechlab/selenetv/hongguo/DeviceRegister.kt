@@ -137,6 +137,8 @@ object DeviceRegister {
 
         // 仅向官方唯一支持明文 JSON 注册的 HOST (log.snssdk.com) 发起单次请求，
         // 严禁向 log5-applog-* 发送明文 JSON（避免必返 100 字节 device_id:0 消耗同 IP 注册风控配额）
+        HongguoDiagnostic.log("INFO", "device_register", "START", "发起匿名播放设备注册 HOST=$HOST")
+        val startTime = System.currentTimeMillis()
         try {
             val req = Request.Builder()
                 .url("$HOST$PATH?$queryStr")
@@ -146,10 +148,26 @@ object DeviceRegister {
                 .post(bodyBytes.toRequestBody("application/json; charset=utf-8".toMediaType()))
                 .build()
             val registered = RequestScope.execute(http.newCall(req)) { resp ->
+                val code = resp.code
+                val text = resp.body?.string().orEmpty()
+                val respBytes = text.toByteArray(Charsets.UTF_8).size
+                val elapsed = System.currentTimeMillis() - startTime
                 if (resp.isSuccessful) {
-                    val text = resp.body?.string().orEmpty()
                     val parsed = parse(text, resp.headers("Set-Cookie"))
                     if (parsed != null) {
+                        HongguoDiagnostic.log(
+                            "INFO", "device_register", "DEVICE_REGISTER_OK",
+                            "设备注册成功 did=${parsed.deviceId} iid=${parsed.installId}",
+                            mapOf("code" to code, "bytes" to respBytes, "elapsed" to "${elapsed}ms")
+                        )
+                        HongguoDiagnostic.updateReport(
+                            stage = "device_register",
+                            code = "DEVICE_REGISTER_OK",
+                            httpStatus = code,
+                            responseBytes = respBytes,
+                            elapsedMs = elapsed,
+                            summary = "匿名播放身份注册正常 (did=${parsed.deviceId})"
+                        )
                         val mergedCookies = linkedMapOf(
                             "install_id" to parsed.installId,
                             "store-region" to "cn",
@@ -163,11 +181,62 @@ object DeviceRegister {
                             newUser = parsed.newUser,
                             cookies = mergedCookies,
                         )
-                    } else null
-                } else null
+                    } else {
+                        val is100Bytes = text.contains("\"device_id\":0") || text.length in 90..130
+                        val errCode = if (is100Bytes) "DEVICE_REGISTER_INVALID" else "DEVICE_REGISTER_EMPTY"
+                        val summaryText = if (is100Bytes) {
+                            "失败发生在“匿名播放身份注册”阶段。HTTP $code · 响应 $respBytes 字节 (DEVICE_REGISTER_INVALID)"
+                        } else {
+                            "设备注册响应解析失败: HTTP $code · 响应 $respBytes 字节"
+                        }
+                        HongguoDiagnostic.log(
+                            "WARN", "device_register", errCode,
+                            "设备注册返回空凭据: $summaryText 详情: ${text.take(120)}",
+                            mapOf("code" to code, "bytes" to respBytes, "elapsed" to "${elapsed}ms")
+                        )
+                        HongguoDiagnostic.updateReport(
+                            stage = "device_register",
+                            code = errCode,
+                            httpStatus = code,
+                            responseBytes = respBytes,
+                            elapsedMs = elapsed,
+                            summary = summaryText,
+                            lastError = text.take(120)
+                        )
+                        null
+                    }
+                } else {
+                    HongguoDiagnostic.log(
+                        "ERROR", "device_register", "DEVICE_REGISTER_HTTP",
+                        "设备注册 HTTP 状态错误: code=$code",
+                        mapOf("code" to code, "bytes" to respBytes, "elapsed" to "${elapsed}ms")
+                    )
+                    HongguoDiagnostic.updateReport(
+                        stage = "device_register",
+                        code = "DEVICE_REGISTER_HTTP",
+                        httpStatus = code,
+                        responseBytes = respBytes,
+                        elapsedMs = elapsed,
+                        summary = "设备注册接口返回 HTTP $code"
+                    )
+                    null
+                }
             }
             if (registered != null) return registered
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            val elapsed = System.currentTimeMillis() - startTime
+            HongguoDiagnostic.log(
+                "ERROR", "device_register", "DEVICE_REGISTER_NETWORK_ERR",
+                "设备注册网络异常: ${e.message}",
+                mapOf("elapsed" to "${elapsed}ms", "error" to (e.message ?: ""))
+            )
+            HongguoDiagnostic.updateReport(
+                stage = "device_register",
+                code = "DEVICE_REGISTER_NETWORK_ERR",
+                elapsedMs = elapsed,
+                summary = "设备注册网络请求失败: ${e.message}",
+                lastError = e.message
+            )
         }
         return null
     }

@@ -4262,7 +4262,15 @@ class _PlayerScreenState extends State<PlayerScreen>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(hintText),
-            duration: const Duration(seconds: 2),
+            duration: const Duration(seconds: 4),
+            action: SnackBarAction(
+              label: '查看日记',
+              textColor: const Color(0xFF38BDF8),
+              onPressed: _showPlaybackDiagnosticSheet,
+            ),
+          ),
+        );
+      }
           ),
         );
         setState(() {
@@ -6654,9 +6662,203 @@ class _PlayerScreenState extends State<PlayerScreen>
                   _showSmartSkipSettingsDialog();
                 },
               ),
+              // 播放诊断与日记 (用户排查神器，一键复制错误给开发者)
+              ListTile(
+                leading: const Icon(Icons.bug_report_outlined, color: Color(0xFF38BDF8)),
+                title: const Text('播放诊断与日记',
+                    style: TextStyle(color: Colors.white)),
+                trailing: const Icon(Icons.chevron_right, color: Colors.white38),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showPlaybackDiagnosticSheet();
+                },
+              ),
               const SizedBox(height: 8),
             ],
           ),
+        );
+      },
+    );
+  }
+
+  /// 打开播放诊断与日记面板 (支持一键复制，方便提供给开发者排查)
+  Future<void> _showPlaybackDiagnosticSheet() async {
+    final nativeReport = await DuanjuCoreBridge.instance.getDiagnosticReport();
+    final nativeLogs = await DuanjuCoreBridge.instance.getDiagnosticLogs();
+    final localEntries = DiaryService.getAll()
+        .where((e) => e.contains('短剧') || e.contains('Duanju') || e.contains('Player'))
+        .toList();
+
+    if (!mounted) return;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF111827),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final combinedReport = StringBuffer();
+            combinedReport.writeln(nativeReport);
+            combinedReport.writeln('\n=== 本地 Flutter 最近短剧日记 ===');
+            if (localEntries.isEmpty) {
+              combinedReport.writeln('(暂无 Flutter 短剧日记)');
+            } else {
+              for (final e in localEntries.reversed.take(40)) {
+                combinedReport.writeln(e);
+              }
+            }
+            if (nativeLogs.isNotEmpty) {
+              combinedReport.writeln('\n=== Android 原生底层全量日志 ===');
+              combinedReport.writeln(nativeLogs);
+            }
+            final reportText = combinedReport.toString();
+
+            return SafeArea(
+              child: Container(
+                height: MediaQuery.of(context).size.height * 0.78,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // 顶部拖动条与标题
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 12),
+                        decoration: BoxDecoration(
+                          color: Colors.white24,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(Icons.terminal_rounded, color: Color(0xFF38BDF8), size: 20),
+                            SizedBox(width: 8),
+                            Text(
+                              '短剧播放诊断与日记',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, color: Colors.white70),
+                          onPressed: () => Navigator.pop(ctx),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    // 提示条
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1F2937),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.white10),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.info_outline, color: Color(0xFF38BDF8), size: 16),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '如遇到短剧无法播放，请点击下方「一键复制日记」发送给开发者精准修复。',
+                              style: TextStyle(color: Colors.white70, fontSize: 12),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    // 日志内容滚动查看
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF030712),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.white12),
+                        ),
+                        child: SingleChildScrollView(
+                          child: SelectableText(
+                            reportText,
+                            style: const TextStyle(
+                              color: Color(0xFFE5E7EB),
+                              fontSize: 12,
+                              fontFamily: 'monospace',
+                              height: 1.4,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    // 底部按钮栏
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF2563EB),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            icon: const Icon(Icons.copy_rounded, size: 18),
+                            label: const Text('一键复制日记', style: TextStyle(fontWeight: FontWeight.bold)),
+                            onPressed: () async {
+                              await Clipboard.setData(ClipboardData(text: reportText));
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('已复制诊断日记到剪贴板，可直接发送给开发者！'),
+                                  backgroundColor: Color(0xFF16A34A),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white70,
+                            side: const BorderSide(color: Colors.white24),
+                            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                          child: const Text('清空'),
+                          onPressed: () async {
+                            await DuanjuCoreBridge.instance.clearDiagnosticLogs();
+                            setSheetState(() {});
+                            if (!mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('诊断日记已清空')),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
         );
       },
     );

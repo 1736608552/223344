@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import 'package:luna_tv/services/diary_service.dart';
+import 'package:luna_tv/services/duanju_core_bridge.dart';
 import 'package:luna_tv/services/theme_service.dart';
 
 /// v2.0.99.2: 应用内「日记」页面 — 跟 v2.0.95 失败 SnackBar 错误提示互补.
@@ -166,6 +167,13 @@ class _DiaryScreenState extends State<DiaryScreen> {
       break;
     }
     if (tag == null) return '其它';
+    if (tag.startsWith('短剧') ||
+        tag.startsWith('duanju') ||
+        tag.startsWith('hongguo') ||
+        entry.contains('短剧') ||
+        entry.contains('Hongguo')) {
+      return '短剧';
+    }
     if (tag.startsWith('弹幕')) return '弹幕';
     if (tag.startsWith('tmdb')) return 'TMDB';
     if (tag.startsWith('bangumi')) return 'Bangumi';
@@ -204,6 +212,7 @@ class _DiaryScreenState extends State<DiaryScreen> {
 
     // 统计各分类条数
     final counts = <String, int>{
+      '短剧': 0,
       '弹幕': 0,
       'TMDB': 0,
       'Bangumi': 0,
@@ -220,6 +229,35 @@ class _DiaryScreenState extends State<DiaryScreen> {
       appBar: AppBar(
         title: const Text('日记'),
         actions: [
+          IconButton(
+            icon: const Icon(LucideIcons.refreshCw),
+            tooltip: '同步原生短剧日志',
+            onPressed: () async {
+              final raw = await DuanjuCoreBridge.instance.getDiagnosticLogs();
+              if (raw.isNotEmpty) {
+                final lines = raw.split('\n');
+                for (final line in lines) {
+                  if (line.trim().isNotEmpty) {
+                    await DiaryService.add('[短剧原生] ${line.trim()}');
+                  }
+                }
+                if (mounted) {
+                  setState(() {
+                    _filter = '短剧';
+                  });
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('已同步 ${lines.length} 条短剧原生日志')),
+                  );
+                }
+              } else {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('原生短剧日志为空')),
+                  );
+                }
+              }
+            },
+          ),
           IconButton(
             icon: const Icon(LucideIcons.copy),
             tooltip: '复制全部',
@@ -279,6 +317,8 @@ class _DiaryScreenState extends State<DiaryScreen> {
               child: Row(
                 children: [
                   _filterChip('全部', _filter == null, all.length, null),
+                  const SizedBox(width: 6),
+                  _filterChip('短剧', _filter == '短剧', counts['短剧'] ?? 0, '短剧'),
                   const SizedBox(width: 6),
                   _filterChip('弹幕', _filter == '弹幕', counts['弹幕'] ?? 0, '弹幕'),
                   const SizedBox(width: 6),

@@ -1062,16 +1062,39 @@ object HongguoStreamResolver {
         }
 
         var identity = PlaybackDeviceSession.shared.profile(client)
+        val resolveStart = System.currentTimeMillis()
+        HongguoDiagnostic.log(
+            "INFO", "stream_resolver", "RESOLVE_START",
+            "开始取流解析: vid=$cleanVid, maxQuality=${maxQuality}P, seriesId=$seriesId, did=${identity.values["device_id"]}"
+        )
 
         fun tryExecuteProvider(p: String, prof: PlaybackDeviceSession.Profile): Map<String, Any?>? {
+            val pStart = System.currentTimeMillis()
+            HongguoDiagnostic.log("INFO", "stream_resolver", "TRY_PROVIDER", "尝试通道: $p (did=${prof.values["device_id"]})")
             val model = when (p) {
                 PROVIDER_SINGLE_REGISTERED -> executeSingleRegisteredVideoModel(cleanVid, prof)
                 PROVIDER_VIDEO_TAB -> executeVideoTab(cleanVid, prof)
                 PROVIDER_MULTI_VIDEO_MODEL -> executeMultiVideoModel(cleanVid, prof)
                 PROVIDER_SINGLE_VIDEO_MODEL -> executeSingleVideoModel(cleanVid, prof)
                 else -> null
-            } ?: return null
-            return extractPlaybackOptions(model, cleanVid, maxQuality)
+            }
+            val elapsed = System.currentTimeMillis() - pStart
+            if (model == null) {
+                HongguoDiagnostic.log("WARN", "stream_resolver", "PROVIDER_FAIL", "通道 $p 未返回有效模型 (耗时 ${elapsed}ms)")
+                return null
+            }
+            val opts = extractPlaybackOptions(model, cleanVid, maxQuality)
+            if (opts != null) {
+                val q = opts["quality"] as? String ?: "${maxQuality}P"
+                val kLen = (opts["decryptionKey"] as? String)?.length ?: 0
+                HongguoDiagnostic.log(
+                    "INFO", "stream_resolver", "PROVIDER_OK",
+                    "通道 $p 解析成功: 画质=$q, keyLen=$kLen (耗时 ${elapsed}ms)"
+                )
+            } else {
+                HongguoDiagnostic.log("WARN", "stream_resolver", "EXTRACT_FAIL", "通道 $p 提取播放参数失败 (耗时 ${elapsed}ms)")
+            }
+            return opts
         }
 
         // 按智能优先级序列依次尝试四大通道（single_registered 内置空响应极速换号）
@@ -1081,7 +1104,15 @@ object HongguoStreamResolver {
             val result = tryExecuteProvider(provider, identity)
             if (result != null) {
                 recordSourceSuccess(seriesId, provider)
+                val totalElapsed = System.currentTimeMillis() - resolveStart
                 android.util.Log.i("HongguoStreamResolver", "取流成功 [通道: $provider, 画质: ${result["quality"]}, seriesId: $seriesId]")
+                HongguoDiagnostic.log("INFO", "stream_resolver", "RESOLVE_OK", "取流成功 [通道: $provider, 画质: ${result["quality"]}, 总耗时: ${totalElapsed}ms]")
+                HongguoDiagnostic.updateReport(
+                    stage = "stream_resolver",
+                    code = "RESOLVE_OK",
+                    elapsedMs = totalElapsed,
+                    summary = "取流成功: 通道 $provider · ${result["quality"]}"
+                )
                 return result
             }
         }
@@ -1097,12 +1128,30 @@ object HongguoStreamResolver {
                 val result = tryExecuteProvider(provider, rotated)
                 if (result != null) {
                     recordSourceSuccess(seriesId, provider)
+                    val totalElapsed = System.currentTimeMillis() - resolveStart
                     android.util.Log.i("HongguoStreamResolver", "刷新设备后取流成功 [通道: $provider, 画质: ${result["quality"]}]")
+                    HongguoDiagnostic.log("INFO", "stream_resolver", "RESOLVE_ROTATE_OK", "刷新设备后取流成功 [通道: $provider, 画质: ${result["quality"]}, 总耗时: ${totalElapsed}ms]")
+                    HongguoDiagnostic.updateReport(
+                        stage = "stream_resolver",
+                        code = "RESOLVE_OK",
+                        elapsedMs = totalElapsed,
+                        summary = "刷新设备后取流成功: 通道 $provider · ${result["quality"]}"
+                    )
                     return result
                 }
             }
         }
 
-        throw IOException("Empty response from all providers for vid $cleanVid")
+        val totalElapsed = System.currentTimeMillis() - resolveStart
+        val failSummary = "取流失败: 四大通道均未能获取视频流 (vid=$cleanVid, did=${identity.values["device_id"]})"
+        HongguoDiagnostic.log("ERROR", "stream_resolver", "RESOLVE_EMPTY", failSummary, mapOf("totalElapsed" to "${totalElapsed}ms"))
+        HongguoDiagnostic.updateReport(
+            stage = "stream_resolver",
+            code = "RESOLVE_EMPTY",
+            elapsedMs = totalElapsed,
+            summary = failSummary,
+            lastError = "All providers returned empty response"
+        )
+        throw IOException(failSummary)
     }
 }

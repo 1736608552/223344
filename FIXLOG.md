@@ -1,5 +1,25 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.62 (2026-11-18)
+
+### 全面落地 TV 端与手机端「播放诊断日记系统 (HongguoDiagnostic)」+ 100字节防刷全自动判定与一键复制导出 + 对齐标杆仓库排查全链路日志
+
+#### 核心功能与升级说明
+1. **TV 端全新引入可视化的「播放诊断与日记 (DiagnosticTabContent)」面板 (`PlayerPanel.kt` / `PlayerScreen.kt`)**：
+   - 控制栏底部面板新增【日记】Tab，遥控器可随时左右切换唤起，支持按上下键滚动阅读全链路日志；
+   - 面板左侧展示结构化诊断卡片（100% 对齐标杆仓库判定依据）：直观呈现当前阶段（Stage）、判定结果（Code）、HTTP 状态码、响应字节数（如 100 字节防刷拦截）、耗时、VID 与异常堆栈；
+   - 播放异常或卡住时，界面错误卡片自动引导用户按菜单键呼出面板直达【日记】Tab，拍照或查看即可秒定故障根因。
+2. **手机端全面打通原生底层日志与 Flutter 日记系统 (`MainActivity.kt` / `DuanjuCoreBridge.dart` / `DiaryScreen.dart`)**：
+   - MethodChannel 新增 `getDiagnosticLogs`、`getDiagnosticReport` 与 `clearDiagnosticLogs` 桥接原生诊断引擎；
+   - 「日记」页面（`DiaryScreen`）新增【短剧】专属分类 Chip 与【同步原生短剧日志】按钮，全量汇聚注册、取流、解密各阶段实时日记。
+3. **手机端播放器设置新增「播放诊断与日记」弹窗与一键复制 (`PlayerScreen.dart`)**：
+   - 播放器齿轮设置面板与起播提示条新增【播放诊断与日记】/【查看日记】入口；
+   - 弹窗直观展示当前短剧的诊断结论与全量运行日志，配备大号【一键复制日记】按钮，一键将完整诊断报告和日志复制至剪贴板，方便用户长按粘贴直接发送给开发者排查修复。
+4. **全链路精准日志埋点与 100 字节风控判定 (`DeviceRegister.kt` / `PlaybackDeviceSession.kt` / `HongguoStreamResolver.kt` / `HongguoLocalServer.kt` / `PlayerController.kt`)**：
+   - 设备注册阶段全面拦截并标记 `DEVICE_REGISTER_INVALID`（HTTP 200 / 100 字节 did=0 防刷风控）；
+   - 取流解析记录各大通道请求、HTTP 状态、Key 长度与耗时；本地回环代理记录 Prepare 与下发传输异常；ExoPlayer 记录状态变迁与 errorCode。
+
+
 ## v2.7.61 (2026-11-17)
 
 ### 彻底解决红果短剧切换下一集偶发卡等一分钟、海信电视卡在00:00(-01:01)黑屏不播及待机断WiFi唤醒刷爆宽带IP风控问题 + 官方注册身份持久化与12s冷却锁守护 + 发布v2.7.61

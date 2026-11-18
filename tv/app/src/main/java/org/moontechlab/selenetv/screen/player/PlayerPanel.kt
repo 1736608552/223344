@@ -72,6 +72,9 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import org.moontechlab.selenetv.hongguo.HongguoDiagnostic
 import org.moontechlab.selenetv.model.SearchResult
 import org.moontechlab.selenetv.model.SourceSpeed
 import org.moontechlab.selenetv.model.SpeedTestState
@@ -81,7 +84,7 @@ import org.moontechlab.selenetv.service.SpeedTestService
 import org.moontechlab.selenetv.ui.SpeedTestPill
 import org.moontechlab.selenetv.util.getImageUrlSync
 
-enum class PanelTab { Detail, Episodes, Sources }
+enum class PanelTab { Detail, Episodes, Sources, Diagnostic }
 
 private val Accent = Color(0xFF4CAF50)
 // 面板高度：约屏高 47%（密度下 1dp≈1.77px）。越矮其顶边越靠下，进度条贴在上方也随之到屏幕中线附近。
@@ -126,6 +129,7 @@ fun PlayerPanel(
             add(PanelTab.Detail)
             if (epCount > 1) add(PanelTab.Episodes)
             add(PanelTab.Sources)
+            add(PanelTab.Diagnostic)
         }
     }
 
@@ -134,11 +138,13 @@ fun PlayerPanel(
     val detailFocus = remember { FocusRequester() }
     val epFocus = remember { FocusRequester() }
     val srcFocus = remember { FocusRequester() }
+    val diagFocus = remember { FocusRequester() }
     val enterContent: () -> Unit = {
         val fr = when (tab) {
             PanelTab.Detail -> detailFocus
             PanelTab.Episodes -> epFocus
             PanelTab.Sources -> srcFocus
+            PanelTab.Diagnostic -> diagFocus
         }
         try { fr.requestFocus() } catch (_: Exception) {}
     }
@@ -170,6 +176,7 @@ fun PlayerPanel(
                         PanelTab.Detail -> "详情"
                         PanelTab.Episodes -> "选集"
                         PanelTab.Sources -> "换源"
+                        PanelTab.Diagnostic -> "日记"
                     },
                     selected = t == tab,
                     upTarget = scrubberFocus,
@@ -212,6 +219,11 @@ fun PlayerPanel(
                         contentHeight = ch, firstFocus = srcFocus, onExitUp = onContentExitUp,
                         speedResults = speedResults, speedTesting = speedTesting,
                         onSpeedTest = onSpeedTest, onStopSpeedTest = onStopSpeedTest,
+                    )
+                    PanelTab.Diagnostic -> DiagnosticTabContent(
+                        contentHeight = ch,
+                        firstFocus = diagFocus,
+                        onExitUp = onContentExitUp,
                     )
                 }
             }
@@ -708,6 +720,232 @@ private fun SourceTile(
             }
             if (dimmed) {
                 Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)))
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiagnosticTabContent(
+    contentHeight: Dp,
+    firstFocus: FocusRequester,
+    onExitUp: () -> Unit,
+) {
+    var logsVersion by remember { mutableStateOf(0) }
+    val logs = remember(logsVersion) { HongguoDiagnostic.getLogs().reversed() }
+    val report = remember(logsVersion) { HongguoDiagnostic.currentReport }
+    val title = remember(logsVersion) { HongguoDiagnostic.currentSeriesTitle }
+    val ep = remember(logsVersion) { HongguoDiagnostic.currentEpisode }
+    val vid = remember(logsVersion) { HongguoDiagnostic.currentVid }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(contentHeight),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        // 左侧：诊断报告卡片
+        val shape = RoundedCornerShape(12.dp)
+        var cardFocused by remember { mutableStateOf(false) }
+        Surface(
+            onClick = {
+                HongguoDiagnostic.clear()
+                logsVersion++
+            },
+            modifier = Modifier
+                .width(320.dp)
+                .fillMaxHeight()
+                .focusRequester(firstFocus)
+                .onFocusChanged { cardFocused = it.isFocused }
+                .focusProperties {
+                    up = FocusRequester.Default
+                    down = FocusRequester.Cancel
+                }
+                .onKeyEvent { e ->
+                    if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionUp) {
+                        onExitUp()
+                        true
+                    } else false
+                },
+            scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+            shape = ClickableSurfaceDefaults.shape(shape = shape),
+            colors = ClickableSurfaceDefaults.colors(
+                containerColor = Color.White.copy(alpha = 0.08f),
+                focusedContainerColor = Color.White.copy(alpha = 0.14f),
+            ),
+            border = ClickableSurfaceDefaults.border(
+                border = Border(androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)), shape = shape),
+                focusedBorder = Border(androidx.compose.foundation.BorderStroke(2.dp, Color.White), shape = shape),
+            ),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "短剧播放诊断报告",
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.W700,
+                        )
+                        val isOk = report.code.contains("OK") || report.code.contains("PLAYING")
+                        val isErr = report.code.contains("INVALID") || report.code.contains("FAIL") || report.code.contains("ERR") || report.code.contains("EMPTY")
+                        val statusBg = when {
+                            isOk -> Color(0xFF2E7D32)
+                            isErr -> Color(0xFFC62828)
+                            else -> Color(0xFFE65100)
+                        }
+                        val statusLabel = when {
+                            isOk -> "正常"
+                            isErr -> "异常"
+                            else -> "待检测"
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(statusBg)
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                        ) {
+                            Text(text = statusLabel, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.W700)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    if (title.isNotEmpty()) {
+                        Text(
+                            text = "$title · 第${ep}集",
+                            color = Color.White.copy(alpha = 0.9f),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.W600,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (vid.isNotEmpty()) {
+                            Text(
+                                text = "VID: $vid",
+                                color = Color.White.copy(alpha = 0.5f),
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
+                    Text(
+                        text = "判定阶段: ${report.stage}",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 12.sp,
+                    )
+                    Text(
+                        text = "判定结果: ${report.code}",
+                        color = if (report.code.contains("INVALID") || report.code.contains("ERR")) Color(0xFFFF8A80) else Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.W700,
+                    )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Text(
+                        text = report.summary,
+                        color = Color.White.copy(alpha = 0.85f),
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                    )
+
+                    if (report.httpStatus != null || report.responseBytes != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "HTTP ${report.httpStatus ?: "-"} · ${report.responseBytes ?: "-"} 字节",
+                            color = Color.White.copy(alpha = 0.6f),
+                            fontSize = 11.sp,
+                        )
+                    }
+
+                    if (!report.lastError.isNullOrEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "详细: ${report.lastError}",
+                            color = Color(0xFFFFAB91),
+                            fontSize = 11.sp,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (cardFocused) "按确认键清空" else "点击清空",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 11.sp,
+                    )
+                    Text(
+                        text = "共 ${logs.size} 条日志",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 11.sp,
+                    )
+                }
+            }
+        }
+
+        // 右侧：全链路日志列表 (LazyColumn)
+        val listState = rememberLazyListState()
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .clip(shape)
+                .background(Color.Black.copy(alpha = 0.35f))
+                .padding(8.dp),
+        ) {
+            if (logs.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(text = "暂无诊断日记 (切换剧集或播放出错时将自动捕获)", color = Color.White.copy(alpha = 0.4f), fontSize = 13.sp)
+                }
+            } else {
+                androidx.compose.foundation.lazy.LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    items(logs) { log ->
+                        val isErr = log.level == "ERROR"
+                        val isWarn = log.level == "WARN"
+                        val textColor = when {
+                            isErr -> Color(0xFFFF8A80)
+                            isWarn -> Color(0xFFFFD54F)
+                            else -> Color.White.copy(alpha = 0.75f)
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(if (isErr) Color(0x33C62828) else Color.Transparent)
+                                .padding(horizontal = 6.dp, vertical = 3.dp),
+                        ) {
+                            Text(
+                                text = log.format(),
+                                color = textColor,
+                                fontSize = 11.sp,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            )
+                        }
+                    }
+                }
             }
         }
     }

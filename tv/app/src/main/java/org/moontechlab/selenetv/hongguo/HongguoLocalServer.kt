@@ -210,12 +210,15 @@ class HongguoLocalServer private constructor() {
                 remote.prepare()
             } catch (e: Exception) {
                 Log.e(TAG, "远程流延迟准备失败: ${e.message}")
+                HongguoDiagnostic.log("ERROR", "local_server", "REMOTE_PREPARE_FAIL", "本地代理流准备失败 token=$token: ${e.message}")
+                HongguoDiagnostic.updateReport("local_server", "REMOTE_PREPARE_FAIL", summary = "本地代理流连接准备失败: ${e.message}", lastError = e.message)
                 sendError(socket, 502, "Bad Gateway")
                 return
             }
 
             val total = remote.total
             if (total <= 0) {
+                HongguoDiagnostic.log("ERROR", "local_server", "INVALID_LENGTH", "本地代理流长度无效 total=$total")
                 sendError(socket, 500, "Invalid Stream Length")
                 return
             }
@@ -292,6 +295,7 @@ class HongguoLocalServer private constructor() {
             // 连接异常中止
         } catch (e: Exception) {
             Log.w(TAG, "流处理异常: ${e.message}")
+            HongguoDiagnostic.log("WARN", "local_server", "STREAM_EXCEPTION", "本地代理流读取异常: ${e.message}")
         } finally {
             runCatching { socket.close() }
         }
