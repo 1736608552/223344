@@ -1,5 +1,24 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.65 (2026-11-18)
+
+### 彻底攻克字节风控静默丢包拦截 (HTTP 200 / 0字节空响应) + 设备黑名单持久化驱逐与破除12秒冷却换发 + 诊断面板一键重置设备解封自愈 + 全端包名严格统一 com.phoenix.read
+
+#### 核心自愈与升级说明
+1. **彻底攻克字节跳动风控网关对已封禁设备的静默丢弃 (Silent Drop) 与换发死锁 (Source-First 铁证)**：
+   - **深层故障根因**：
+     - 字节跳动播放网关对于触发频控或被风控标记的设备号（如因连续请求或历史残留），不下发 403，而是特意返回 HTTP 200 + Content-Length: 0（0 字节空响应）；
+     - 此前代码在设备刷新时受制于 12 秒冷却锁（`REFRESH_COOLDOWN_MS`），且旧的被封禁 ID 被持久化在本地磁盘中；用户切集（如从第 1 集切到第 12 集）耗时仅 2~3 秒，系统因处于冷却期直接退回了此前失败的同一个旧设备号，导致再次请求依然遭遇 0 字节丢包，四大通道连环报错（`RESOLVE_EMPTY` / `RESOLVE_ERROR`）；
+     - 跨平台桥接层 `duanju_core_bridge.dart` 中的 4 处 User-Agent 遗留了 `com.dragon.read`（番茄免费小说包名，aid 为 1967），与请求 query 中的 `aid: 8662 / novelread`（红果免费短剧）严重打架，被字节安全防火墙直接判定为非法冒用流量；
+   - **全链路彻底自愈重构**：
+     - **设备黑名单持久化驱逐机制 (`VendorConstants.kt`)**：新增 `KEY_BLACKLIST_IDS` 持久化黑名单与 `clearPersistedIdentity(failedDeviceId)` 方法；一旦设备触发风控丢包，立即将该 device_id 驱逐入黑名单，并强制物理清空磁盘持久化的旧身份与旧 Cookie，保证重新生成的设备号绝不命中黑名单；
+     - **破除 12 秒冷却换发死锁 (`PlaybackDeviceSession.kt`)**：`rotate` 方法在传入 `failedDeviceId` 时，强制无视冷却锁，立即清空旧会话并向官方注册中心 `log.snssdk.com` 发起全新合法设备注册与 Cookie 换发；并在 `ContentRepository.kt` 中引入风控感知，连续空响应时自动触发轮转自愈；
+     - **请求包名与标识强一致性**：将 `duanju_core_bridge.dart` 中的全部 4 处 `com.dragon.read` 彻底统一为官方标准 `com.phoenix.read`，与 Redmi Note 12 Turbo / Android 14 / aid 8662 / 73532 形成 100% 契合的合法正版指纹！
+2. **全新引入可视化「短剧播放诊断与自愈」面板 + 一键重置设备解封按钮 (`PlayerScreen.dart` / `ShortDramaScreen.dart`)**：
+   - 诊断面板顶部新增【当前设备身份 (did) 展示卡片】，用户随时清晰掌握当前设备状态；
+   - 底部操作栏全新加入红色高亮【重置设备解封】自愈按钮，点击后一秒内全自动完成旧身份物理抹除、驱逐入黑名单、向官方注册中心换发全新合法设备号，并清空所有风控缓存；
+   - 在全屏播放器中点击解封后，自动立即重新起播当前集，用户无需重启 App 即可原地恢复顺畅播放！
+
 ## v2.7.64 (2026-11-18)
 
 ### 彻底攻克四大通道取流全部失败 (RESOLVE_EMPTY) + 全端彻底统一合规真机指纹与协议签名 + 恢复短剧选集详情页与全屏顶栏点击选集

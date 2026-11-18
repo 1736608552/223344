@@ -399,7 +399,7 @@ class DuanjuCoreBridge {
       final resp = await http.post(
         uri,
         headers: {
-          'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)',
+          'User-Agent': 'com.phoenix.read/7.3.5.32 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)',
           'Content-Type': 'application/json; charset=utf-8',
           'Accept': 'application/json',
           'X-XS-From-Web': '0',
@@ -1270,6 +1270,16 @@ class DuanjuCoreBridge {
     }
   }
 
+  /// 获取当前生效的短剧设备身份与状态
+  Future<Map<String, String>> getCurrentDeviceIdentity() async {
+    return DuanjuCoreBridge.getDeviceIdentity();
+  }
+
+  /// 一键重置短剧设备身份（彻底换发全新合法注册设备ID，攻克风控静默拦截）
+  Future<Map<String, dynamic>> resetDeviceSession() async {
+    return DuanjuCoreBridge.resetDeviceSessionStatic();
+  }
+
   /// 获取单集短剧的完整播放计划（包含直链、CENC解密密钥与多分辨率映射 + In-Flight合并）
   Future<DuanjuPlaybackPlan?> getPlaybackPlan({
     required String dramaId,
@@ -1405,7 +1415,8 @@ class DuanjuCoreBridge {
         }
         return appPlan;
       } else {
-        DiaryService.add('[短剧] 通道2 官方App预加载接口返回空');
+        DiaryService.add('[短剧] 通道2 官方App预加载接口返回空 (触发静默换发新设备号)');
+        resetDeviceSessionStatic();
       }
     }
 
@@ -1565,7 +1576,7 @@ class DuanjuCoreBridge {
         final resp = await http.post(
           uri,
           headers: {
-            'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)',
+            'User-Agent': 'com.phoenix.read/7.3.5.32 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)',
             'Accept': 'application/json',
             'Content-Type': 'application/json; charset=utf-8',
             'X-XS-From-Web': '0',
@@ -1805,14 +1816,74 @@ class DuanjuCoreBridge {
     return (_hongguoPersistentDevId, _hongguoPersistentIid);
   }
 
+  /// 获取当前生效的短剧设备身份 (提供给诊断面板与状态指示器)
+  static Future<Map<String, String>> getDeviceIdentity() async {
+    final pair = await _getHongguoDeviceIdentityAsync();
+    return {
+      'deviceId': pair.$1,
+      'installId': pair.$2,
+      'cookie': _hongguoPersistentCookie,
+    };
+  }
+
+  /// 一键重置短剧设备身份（彻底换发全新合法注册设备ID，攻克风控静默拦截）
+  static Future<Map<String, dynamic>> resetDeviceSessionStatic() async {
+    String newDid = '';
+    String newIid = '';
+    String newCookie = '';
+
+    // 1. Android 原生层优先强制重置（执行连接池驱逐、黑名单加入与 log.snssdk.com 重新注册）
+    if (Platform.isAndroid) {
+      try {
+        const channel = MethodChannel('com.example.lunatv/hongguo_resolver');
+        final res = await channel.invokeMethod<Map<dynamic, dynamic>>('resetDeviceIdentity');
+        if (res != null) {
+          newDid = res['deviceId']?.toString() ?? '';
+          newIid = res['installId']?.toString() ?? '';
+          newCookie = res['cookie']?.toString() ?? '';
+        }
+      } catch (e) {
+        DiaryService.add('[短剧] 原生换发新设备号异常: $e');
+      }
+    }
+
+    // 2. 若原生端未返回有效凭据，通过 HTTP 协议向 log.snssdk.com 注册全新合法身份
+    if (newDid.isEmpty || newIid.isEmpty) {
+      final reg = await _registerHongguoDeviceViaHttp();
+      newDid = reg?.$1 ?? _generateUnique16Id();
+      newIid = reg?.$2 ?? _generateUnique16Id();
+      newCookie = 'install_id=$newIid; store-region=cn; store-region-src=did';
+    }
+
+    // 3. 内存与持久化更新
+    _hongguoPersistentDevId = newDid;
+    _hongguoPersistentIid = newIid;
+    _hongguoPersistentCookie = newCookie;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kHongguoDevIdKey, newDid);
+      await prefs.setString(_kHongguoIidKey, newIid);
+    } catch (_) {}
+
+    // 4. 清理所有播放计划与分辨率缓存，确保下一次取流必定换发请求
+    _planCache.clear();
+    _playbackUrlCache.clear();
+    _playbackMultiResCache.clear();
+    _playbackResolutionCache.clear();
+
+    DiaryService.add('[短剧] 设备身份已成功重置换发: did=$newDid, iid=$newIid');
+
+    return {
+      'deviceId': newDid,
+      'installId': newIid,
+      'cookie': newCookie,
+    };
+  }
+
   /// 单机故障自愈：当遇到风控拦截时作废并重新分配新 ID 持久化
   static void _refreshHongguoDeviceIdentity() {
-    _hongguoPersistentDevId = _generateUnique16Id();
-    _hongguoPersistentIid = _generateUnique16Id();
-    SharedPreferences.getInstance().then((prefs) {
-      prefs.setString(_kHongguoDevIdKey, _hongguoPersistentDevId);
-      prefs.setString(_kHongguoIidKey, _hongguoPersistentIid);
-    }).catchError((_) {});
+    resetDeviceSessionStatic();
   }
 
   Future<DuanjuPlaybackPlan?> _fetchHongguoAppPlaybackPlan(
@@ -1891,7 +1962,7 @@ class DuanjuCoreBridge {
             final r = await http.post(
               uri,
               headers: {
-                'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)',
+                'User-Agent': 'com.phoenix.read/7.3.5.32 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)',
                 'Accept': 'application/json',
                 'Content-Type': 'application/json; charset=utf-8',
                 'X-XS-From-Web': '0',
@@ -1942,7 +2013,7 @@ class DuanjuCoreBridge {
                     try {
                       final fbResp = await http.get(
                         Uri.parse(fallbackUrl),
-                        headers: {'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 14; zh_CN; 23049RAD8C)'},
+                        headers: {'User-Agent': 'com.phoenix.read/7.3.5.32 (Linux; U; Android 14; zh_CN; 23049RAD8C)'},
                       ).timeout(const Duration(seconds: 8));
                       if (fbResp.statusCode == 200) {
                         final fbJson = jsonDecode(fbResp.body);

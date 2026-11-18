@@ -76,26 +76,46 @@ class PlaybackDeviceSession {
             ready = previous
             return previous
         }
-        val now = System.currentTimeMillis()
-        // 对齐标杆仓库 minireel.go refreshAfter 冷却锁：防止断网或风控期间并发请求刷爆同宽带 IP 注册配额
-        if (now - lastRefreshAtMs < REFRESH_COOLDOWN_MS && previous != null) {
-            ready = previous
-            return previous
+
+        // 若上层明确指定了失败/风控的设备 ID，立即强制物理清理磁盘持久化旧身份与内存缓存，破除冷却锁
+        if (failedDeviceId.isNotBlank()) {
+            VendorConstants.clearPersistedIdentity(failedDeviceId)
+            ready = null
+        } else {
+            val now = System.currentTimeMillis()
+            if (now - lastRefreshAtMs < REFRESH_COOLDOWN_MS && previous != null) {
+                ready = previous
+                return previous
+            }
+            lastRefreshAtMs = now
         }
-        lastRefreshAtMs = now
+
         try {
             http.connectionPool.evictAll()
         } catch (_: Throwable) {}
 
         val fresh = register(http)
         if (fresh.isOfficialRegistered) {
+            ready = fresh
             return fresh
         }
-        // 若因机顶盒待机断 WiFi 尚未连上或 IP 冷却导致未能注册新号，保留并恢复原有合法注册身份，严禁降级为未注册假号
-        if (previous != null) {
+        // 若注册未能成功且当前并非强制封禁换发，才退回之前的凭证
+        if (failedDeviceId.isBlank() && previous != null) {
             ready = previous
             return previous
         }
+        return fresh
+    }
+
+    @Synchronized
+    fun resetAll(http: OkHttpClient): Profile {
+        VendorConstants.clearPersistedIdentity()
+        ready = null
+        try {
+            http.connectionPool.evictAll()
+        } catch (_: Throwable) {}
+        val fresh = register(http)
+        ready = fresh
         return fresh
     }
 

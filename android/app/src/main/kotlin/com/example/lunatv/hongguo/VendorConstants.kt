@@ -17,7 +17,14 @@ internal object VendorConstants {
     private const val KEY_CDID = "key_cdid"
     private const val KEY_OFFICIAL_REGISTERED = "key_official_registered"
     private const val KEY_OFFICIAL_COOKIE = "key_official_cookie"
-    private val BLACKLIST_IDS = setOf("3748291048294829104", "0")
+    private const val KEY_BLACKLIST_IDS = "key_blacklist_device_ids"
+    private val defaultBlacklist = setOf("3748291048294829104", "0")
+
+    private fun getBlacklist(): MutableSet<String> {
+        val sp = getPrefs()
+        val saved = sp?.getStringSet(KEY_BLACKLIST_IDS, null) ?: emptySet()
+        return (defaultBlacklist + saved).toMutableSet()
+    }
 
     private fun getAppContext(): Context? {
         return try {
@@ -43,8 +50,9 @@ internal object VendorConstants {
 
     private fun loadOrGenerateId(key: String): String {
         val sp = getPrefs()
+        val blacklist = getBlacklist()
         var id = sp?.getString(key, null).orEmpty()
-        if (id.isBlank() || id in BLACKLIST_IDS) {
+        if (id.isBlank() || id in blacklist) {
             id = randomInstallId()
             sp?.edit()?.putString(key, id)?.apply()
         }
@@ -63,9 +71,10 @@ internal object VendorConstants {
 
     fun isOfficialRegistered(): Boolean {
         val sp = getPrefs() ?: return false
+        val blacklist = getBlacklist()
         return sp.getBoolean(KEY_OFFICIAL_REGISTERED, false) &&
-            installDeviceId.isNotBlank() && installDeviceId !in BLACKLIST_IDS &&
-            installIid.isNotBlank() && installIid !in BLACKLIST_IDS
+            installDeviceId.isNotBlank() && installDeviceId !in blacklist &&
+            installIid.isNotBlank() && installIid !in blacklist
     }
 
     fun getOfficialCookie(): String {
@@ -80,7 +89,8 @@ internal object VendorConstants {
         openUdidVal: String = openUdid,
         cookieVal: String = "",
     ) {
-        if (deviceId.isBlank() || deviceId == "0" || iid.isBlank() || iid == "0") return
+        val blacklist = getBlacklist()
+        if (deviceId.isBlank() || deviceId == "0" || deviceId in blacklist || iid.isBlank() || iid == "0" || iid in blacklist) return
         installDeviceId = deviceId
         installIid = iid
         if (cdidVal.isNotBlank()) cdid = cdidVal
@@ -96,9 +106,29 @@ internal object VendorConstants {
             ?.apply()
     }
 
+    fun clearPersistedIdentity(failedDeviceId: String = "") {
+        val sp = getPrefs()
+        if (failedDeviceId.isNotBlank()) {
+            val bl = getBlacklist()
+            bl.add(failedDeviceId)
+            sp?.edit()?.putStringSet(KEY_BLACKLIST_IDS, bl)?.apply()
+        }
+        regenerate()
+    }
+
     fun regenerate() {
-        installIid = randomInstallId()
-        installDeviceId = randomInstallId()
+        val blacklist = getBlacklist()
+        var newDid: String
+        var newIid: String
+        do {
+            newDid = randomInstallId()
+        } while (newDid in blacklist)
+        do {
+            newIid = randomInstallId()
+        } while (newIid in blacklist)
+
+        installDeviceId = newDid
+        installIid = newIid
         openUdid = randomHex(16)
         clientUdid = java.util.UUID.randomUUID().toString()
         cdid = java.util.UUID.randomUUID().toString()
@@ -112,6 +142,7 @@ internal object VendorConstants {
             ?.putString(KEY_CLIENTUDID, clientUdid)
             ?.putString(KEY_CDID, cdid)
             ?.putBoolean(KEY_OFFICIAL_REGISTERED, false)
+            ?.remove(KEY_OFFICIAL_COOKIE)
             ?.apply()
     }
 

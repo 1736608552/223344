@@ -6748,6 +6748,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   Future<void> _showPlaybackDiagnosticSheet() async {
     final nativeReport = await DuanjuCoreBridge.instance.getDiagnosticReport();
     final nativeLogs = await DuanjuCoreBridge.instance.getDiagnosticLogs();
+    final currentDev = await DuanjuCoreBridge.instance.getCurrentDeviceIdentity();
     final localEntries = DiaryService.getAll()
         .where((e) => e.contains('短剧') || e.contains('Duanju') || e.contains('Player'))
         .toList();
@@ -6762,6 +6763,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (ctx) {
+        String activeDid = currentDev['deviceId'] ?? '';
         return StatefulBuilder(
           builder: (context, setSheetState) {
             final combinedReport = StringBuffer();
@@ -6807,7 +6809,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                             Icon(Icons.terminal_rounded, color: Color(0xFF38BDF8), size: 20),
                             SizedBox(width: 8),
                             Text(
-                              '短剧播放诊断与日记',
+                              '短剧播放诊断与自愈',
                               style: TextStyle(
                                 color: Colors.white,
                                 fontSize: 16,
@@ -6837,9 +6839,40 @@ class _PlayerScreenState extends State<PlayerScreen>
                           SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              '如遇到短剧无法播放，请点击下方「一键复制日记」发送给开发者精准修复。',
+                              '若第4集后受官方风控返回空响应，可点击「重置设备解封」换发全新设备ID。',
                               style: TextStyle(color: Colors.white70, fontSize: 12),
                             ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    // 当前设备身份展示卡片
+                    Container(
+                      margin: const EdgeInsets.only(top: 6),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0F172A),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.fingerprint, color: Color(0xFF10B981), size: 14),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              '当前设备ID: ${activeDid.isNotEmpty ? activeDid : "自动注册中"}',
+                              style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11, fontFamily: 'monospace'),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text('已就绪', style: TextStyle(color: Color(0xFF34D399), fontSize: 10)),
                           ),
                         ],
                       ),
@@ -6872,6 +6905,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                     Row(
                       children: [
                         Expanded(
+                          flex: 4,
                           child: ElevatedButton.icon(
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFF2563EB),
@@ -6881,8 +6915,8 @@ class _PlayerScreenState extends State<PlayerScreen>
                                 borderRadius: BorderRadius.circular(10),
                               ),
                             ),
-                            icon: const Icon(Icons.copy_rounded, size: 18),
-                            label: const Text('一键复制日记', style: TextStyle(fontWeight: FontWeight.bold)),
+                            icon: const Icon(Icons.copy_rounded, size: 16),
+                            label: const Text('复制日记', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                             onPressed: () async {
                               await Clipboard.setData(ClipboardData(text: reportText));
                               if (!mounted) return;
@@ -6895,12 +6929,48 @@ class _PlayerScreenState extends State<PlayerScreen>
                             },
                           ),
                         ),
-                        const SizedBox(width: 10),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: 5,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFFDC2626),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            icon: const Icon(Icons.refresh_rounded, size: 16),
+                            label: const Text('重置设备解封', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                            onPressed: () async {
+                              Navigator.pop(ctx);
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('正在重置短剧设备身份并申请全新合法 ID...'),
+                                  duration: Duration(seconds: 2),
+                                ),
+                              );
+                              final fresh = await DuanjuCoreBridge.instance.resetDeviceSession();
+                              final newId = fresh['deviceId']?.toString() ?? '';
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('已换发全新设备ID: $newId，正在重新起播...'),
+                                  backgroundColor: const Color(0xFF16A34A),
+                                ),
+                              );
+                              _playEpisode(_currentEpisodeIndex);
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 8),
                         OutlinedButton(
                           style: OutlinedButton.styleFrom(
                             foregroundColor: Colors.white70,
                             side: const BorderSide(color: Colors.white24),
-                            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(10),
                             ),

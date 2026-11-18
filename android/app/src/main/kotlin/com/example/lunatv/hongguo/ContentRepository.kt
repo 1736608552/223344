@@ -271,6 +271,12 @@ open class ContentRepository(
                 lastError = e
             }
         }
+        val devId = identity.values["device_id"].orEmpty()
+        if (devId.isNotBlank()) {
+            try {
+                playbackSession.rotate(http, failedDeviceId = devId)
+            } catch (_: Exception) {}
+        }
         throw (lastError ?: IOException("播放接口暂时返回空响应，请稍后重试"))
     }
 
