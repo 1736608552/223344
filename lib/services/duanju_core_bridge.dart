@@ -1420,8 +1420,10 @@ class DuanjuCoreBridge {
         }
         return appPlan;
       } else {
-        DiaryService.add('[短剧] 通道2 官方App预加载接口返回空 (触发静默换发新设备号)');
-        resetDeviceSessionStatic();
+        DiaryService.add('[短剧] 通道2 官方App预加载接口返回空');
+        if (!Platform.isAndroid) {
+          resetDeviceSessionStatic();
+        }
       }
     }
 
@@ -1900,7 +1902,7 @@ class DuanjuCoreBridge {
     for (int attempt = 0; attempt < 2; attempt++) {
       try {
         final now = DateTime.now().add(Duration(milliseconds: attempt * 200));
-        if (attempt > 0) {
+        if (attempt > 0 && !Platform.isAndroid) {
           _refreshHongguoDeviceIdentity();
         }
         final (devId, iid) = await _getHongguoDeviceIdentityAsync();

@@ -19,6 +19,17 @@ data class DiagnosticEvent(
         val detailStr = if (details.isNotEmpty()) " | " + details.entries.joinToString(" ") { "${it.key}=${it.value}" } else ""
         return "[$timeStr][$level][$stage][$code] $message$detailStr"
     }
+
+    fun toMap(): Map<String, Any?> {
+        return mapOf(
+            "timestamp" to timestamp,
+            "level" to level,
+            "stage" to stage,
+            "code" to code,
+            "message" to message,
+            "formatted" to format()
+        )
+    }
 }
 
 data class DiagnosticReport(
@@ -31,7 +42,21 @@ data class DiagnosticReport(
     val summary: String = "等待起播",
     val lastError: String? = null,
     val updatedAt: Long = System.currentTimeMillis()
-)
+) {
+    fun toMap(): Map<String, Any?> {
+        return mapOf(
+            "stage" to stage,
+            "code" to code,
+            "httpStatus" to httpStatus,
+            "responseBytes" to responseBytes,
+            "networkReason" to networkReason,
+            "elapsedMs" to elapsedMs,
+            "summary" to summary,
+            "lastError" to lastError,
+            "updatedAt" to updatedAt
+        )
+    }
+}
 
 object HongguoDiagnostic {
     private const val MAX_LOGS = 200

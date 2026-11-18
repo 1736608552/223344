@@ -77,17 +77,15 @@ class PlaybackDeviceSession {
             return previous
         }
 
-        // 若上层明确指定了失败/风控的设备 ID，立即强制物理清理磁盘持久化旧身份与内存缓存，破除冷却锁
+        val now = System.currentTimeMillis()
+        if (now - lastRefreshAtMs < REFRESH_COOLDOWN_MS && previous != null) {
+            ready = previous
+            return previous
+        }
+        lastRefreshAtMs = now
         if (failedDeviceId.isNotBlank()) {
             VendorConstants.clearPersistedIdentity(failedDeviceId)
             ready = null
-        } else {
-            val now = System.currentTimeMillis()
-            if (now - lastRefreshAtMs < REFRESH_COOLDOWN_MS && previous != null) {
-                ready = previous
-                return previous
-            }
-            lastRefreshAtMs = now
         }
 
         try {

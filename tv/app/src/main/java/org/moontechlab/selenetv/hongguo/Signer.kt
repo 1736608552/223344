@@ -587,6 +587,343 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         return Request("$base?$query", headers, body)
     }
 
+
+    // --- 1736608552/hongguo-tv & aston314/hongguo-tv v0.2.173 Mobile V5 (v04.10.03-ml-android) ---
+
+    fun playbackV5F13(q: ByteArray, m: ByteArray, ts: Int): ByteArray {
+        val seed = 0x9d4a97c2.toInt()
+        val count = seed + ts
+        val shift = (count + 2) and 7
+        val pad = intArrayOf(0xfa, 0x45, 0x61, 0xd7)
+            .map { ((it * 257) ushr shift).toByte() }
+            .toByteArray()
+        val data = q.copyOf(32) + m.copyOf(16) + le32(ts) + pad + hex("00000000000001a0")
+        val words = IntArray(128)
+        for (i in 0 until 16) {
+            words[i] = data.i32(i * 4)
+        }
+        for (i in 0 until 112) {
+            val x = words[i + 1]
+            val y = words[i + 14]
+            words[i + 16] = words[i] + words[i + 9] +
+                (rol(x, 14) xor rol(x, 25) xor (x ushr 3)) +
+                (rol(y, 13) xor rol(y, 15) xor (y ushr 10))
+        }
+        val initial = intArrayOf(
+            0x7aba4fc8, 0x67166507, 0x6403fa00, 0x340f512f,
+            984304912, 3005047866L.toInt(), 2874125293L.toInt(), 2152413264L.toInt()
+        ).map { ror(it, count and 31) }.toIntArray()
+        val d = initial.copyOf()
+        for (i in 0 until 96) {
+            val base = seed + i
+            val n1 = ((d[4] xor d[0]) and d[1]) xor d[4]
+            val n2 = rol(d[1], 26) xor rol(d[1], 21) xor rol(d[1], 7)
+            val n4 = words[base and 127] + n1 + n2 +
+                ror(VendorConstants.hashTable[base and 63], (count + 1) and 31) + d[6]
+            val n5 = rol(d[3], 30) xor rol(d[3], 19) xor rol(d[3], 10)
+            val n6 = (d[3] and d[5]) or ((d[3] or d[5]) and d[2])
+            val old = d[7]
+            for (j in 7 downTo 1) {
+                d[j] = d[j - 1]
+            }
+            d[7] = n5 + n6 + n4
+            d[0] = old + n4
+        }
+        val ret = ByteArray(32)
+        for (i in 0 until 8) {
+            be32(d[i] + initial[i]).copyInto(ret, i * 4)
+        }
+        val out = ByteArray(16) { i -> (ret[i].u() xor ret[i + 16].u()).toByte() }
+        var check = 0x20220420
+        for (i in 0 until 12) {
+            val x = out[i].u()
+            check = if (i and 1 == 0) {
+                (check ushr 3) xor check xor x xor (check shl 7)
+            } else {
+                (check ushr 5) xor check xor (x or (check shl 11)).inv()
+            }
+        }
+        return out + le32(((check or 4) xor 0x1000000) or 0x20)
+    }
+
+    private fun playbackV5Proto(
+        values: Map<String, String>,
+        ts: Int,
+        nonce: Int,
+        q: ByteArray,
+        f13: ByteArray,
+    ): ByteArray {
+        val devId = values["device_id"] ?: ""
+        val osVer = values["os_version"] ?: "12"
+        val devType = values["device_type"] ?: "PGT-AN10"
+        val channel = values["channel"] ?: "vivo_8662_64"
+        val verName = values["version_name"] ?: "7.4.3.32"
+        val device = proto(
+            f(1, 1L, "sint"),
+            f(2, 2L, "sint"),
+            f(3, "8662"),
+            f(4, devId),
+            f(5, VendorConstants.processNonce),
+            f(6, "!noperm!"),
+            f(12, "Asia/Shanghai,8"),
+            f(13, "zh_CN"),
+            f(22, osVer),
+            f(25, VendorConstants.processStarted, "sint"),
+            f(30, devType),
+            f(31, "HONOR"),
+            f(32, devType),
+            f(34, "HONOR"),
+        )
+        val env = proto(
+            f(6, "v04.10.03.04-bugfix"),
+            f(8, channel),
+            f(12, device, "raw_bytes"),
+            f(14, verName),
+        )
+        val count = proto(
+            f(1, 1L, "sint"),
+            f(2, 1L, "sint"),
+            f(3, 1L, "sint"),
+            f(5, 1L, "sint"),
+        )
+        return proto(
+            f(1, VendorConstants.playbackV5Magic, "raw_bytes"),
+            f(2, 5L, "sint"),
+            f(3, nonce.toLong() and 0xffffffffL, "sint"),
+            f(4, "8662"),
+            f(5, devId),
+            f(6, "646637794"),
+            f(7, verName),
+            f(8, "v04.10.03-ml-android"),
+            f(9, 0x040a0300L, "sint"),
+            f(10, ByteArray(8), "raw_bytes"),
+            f(12, ts.toLong() and 0xffffffffL, "sint"),
+            f(13, f13, "raw_bytes"),
+            f(14, q.copyOf(6), "raw_bytes"),
+            f(15, count, "raw_bytes"),
+            f(17, ts.toLong() and 0xffffffffL, "sint"),
+            f(20, "none"),
+            f(21, 377L, "sint"),
+            f(23, env, "raw_bytes"),
+            f(24, """{"cmr":16777216,"cmr2":16777216,"un_h":11,"vpn":0,"kd":0,"dyn":"","do":1,"tk":true}"""),
+        )
+    }
+
+    private fun playbackV5AES(data: ByteArray, ts: Int, key: ByteArray, iv: ByteArray): ByteArray {
+        require(data.size >= 248 && key.size == 16 && iv.size == 16) { "signature payload is too short" }
+        val branch = ts and 3
+        val box = VendorConstants.playbackV5SBox.copyOfRange(branch * 256, (branch + 1) * 256).map { it.u() }
+        val con = arrayOf(
+            intArrayOf(2, 0, 3, 1),
+            intArrayOf(1, 3, 2, 0),
+            intArrayOf(3, 2, 1, 0),
+            intArrayOf(2, 3, 1, 0),
+        )[branch]
+        val order = arrayOf(
+            intArrayOf(0, 9, 14, 15, 4, 13, 2, 7, 8, 1, 6, 3, 12, 5, 10, 11),
+            intArrayOf(0, 9, 14, 11, 4, 13, 2, 3, 8, 1, 6, 15, 12, 5, 10, 7),
+            intArrayOf(0, 9, 14, 3, 4, 13, 2, 15, 8, 1, 6, 11, 12, 5, 10, 7),
+            intArrayOf(0, 9, 14, 15, 4, 13, 2, 3, 8, 1, 6, 11, 12, 5, 10, 7),
+        )[branch]
+        val initVal = intArrayOf(
+            0xbbb5de72.toInt(),
+            0xd4638d5b.toInt(),
+            0x92a5f73b.toInt(),
+            0x89f8a1c9.toInt(),
+        )[branch]
+        val mk = IntArray(48)
+        for (j in 0 until 16) {
+            mk[j] = key[j].u() xor ((initVal ushr ((j % 4) * 8)) and 255)
+        }
+        var r = 8
+        for (j in 4 until 12) {
+            var prev = intArrayOf(mk[j * 4 - 4], mk[j * 4 - 3], mk[j * 4 - 2], mk[j * 4 - 1])
+            if (j % 4 == 0) {
+                prev = intArrayOf(
+                    ((initVal ushr (r and 24)) and 255) xor box[prev[1]],
+                    box[prev[2]],
+                    box[prev[3]],
+                    box[prev[0]],
+                )
+            }
+            r += 2
+            for (k in 0 until 4) {
+                mk[j * 4 + k] = prev[k] xor mk[j * 4 + k - 16]
+            }
+        }
+        fun block(src: ByteArray): ByteArray {
+            val b = IntArray(16) { src[it].u() }
+            fun add(base: Int) {
+                for (j in 0 until 16) {
+                    b[j] = b[j] xor mk[base + (j / 4) * 4 + con[j % 4]]
+                }
+            }
+            add(0)
+            for (round in 1..2) {
+                var prev = b.copyOf()
+                for (j in 0 until 16) {
+                    val idx = order[j]
+                    b[j] = box[prev[con[idx / 4] * 4 + (idx % 4)]]
+                }
+                if (round == 1) {
+                    prev = b.copyOf()
+                    for (j in 0 until 16) {
+                        b[j] = prev[(j / 4) * 4 + con[j % 4]]
+                    }
+                    fun xt(x: Int): Int = if ((x and 128) != 0) ((x shl 1) xor 0x1b) and 255 else (x shl 1) and 255
+                    for (col in 0 until 4) {
+                        val a = b[col]
+                        val c = b[4 + col]
+                        val d = b[8 + col]
+                        val e = b[12 + col]
+                        val t = a xor c xor d xor e
+                        b[col] = b[col] xor t xor xt(a xor c)
+                        b[4 + col] = b[4 + col] xor t xor xt(c xor d)
+                        b[8 + col] = b[8 + col] xor t xor xt(d xor e)
+                        b[12 + col] = b[12 + col] xor t xor xt(e xor a)
+                    }
+                }
+                add(round * 16)
+            }
+            for (j in 0 until 16) {
+                b[j] = b[j] xor mk[16 + j]
+            }
+            return ByteArray(16) { b[it].toByte() }
+        }
+        val wire = intArrayOf(6, 5, 3, 4, 2, 7, 1, 0)
+        val compact = intArrayOf(1, 7, 3, 6, 2, 0, 4, 5)
+        val plain = ByteArray(32)
+        for (j in 0 until 31) {
+            var acc = 0
+            for (k in 0 until 8) {
+                acc = acc or (((data[j * 8 + k].u() ushr wire[k]) and 1) shl compact[k])
+            }
+            plain[j] = acc.toByte()
+        }
+        plain[31] = 1
+        var previous = iv.copyOf()
+        val encrypted = ByteArray(32)
+        for (j in 0 until 32 step 16) {
+            for (k in 0 until 16) {
+                plain[j + k] = (plain[j + k].u() xor previous[k].u()).toByte()
+            }
+            previous = block(plain.copyOfRange(j, j + 16))
+            previous.copyInto(encrypted, j)
+        }
+        val out = byteArrayOf(encrypted[31]) + data
+        for (j in 0 until 31) {
+            val encByte = encrypted[j].u()
+            for (k in 0 until 8) {
+                val at = 1 + j * 8 + k
+                val cleared = out[at].u() and (1 shl wire[k]).inv()
+                val bit = ((encByte ushr compact[k]) and 1) shl wire[k]
+                out[at] = (cleared or bit).toByte()
+            }
+        }
+        return out
+    }
+
+    fun playbackV5Medusa(
+        values: Map<String, String>,
+        ts: Int,
+        q: ByteArray,
+        m: ByteArray,
+        n0: Int = rand(),
+        n1: Int = rand(),
+        n2: Int = rand(),
+    ): String {
+        val f13 = playbackV5F13(q, m, ts)
+        val message = playbackV5Proto(values, ts, n0, q, f13)
+        val key = sm3(VendorConstants.playbackV5Key + le32(n1) + VendorConstants.playbackV5Key)
+        val high = (n1 ushr 16) and 255
+        val seed = le32((((high shl 11) or (n1 ushr 24)) xor (high ushr 5) xor high).inv())
+        val p = (ByteArray(8) + xmxor(message, key)).reversedArray()
+        for (i in p.indices) {
+            p[i] = (p[i].u() xor seed[i.inv() and 3].u()).toByte()
+        }
+        val check = 0x18000001 or ((q[0].u() and 63) shl 14) or ((f13[0].u() and 63) shl 8)
+        val n1Bytes = le32(n1)
+        val packed = byteArrayOf(0xca.toByte()) + le32(n2) + le32(check) + p + n1Bytes.copyOfRange(2, 4)
+        val aesKey = digest("MD5", VendorConstants.playbackV5Key.copyOfRange(0, 16))
+        val aesIv = digest("MD5", VendorConstants.playbackV5Key.copyOfRange(16, 32))
+        val encrypted = playbackV5AES(packed, ts, aesKey, aesIv)
+        val tsBytes = le32(ts)
+        val header = (le32(5) + VendorConstants.playbackV5Magic).apply {
+            for (i in indices) {
+                this[i] = (this[i].u() xor tsBytes[i and 3].u()).toByte()
+            }
+        }
+        return (header + byteArrayOf(n1Bytes[0], n1Bytes[1], 0, 1) + encrypted).base64()
+    }
+
+    fun playbackV5Helios(ts: Int, nonce: Int = rand()): String {
+        val seed = le32(nonce)
+        val raw = digest("MD5", seed + "8662".toByteArray(Charsets.UTF_8)).hex().toByteArray(Charsets.US_ASCII)
+        var k = ByteBuffer.wrap(raw, 0, 8).order(ByteOrder.LITTLE_ENDIAN).long.toULong()
+        val pending = mutableListOf(
+            ByteBuffer.wrap(raw, 8, 8).order(ByteOrder.LITTLE_ENDIAN).long.toULong(),
+            ByteBuffer.wrap(raw, 16, 8).order(ByteOrder.LITTLE_ENDIAN).long.toULong(),
+            ByteBuffer.wrap(raw, 24, 8).order(ByteOrder.LITTLE_ENDIAN).long.toULong(),
+        )
+        val rounds = ULongArray(34)
+        for (i in 0 until 34) {
+            rounds[i] = k
+            val x = (pending[0].rotateRight(8) + k) xor i.toULong()
+            pending[0] = pending[1]
+            pending[1] = pending[2]
+            pending[2] = x
+            k = x xor k.rotateLeft(3)
+        }
+        val plain = playbackPad("$ts-646637794-8662".toByteArray(Charsets.UTF_8))
+        for (at in plain.indices step 16) {
+            var a = ByteBuffer.wrap(plain, at, 8).order(ByteOrder.LITTLE_ENDIAN).long.toULong()
+            var b = ByteBuffer.wrap(plain, at + 8, 8).order(ByteOrder.LITTLE_ENDIAN).long.toULong()
+            for (i in rounds.indices) {
+                b = rounds[i] xor (a + b.rotateRight(8))
+                a = b xor a.rotateLeft(3)
+            }
+            ByteBuffer.wrap(plain, at, 8).order(ByteOrder.LITTLE_ENDIAN).putLong(a.toLong())
+            ByteBuffer.wrap(plain, at + 8, 8).order(ByteOrder.LITTLE_ENDIAN).putLong(b.toLong())
+        }
+        return (seed + plain).base64()
+    }
+
+    /**
+     * 100% 对齐 aston314/hongguo-tv v0.2.173 (playback_v5_sign.go -> signPlaybackV5):
+     * 针对 /novel/player/multi_video_model/player/v1 移动端 v5 Gzip 请求体生成 F13 branch 12 + X-Medusa + X-Helios 签名。
+     */
+    fun signPlaybackV5(base: String, values: Map<String, String>, body: ByteArray): Request {
+        val stamp = clock()
+        val ts = (stamp / 1000).toInt()
+        val orderedKeys = listOf(
+            "aid", "app_name", "version_code", "version_name", "channel",
+            "device_platform", "device_type", "os_version", "update_version_code",
+            "iid", "cdid", "device_id", "_rticket"
+        )
+        val bodyMd5 = digest("MD5", body)
+        var query = ""
+        var querySm3 = ByteArray(32)
+        for (offset in 0 until 1024) {
+            val ticket = (stamp + offset).toString()
+            query = orderedKeys.joinToString("&") { k ->
+                val v = if (k == "_rticket") ticket else (values[k] ?: "")
+                "$k=${encode(v)}"
+            }
+            val qHash = sm3(query.toByteArray(Charsets.UTF_8))
+            if ((iv(qHash, bodyMd5, ts) and 15) == 12) {
+                querySm3 = qHash
+                break
+            }
+        }
+        val headers = linkedMapOf(
+            "X-Khronos" to ts.toString(),
+            "X-Helios" to playbackV5Helios(ts, rand()),
+            "X-Medusa" to playbackV5Medusa(values, ts, querySm3, bodyMd5, rand(), rand(), rand()),
+            "X-SS-STUB" to bodyMd5.hex().uppercase(),
+        )
+        return Request("$base?$query", headers, body)
+    }
+
     companion object {
         fun encode(values: Map<String, String>): String =
             values.entries.joinToString("&") { (k, v) -> "${encode(k)}=${encode(v)}" }

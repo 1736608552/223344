@@ -64,6 +64,7 @@ object HongguoStreamResolver {
     }
 
     // 对齐 aston314/hongguo-tv 2026-11-07 工业级三大 Provider 与同剧成功路径记忆架构
+    const val PROVIDER_MOBILE_V5 = "mobile_v5"
     const val PROVIDER_SINGLE_REGISTERED = "single_registered"
     const val PROVIDER_VIDEO_TAB = "video_tab"
     const val PROVIDER_MULTI_VIDEO_MODEL = "multi_video_model"
@@ -454,6 +455,102 @@ object HongguoStreamResolver {
     }
 
     private data class VideoCandidate(val qNum: Int, val mainUrl: String, val spadeA: String)
+
+    /**
+     * Provider 00 (100% 对齐 aston314/hongguo-tv v0.2.173 minireel_mobile_v5.go & mobile-playback-v5.js):
+     * 移动端 v5 (7.4.3.32 / PGT-AN10 / v04.10.03-ml-android) Gzip 压缩请求体 + F13 branch 12 X-Medusa/X-Helios 签名，
+     * 彻底解决旧版 7.3.5.32 接口被服务端静默返回 HTTP 200 空包 (len=0) 的问题。
+     */
+    private fun executeMobileV5VideoModel(vid: String, initialProfile: PlaybackDeviceSession.Profile): JSONObject? {
+        var currentProfile = initialProfile
+        val ep = "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1"
+        val rawPayload = """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$vid"]},"dr_scene":"player"}""".toByteArray(Charsets.UTF_8)
+        val gzipPayload = java.io.ByteArrayOutputStream().also { out ->
+            java.util.zip.GZIPOutputStream(out).use { it.write(rawPayload) }
+        }.toByteArray()
+
+        for (attempt in 0..1) {
+            val deviceId = currentProfile.values["device_id"] ?: ""
+            val installId = currentProfile.values["iid"] ?: currentProfile.values["install_id"] ?: ""
+            val cdid = currentProfile.values["cdid"] ?: VendorConstants.cdid
+            if (deviceId.isBlank() || installId.isBlank() || deviceId == "0" || installId == "0") break
+
+            val v5Params = linkedMapOf(
+                "aid" to "8662",
+                "app_name" to "novelread",
+                "version_code" to "74332",
+                "version_name" to "7.4.3.32",
+                "channel" to "vivo_8662_64",
+                "device_platform" to "android",
+                "device_type" to "PGT-AN10",
+                "os_version" to "12",
+                "update_version_code" to "74332",
+                "iid" to installId,
+                "cdid" to cdid,
+                "device_id" to deviceId,
+            )
+
+            try {
+                val signed = signer.signPlaybackV5(ep, v5Params, gzipPayload)
+                val reqBuilder = Request.Builder()
+                    .url(signed.url)
+                    .post(gzipPayload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                for ((k, v) in signed.headers) {
+                    reqBuilder.header(k, v)
+                }
+                reqBuilder.header("User-Agent", VendorConstants.MOBILE_V5_UA)
+                reqBuilder.header("Accept", "application/json")
+                reqBuilder.header("Content-Type", "application/json; charset=utf-8")
+                reqBuilder.header("Content-Encoding", "gzip")
+
+                val resp = client.newCall(reqBuilder.build()).execute()
+                val statusCode = resp.code
+                val body = resp.body?.string().orEmpty()
+                HongguoDiagnostic.log(
+                    if (statusCode == 200 && body.isNotBlank()) "INFO" else "WARN",
+                    "stream_resolver",
+                    "MOBILE_V5_RESP",
+                    "mobile_v5 响应: code=$statusCode len=${body.length} preview=${body.take(80)}"
+                )
+                if (resp.isSuccessful && body.isNotBlank()) {
+                    val root = JSONObject(body)
+                    val code = root.optInt("Code", root.optInt("code", -1))
+                    if (code == 0) {
+                        val data = root.optJSONObject("data")
+                        val entries = data?.optJSONObject("1004") ?: data
+                        val entry = entries?.optJSONObject(vid)
+                        val vm = entry?.opt("video_model")
+                        val model = when (vm) {
+                            is JSONObject -> vm
+                            is String -> {
+                                val trimmed = vm.trim()
+                                if (trimmed.startsWith("{")) {
+                                    runCatching { JSONObject(trimmed) }.getOrNull()
+                                } else {
+                                    runCatching { JSONObject(String(decode64(trimmed), Charsets.UTF_8)) }.getOrNull()
+                                }
+                            }
+                            else -> null
+                        }
+                        if (model != null) return model
+                    }
+                }
+                if (attempt == 0 && statusCode == 200 && body.isBlank()) {
+                    val rotated = PlaybackDeviceSession.shared.rotate(client, failedDeviceId = deviceId)
+                    if (rotated.values["device_id"] != deviceId) {
+                        currentProfile = rotated
+                        continue
+                    }
+                }
+                break
+            } catch (e: Exception) {
+                android.util.Log.w("HongguoStreamResolver", "mobile_v5 异常: ${e.message}")
+                break
+            }
+        }
+        return null
+    }
+
 
     /**
      * Provider 0 (100% 对齐 1736608552/hongguo-tv single-registered-profile.js & minireel_single_registered.go):
@@ -911,7 +1008,7 @@ object HongguoStreamResolver {
             }
         }
 
-        // fallback_api 平滑降级
+        // fallback_api 平滑降级 (对齐 minireel_codec_fallback.go: 仅当内联列表为空或全为 bytevc2 时请求 fallback_api，健康内联直链零额外请求秒开)
         if (candidateList.isEmpty()) {
             val rawFallback = model.opt("fallback_api")
             val fallback = when (rawFallback) {
@@ -943,7 +1040,9 @@ object HongguoStreamResolver {
                                 val codec = item.optString("codec_type").lowercase()
                                 if (mainUrl.isEmpty() || codec == "bytevc2" || codec == "bvc2") continue
 
-                                val qDesc = item.optString("quality_desc").ifEmpty {
+                                val qDesc = item.optString("definition").ifEmpty {
+                                    item.optString("quality_desc")
+                                }.ifEmpty {
                                     item.optString("height").ifEmpty {
                                         item.optString("vheight").ifEmpty {
                                             item.optString("quality").ifEmpty { k }
@@ -960,7 +1059,7 @@ object HongguoStreamResolver {
                     android.util.Log.w("HongguoStreamResolver", "fallback_api 请求异常: ${e.message}")
                 }
 
-                // 多编码智能协商 (Codec Fallback): 若默认资源全为 ByteVC2，自动协商请求 H.264/HEVC 正片原画
+                // 多编码智能协商 (Codec Fallback): 若默认资源全为 ByteVC2，自动协商请求 H.265/H.264 全档位正片原画
                 if (candidateList.isEmpty()) {
                     for (codec in listOf("codec_type=1", "codec_type=0&force_codec=h264", "codec_type=3")) {
                         try {
@@ -984,7 +1083,9 @@ object HongguoStreamResolver {
                                         val mainUrl = item.optString("main_url")
                                         val codecType = item.optString("codec_type").lowercase()
                                         if (mainUrl.isEmpty() || codecType == "bytevc2" || codecType == "bvc2") continue
-                                        val qDesc = item.optString("quality_desc").ifEmpty {
+                                        val qDesc = item.optString("definition").ifEmpty {
+                                    item.optString("quality_desc")
+                                }.ifEmpty {
                                             item.optString("height").ifEmpty {
                                                 item.optString("vheight").ifEmpty {
                                                     item.optString("quality").ifEmpty { k }
@@ -1097,6 +1198,7 @@ object HongguoStreamResolver {
         }
 
         val allProviders = listOf(
+            PROVIDER_MOBILE_V5,
             PROVIDER_SINGLE_REGISTERED,
             PROVIDER_MULTI_VIDEO_MODEL,
             PROVIDER_SINGLE_VIDEO_MODEL,
@@ -1120,6 +1222,7 @@ object HongguoStreamResolver {
             val pStart = System.currentTimeMillis()
             HongguoDiagnostic.log("INFO", "stream_resolver", "TRY_PROVIDER", "尝试通道: $p (did=${prof.values["device_id"]})")
             val model = when (p) {
+                PROVIDER_MOBILE_V5 -> executeMobileV5VideoModel(cleanVid, prof)
                 PROVIDER_SINGLE_REGISTERED -> executeSingleRegisteredVideoModel(cleanVid, prof)
                 PROVIDER_VIDEO_TAB -> executeVideoTab(cleanVid, prof)
                 PROVIDER_MULTI_VIDEO_MODEL -> executeMultiVideoModel(cleanVid, prof)
@@ -1172,7 +1275,7 @@ object HongguoStreamResolver {
         val oldDevId = identity.values["device_id"] ?: ""
         val rotated = PlaybackDeviceSession.shared.rotate(client, failedDeviceId = oldDevId)
         if (rotated.values["device_id"] != oldDevId) {
-            for (provider in listOf(PROVIDER_SINGLE_REGISTERED, PROVIDER_MULTI_VIDEO_MODEL, PROVIDER_SINGLE_VIDEO_MODEL)) {
+            for (provider in listOf(PROVIDER_MOBILE_V5, PROVIDER_SINGLE_REGISTERED, PROVIDER_MULTI_VIDEO_MODEL, PROVIDER_SINGLE_VIDEO_MODEL)) {
                 val result = tryExecuteProvider(provider, rotated)
                 if (result != null) {
                     recordSourceSuccess(seriesId, provider)

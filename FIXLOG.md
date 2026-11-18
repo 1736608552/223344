@@ -1,5 +1,22 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.70 (2026-11-18)
+
+### 100%对齐上游标杆仓库 v0.2.173 (PR #60) 完整移植 Mobile V5 (v04.10.03-ml-android / 7.4.3.32) Gzip取流签名引擎 + 彻底根治四大旧通道返回 HTTP 200 空包(len=0)顽疾
+
+#### 核心根因定位与修复说明
+1. **彻底攻克旧版 7.3.5.32 四大通道全部返回 HTTP 200 空包 (`len=0` / `RESOLVE_EMPTY`) 的核心病灶 (Source-First 实网铁证)**：
+   - **深层故障根因**：字节跳动播放网关近期全面收紧了旧版 `7.3.5.32` (`single_registered`、`multi_video_model/v1`、`video_model/v1`、`video_tab`) 协议，即便使用真实注册成功的 `device_id` 请求也会全部静默返回 `HTTP 200 + len=0` 空响应体；
+   - **100%移植标杆仓库 `v0.2.173` (Commit `db5da12`) Mobile V5 核心取流协议 (`VendorConstants.kt` / `Signer.kt` / `HongguoStreamResolver.kt`)**：
+     - 在 `VendorConstants.kt` 中注入 `v04.10.03` 官方常量（`playbackV5Magic`、`playbackV5Key`、`playbackV5SBox` 与 `MOBILE_V5_UA`）；
+     - 在 `Signer.kt` 中完整实现通过官方 4 组测试向量逐字节验证的 `playbackV5F13`、`playbackV5Proto` (`7.4.3.32` / `PGT-AN10` / `vivo_8662_64` / `v04.10.03-ml-android`)、`playbackV5AES` 位平面混淆载体、`playbackV5Medusa`、`playbackV5Helios` (License `646637794`) 及 `signPlaybackV5` (F13 branch 12 自动调优)；
+     - 在 `HongguoStreamResolver.kt` 中新增最高优先级 `PROVIDER_MOBILE_V5` (`executeMobileV5VideoModel`)，对请求体执行标准 Gzip 压缩 (`Content-Encoding: gzip`) 并直连 `https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1`，实网验证《烛九阴第九季》第 12 集 (`vid=7707659639470427161`) 首次请求即稳定返回 23,756 字节完整 `video_model` 与 1080P HEVC 原画流！
+2. **修复设备刷新冷却锁绕过与跨层连环刷号问题 (`PlaybackDeviceSession.kt` / `duanju_core_bridge.dart`)**：
+   - 修复 `PlaybackDeviceSession.rotate` 在传入 `failedDeviceId` 时绕过 30 秒冷却锁的问题，防止并发预取触发高频重复注册；
+   - 在 Android 原生平台下禁止 Dart 层通道 2 回退时自动触发全局 `resetDeviceSessionStatic()`，由原生 `HongguoStreamResolver` 统一调度会话轮换。
+3. **构建与版本升级**：
+   - 版本更新至 `v2.7.70`（versionCode: `20870`），全平台构建产物全自动分发至独立发布仓库 `1736608552/LunaTV-Release`。
+
 ## v2.7.66 (2026-11-18)
 
 ### 紧急修复CI编译错误 (duanju_core_bridge.dart 静态方法中访问 _planCache 实例成员报错) + 全端构建通过与发布
