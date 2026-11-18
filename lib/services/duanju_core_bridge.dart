@@ -399,7 +399,7 @@ class DuanjuCoreBridge {
       final resp = await http.post(
         uri,
         headers: {
-          'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250305.002; Cronet/TTNetVersion:07a97ae8 2026-03-05 QuicVersion:f2324900 2026-02-05)',
+          'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)',
           'Content-Type': 'application/json; charset=utf-8',
           'Accept': 'application/json',
           'X-XS-From-Web': '0',
@@ -1323,6 +1323,7 @@ class DuanjuCoreBridge {
           'vid': vid,
           'maxQuality': quality > 0 ? quality : 1080,
           'seriesId': cleanId,
+          'episode': episode,
         });
         if (res != null) {
           final streamUrl = res['url']?.toString() ?? '';
@@ -1352,7 +1353,7 @@ class DuanjuCoreBridge {
               decryptionKey: decKey,
               keys: keysMap,
               headers: {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 16; 25053RT47C) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 14; 23049RAD8C) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36',
                 'Referer': 'https://novel.snssdk.com/',
               },
               multiMap: multiMap,
@@ -1542,13 +1543,13 @@ class DuanjuCoreBridge {
           'device_platform': 'android',
           'os': 'android',
           'ssmix': 'a',
-          'device_type': '25053RT47C',
+          'device_type': '23049RAD8C',
           'device_brand': 'Redmi',
           'language': 'zh',
-          'os_api': '36',
-          'os_version': '16',
-          'resolution': '1280*2772',
-          'dpi': '520',
+          'os_api': '34',
+          'os_version': '14',
+          'resolution': '1080*2400',
+          'dpi': '440',
           'ac': 'wifi',
           'device_id': devId,
           'iid': iid,
@@ -1564,7 +1565,7 @@ class DuanjuCoreBridge {
         final resp = await http.post(
           uri,
           headers: {
-            'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250305.002; Cronet/TTNetVersion:07a97ae8 2026-03-05 QuicVersion:f2324900 2026-02-05)',
+            'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)',
             'Accept': 'application/json',
             'Content-Type': 'application/json; charset=utf-8',
             'X-XS-From-Web': '0',
@@ -1838,13 +1839,13 @@ class DuanjuCoreBridge {
           'device_platform': 'android',
           'os': 'android',
           'ssmix': 'a',
-          'device_type': '25053RT47C',
+          'device_type': '23049RAD8C',
           'device_brand': 'Redmi',
           'language': 'zh',
-          'os_api': '36',
-          'os_version': '16',
-          'resolution': '1280*2772',
-          'dpi': '520',
+          'os_api': '34',
+          'os_version': '14',
+          'resolution': '1080*2400',
+          'dpi': '440',
           'ac': 'wifi',
           'device_id': devId,
           'iid': iid,
@@ -1890,7 +1891,7 @@ class DuanjuCoreBridge {
             final r = await http.post(
               uri,
               headers: {
-                'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250305.002; Cronet/TTNetVersion:07a97ae8 2026-03-05 QuicVersion:f2324900 2026-02-05)',
+                'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)',
                 'Accept': 'application/json',
                 'Content-Type': 'application/json; charset=utf-8',
                 'X-XS-From-Web': '0',
@@ -1941,7 +1942,7 @@ class DuanjuCoreBridge {
                     try {
                       final fbResp = await http.get(
                         Uri.parse(fallbackUrl),
-                        headers: {'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 16; zh_CN; 25053RT47C)'},
+                        headers: {'User-Agent': 'com.dragon.read/7.3.5.32 (Linux; U; Android 14; zh_CN; 23049RAD8C)'},
                       ).timeout(const Duration(seconds: 8));
                       if (fbResp.statusCode == 200) {
                         final fbJson = jsonDecode(fbResp.body);
@@ -2030,7 +2031,7 @@ class DuanjuCoreBridge {
                     decryptionKey: activeKey,
                     keys: keysMap,
                     headers: {
-                      'User-Agent': 'Mozilla/5.0 (Linux; Android 16; 25053RT47C) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36',
+                      'User-Agent': 'Mozilla/5.0 (Linux; Android 14; 23049RAD8C) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36',
                       'Referer': 'https://novel.snssdk.com/',
                     },
                     multiMap: multiMap,

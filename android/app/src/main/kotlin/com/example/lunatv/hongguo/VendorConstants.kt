@@ -6,8 +6,8 @@ import android.content.SharedPreferences
 import kotlin.random.Random
 
 internal object VendorConstants {
-    const val VIDEO_UA = "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
-    const val APP_UA = "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)"
+    const val VIDEO_UA = "com.phoenix.read/73532 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
+    const val APP_UA = "com.phoenix.read/73532 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001)"
 
     private const val PREFS_NAME = "hongguo_device_identity_v2"
     private const val KEY_INSTALL_IID = "key_install_iid"
@@ -147,14 +147,14 @@ internal object VendorConstants {
             "device_platform" to "android",
             "os" to "android",
             "ssmix" to "a",
-            "device_type" to "25053RT47C",
+            "device_type" to "23049RAD8C",
             "device_brand" to "Redmi",
             "language" to "zh",
-            "os_api" to "36",
-            "os_version" to "16",
+            "os_api" to "34",
+            "os_version" to "14",
             "manifest_version_code" to "73532",
-            "resolution" to "1280*2772",
-            "dpi" to "520",
+            "resolution" to "1080*2400",
+            "dpi" to "440",
             "update_version_code" to "73532",
             "host_abi" to "arm64-v8a",
             "dragon_device_type" to "phone",

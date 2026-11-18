@@ -480,13 +480,13 @@ object HongguoStreamResolver {
                 "device_platform" to "android",
                 "os" to "android",
                 "ssmix" to "a",
-                "device_type" to "25053RT47C",
+                "device_type" to "23049RAD8C",
                 "device_brand" to "Redmi",
                 "language" to "zh",
-                "os_api" to "36",
-                "os_version" to "16",
-                "resolution" to "1280*2772",
-                "dpi" to "520",
+                "os_api" to "34",
+                "os_version" to "14",
+                "resolution" to "1080*2400",
+                "dpi" to "440",
                 "ac" to "wifi",
                 "device_id" to deviceId,
                 "iid" to installId,
@@ -502,6 +502,12 @@ object HongguoStreamResolver {
                 val resp = client.newCall(reqBuilder.build()).execute()
                 val statusCode = resp.code
                 val body = resp.body?.string().orEmpty()
+                HongguoDiagnostic.log(
+                    if (statusCode == 200 && body.isNotBlank()) "INFO" else "WARN",
+                    "stream_resolver",
+                    "SINGLE_REG_RESP",
+                    "single_registered 响应: code=$statusCode len=${body.length} preview=${body.take(80)}"
+                )
                 if (resp.isSuccessful && body.isNotBlank()) {
                     val root = JSONObject(body)
                     val code = root.optInt("Code", root.optInt("code", -1))
@@ -551,7 +557,7 @@ object HongguoStreamResolver {
         val deviceId = profile.values["device_id"] ?: ""
         val installId = profile.values["iid"] ?: profile.values["install_id"] ?: ""
         val deviceBrand = profile.values["device_brand"] ?: "Redmi"
-        val deviceType = profile.values["device_type"] ?: "25053RT47C"
+        val deviceType = profile.values["device_type"] ?: "23049RAD8C"
 
         val queryParams = linkedMapOf(
             "_rticket" to stamp.toString(),
@@ -564,24 +570,24 @@ object HongguoStreamResolver {
             "device_id" to deviceId,
             "device_platform" to "android",
             "device_type" to deviceType,
-            "dpi" to "520",
+            "dpi" to "440",
             "dragon_device_type" to "phone",
             "host_abi" to "arm64-v8a",
             "iid" to installId,
             "is_android_pad_screen" to "0",
             "language" to "zh",
-            "manifest_version_code" to "71332",
+            "manifest_version_code" to "73532",
             "need_personal_recommend" to "1",
             "os" to "android",
-            "os_api" to "36",
-            "os_version" to "16",
-            "resolution" to "1280*2772",
+            "os_api" to "34",
+            "os_version" to "14",
+            "resolution" to "1080*2400",
             "player_so_load" to "1",
-            "pv_player" to "71332",
+            "pv_player" to "73532",
             "ssmix" to "a",
-            "update_version_code" to "71332",
-            "version_code" to "71332",
-            "version_name" to "7.1.3.32",
+            "update_version_code" to "73532",
+            "version_code" to "73532",
+            "version_name" to "7.3.5.32",
             "compliance_status" to "0",
             "video_id" to vid,
             "video_id_type" to "0",
@@ -611,9 +617,15 @@ object HongguoStreamResolver {
 
         try {
             val resp = client.newCall(reqBuilder.build()).execute()
-            if (!resp.isSuccessful) return null
+            val statusCode = resp.code
             val body = resp.body?.string().orEmpty()
-            if (body.isBlank()) return null
+            HongguoDiagnostic.log(
+                if (statusCode == 200 && body.isNotBlank()) "INFO" else "WARN",
+                "stream_resolver",
+                "VIDEO_TAB_RESP",
+                "video_tab 响应: code=$statusCode len=${body.length} preview=${body.take(80)}"
+            )
+            if (!resp.isSuccessful || body.isBlank()) return null
             val root = JSONObject(body)
             val code = root.optInt("Code", root.optInt("code", 0))
             if (code != 0) return null
@@ -668,24 +680,29 @@ object HongguoStreamResolver {
                 }
 
                 val resp = client.newCall(reqBuilder.build()).execute()
-                if (resp.isSuccessful) {
-                    val body = resp.body?.string().orEmpty()
-                    if (body.isNotBlank()) {
-                        val root = JSONObject(body)
-                        val code = root.optInt("Code", root.optInt("code", 0))
-                        if (code == 0) {
-                            val map = root.optJSONObject("data") ?: continue
-                            val entry = map.optJSONObject(vid)
-                                ?: map.keys().asSequence().mapNotNull { map.optJSONObject(it) }.firstOrNull()
-                                ?: continue
-                            val vm = entry.opt("video_model")
-                            val model = when (vm) {
-                                is JSONObject -> vm
-                                is String -> try { JSONObject(vm) } catch (_: Exception) { null }
-                                else -> null
-                            }
-                            if (model != null) return model
+                val statusCode = resp.code
+                val body = resp.body?.string().orEmpty()
+                HongguoDiagnostic.log(
+                    if (statusCode == 200 && body.isNotBlank()) "INFO" else "WARN",
+                    "stream_resolver",
+                    "MULTI_RESP",
+                    "multi_video_model 响应: ep=${ep.substringAfter("https://").substringBefore("/")} code=$statusCode len=${body.length} preview=${body.take(80)}"
+                )
+                if (resp.isSuccessful && body.isNotBlank()) {
+                    val root = JSONObject(body)
+                    val code = root.optInt("Code", root.optInt("code", 0))
+                    if (code == 0) {
+                        val map = root.optJSONObject("data") ?: continue
+                        val entry = map.optJSONObject(vid)
+                            ?: map.keys().asSequence().mapNotNull { map.optJSONObject(it) }.firstOrNull()
+                            ?: continue
+                        val vm = entry.opt("video_model")
+                        val model = when (vm) {
+                            is JSONObject -> vm
+                            is String -> try { JSONObject(vm) } catch (_: Exception) { null }
+                            else -> null
                         }
+                        if (model != null) return model
                     }
                 }
             } catch (e: Exception) {
@@ -710,27 +727,27 @@ object HongguoStreamResolver {
             "iid" to installId,
             "device_id" to deviceId,
             "ac" to "wifi",
-            "channel" to "xiaomi_8662_64",
+            "channel" to "update_64",
             "aid" to "8662",
             "app_name" to "novelread",
             "cdid" to cdid,
-            "version_code" to "73932",
-            "version_name" to "7.3.9.32",
+            "version_code" to "73532",
+            "version_name" to "7.3.5.32",
             "device_platform" to "android",
             "os" to "android",
             "ssmix" to "a",
-            "device_type" to "23127PN0CC",
-            "device_brand" to "Xiaomi",
+            "device_type" to "23049RAD8C",
+            "device_brand" to "Redmi",
             "language" to "zh",
             "os_api" to "34",
             "os_version" to "14",
-            "manifest_version_code" to "73932",
-            "resolution" to "1200*2670",
-            "dpi" to "460",
-            "update_version_code" to "73932",
+            "manifest_version_code" to "73532",
+            "resolution" to "1080*2400",
+            "dpi" to "440",
+            "update_version_code" to "73532",
             "host_abi" to "arm64-v8a",
             "dragon_device_type" to "phone",
-            "pv_player" to "73932",
+            "pv_player" to "73532",
             "compliance_status" to "0",
             "need_personal_recommend" to "1",
             "player_so_load" to "1",
@@ -753,7 +770,7 @@ object HongguoStreamResolver {
                     reqBuilder.header(k, v)
                 }
             }
-            reqBuilder.header("User-Agent", "com.phoenix.read/73932 (Linux; U; Android 14; zh_CN; 23127PN0CC; Build/UKQ1.230804.001; Cronet/TTNetVersion:8d40f833 2026-03-03 QuicVersion:21ac1950 2025-11-18)")
+            reqBuilder.header("User-Agent", VendorConstants.VIDEO_UA)
             reqBuilder.header("Content-Type", "application/json; charset=UTF-8")
             reqBuilder.header("Accept", "application/json; charset=utf-8,application/x-protobuf")
             reqBuilder.header("Passport-Sdk-Version", "50561")
@@ -767,9 +784,15 @@ object HongguoStreamResolver {
             }
 
             val resp = client.newCall(reqBuilder.build()).execute()
-            if (resp.isSuccessful) {
-                val body = resp.body?.string().orEmpty()
-                if (body.isNotBlank()) {
+            val statusCode = resp.code
+            val body = resp.body?.string().orEmpty()
+            HongguoDiagnostic.log(
+                if (statusCode == 200 && body.isNotBlank()) "INFO" else "WARN",
+                "stream_resolver",
+                "SINGLE_MODEL_RESP",
+                "video_model 响应: code=$statusCode len=${body.length} preview=${body.take(80)}"
+            )
+            if (resp.isSuccessful && body.isNotBlank()) {
                     val root = JSONObject(body)
                     val code = root.optInt("Code", root.optInt("code", 0))
                     if (code == 0) {
@@ -783,7 +806,6 @@ object HongguoStreamResolver {
                         if (model != null) return model
                     }
                 }
-            }
         } catch (e: Exception) {
             android.util.Log.w("HongguoStreamResolver", "video_model 单集接口异常: ${e.message}")
         }

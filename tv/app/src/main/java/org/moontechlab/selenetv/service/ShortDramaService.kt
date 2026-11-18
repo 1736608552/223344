@@ -36,7 +36,7 @@ object ShortDramaService {
         "https://api5-normal-sinfonlineb.fqnovel.com/reading/distribution/category/landpage/v/?aid=8662&app_name=novelread&version_code=73532&device_platform=android&os=android"
 
     private const val USER_AGENT =
-        "com.dragon.read/7.3.5.32 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250305.002; Cronet/TTNetVersion:07a97ae8 2026-03-05 QuicVersion:f2324900 2026-02-05)"
+        "com.dragon.read/7.3.5.32 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
 
     // 首行主分类（题材体系，对标手机端）
     val genreCategories = listOf(

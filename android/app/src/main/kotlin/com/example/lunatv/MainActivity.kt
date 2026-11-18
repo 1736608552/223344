@@ -30,7 +30,8 @@ class MainActivity : FlutterActivity() {
                     val vid = call.argument<String>("vid") ?: ""
                     val maxQuality = call.argument<Int>("maxQuality") ?: 1080
                     val seriesId = call.argument<String>("seriesId") ?: ""
-                    org.moontechlab.lunatv.hongguo.HongguoDiagnostic.setContext(seriesId, 1, vid)
+                    val episode = call.argument<Int>("episode") ?: 1
+                    org.moontechlab.lunatv.hongguo.HongguoDiagnostic.setContext(seriesId, episode, vid)
                     Thread {
                         try {
                             val repo = org.moontechlab.lunatv.hongguo.ContentRepository()

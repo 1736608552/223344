@@ -537,15 +537,15 @@ class _PlayerScreenState extends State<PlayerScreen>
           } catch (_) {}
         }());
 
-        // 关键自愈：短剧专区点击卡片进入后首帧自动切入全屏播放，消除停留选集列表与繁琐等待
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && _phase != 'playing') {
-            final targetEp = widget.videoInfo.index > 0
-                ? (widget.videoInfo.index - 1).clamp(0, (widget.initialDetail!.episodes.length - 1).clamp(0, 9999))
-                : 0;
-            _playEpisode(targetEp);
-          }
-        });
+        // 关键自愈：进入后默认展示详情页与完整选集，预选中历史或首集，不强制自动切全屏
+        if (mounted) {
+          final targetEp = widget.videoInfo.index > 0
+              ? (widget.videoInfo.index - 1).clamp(0, (widget.initialDetail!.episodes.length - 1).clamp(0, 9999))
+              : 0;
+          setState(() {
+            _currentEpisodeIndex = targetEp;
+          });
+        }
       }
     } else {
       _loadSources();
@@ -3029,7 +3029,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         } catch (_) {}
       }());
       if (mounted) {
-        _playEpisode(targetEpisodeIndex);
+        setState(() {
+          _currentEpisodeIndex = targetEpisodeIndex;
+        });
       }
       return;
     }
@@ -6228,26 +6230,40 @@ class _PlayerScreenState extends State<PlayerScreen>
                 icon: Icons.settings_outlined,
                 onTap: _showSettingsSheet,
               ),
-              // 集数胶囊徽章 (灰白主题)
+              // 集数胶囊徽章 (灰白主题，点击直接呼出选集抽屉)
               if (totalEps > 0)
-                Container(
-                  margin: const EdgeInsets.only(left: 4),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(
-                      color: Colors.white.withOpacity(0.3),
-                      width: 0.5,
+                GestureDetector(
+                  onTap: _showEpisodeSelectorSheet,
+                  child: Container(
+                    margin: const EdgeInsets.only(left: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.18),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: Colors.white.withOpacity(0.35),
+                        width: 0.5,
+                      ),
                     ),
-                  ),
-                  child: Text(
-                    totalEps > 1 ? '$currentEp/$totalEps' : '第$currentEp集',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          totalEps > 1 ? '$currentEp/$totalEps' : '第$currentEp集',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(width: 2),
+                        const Icon(
+                          Icons.keyboard_arrow_down,
+                          size: 14,
+                          color: Colors.white70,
+                        ),
+                      ],
                     ),
                   ),
                 ),
