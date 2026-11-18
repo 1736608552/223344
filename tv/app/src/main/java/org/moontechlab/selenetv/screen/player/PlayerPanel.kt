@@ -751,6 +751,11 @@ private fun DiagnosticTabContent(
             onClick = {
                 HongguoDiagnostic.clear()
                 logsVersion++
+                Thread {
+                    try {
+                        org.moontechlab.selenetv.hongguo.HongguoStreamResolver.syncHotConfigAndResetDevice()
+                    } catch (_: Exception) {}
+                }.start()
             },
             modifier = Modifier
                 .width(320.dp)
@@ -889,7 +894,7 @@ private fun DiagnosticTabContent(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = if (cardFocused) "按确认键清空" else "点击清空",
+                        text = if (cardFocused) "按确认键热更内核并重置" else "点击热更内核",
                         color = Color.White.copy(alpha = 0.5f),
                         fontSize = 11.sp,
                     )

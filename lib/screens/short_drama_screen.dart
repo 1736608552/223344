@@ -883,22 +883,23 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
                           ),
                         ),
                         icon: const Icon(Icons.refresh_rounded, size: 16),
-                        label: const Text('重置设备解封', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                        label: const Text('热更内核/解封', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                         onPressed: () async {
                           Navigator.pop(ctx);
                           if (!mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
-                              content: Text('正在重置短剧设备身份并申请全新合法 ID...'),
+                              content: Text('正在免重装同步最新红果官方内核并换发全新设备 ID...'),
                               duration: Duration(seconds: 2),
                             ),
                           );
                           final fresh = await DuanjuCoreBridge.instance.resetDeviceSession();
                           final newId = fresh['deviceId']?.toString() ?? '';
+                          final kVer = fresh['kernelVersion']?.toString() ?? '7.4.3.32';
                           if (!mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
-                              content: Text('已成功换发全新设备ID: $newId！'),
+                              content: Text('已同步红果内核 v$kVer 并换发设备ID: $newId！'),
                               backgroundColor: const Color(0xFF16A34A),
                             ),
                           );

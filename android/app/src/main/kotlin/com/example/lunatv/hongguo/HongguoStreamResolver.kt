@@ -22,6 +22,35 @@ object HongguoStreamResolver {
     /**
      * 清理网络连接池 (在电视睡眠唤醒或网络波动重连时调用，彻底拔除已失效的僵尸 TCP Socket)
      */
+    /**
+     * App 内一键免重装热更红果官方内核参数与密钥表 + 换发全新合法设备号
+     */
+    fun syncHotConfigAndResetDevice(): Map<String, String> {
+        evictConnections()
+        val hotInfo = VendorConstants.syncHotConfig(client, force = true)
+        val fresh = PlaybackDeviceSession.shared.resetAll(client)
+        val devId = fresh.values["device_id"] ?: ""
+        val iid = fresh.values["iid"] ?: ""
+        val kernelVer = hotInfo["kernelVersion"] ?: "${VendorConstants.mobileV5VersionName} (${VendorConstants.mobileV5VersionCode})"
+        val src = hotInfo["source"] ?: VendorConstants.hotSyncSource
+        HongguoDiagnostic.log(
+            "INFO", "context", "HOT_SYNC_AND_RESET",
+            "免重装热更红果内核完成 [$kernelVer | $src]，已换发全新设备: did=$devId"
+        )
+        HongguoDiagnostic.updateReport(
+            stage = "hot_config",
+            code = "HOT_SYNC_OK",
+            summary = "已同步最新红果官方内核 ($kernelVer) 并换发设备 did=$devId"
+        )
+        return mapOf(
+            "deviceId" to devId,
+            "installId" to iid,
+            "cookie" to fresh.cookie,
+            "kernelVersion" to kernelVer,
+            "hotSource" to src
+        )
+    }
+
     fun evictConnections() {
         try {
             client.connectionPool.evictAll()
@@ -463,8 +492,9 @@ object HongguoStreamResolver {
      */
     private fun executeMobileV5VideoModel(vid: String, initialProfile: PlaybackDeviceSession.Profile): JSONObject? {
         var currentProfile = initialProfile
-        val ep = "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1"
-        val rawPayload = """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$vid"]},"dr_scene":"player"}""".toByteArray(Charsets.UTF_8)
+        val ep = VendorConstants.mobileV5Endpoint
+        val devLevel = VendorConstants.mobileV5DeviceLevel
+        val rawPayload = """{"biz_param":{"detail_page_version":0,"device_level":$devLevel,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$vid"]},"dr_scene":"player"}""".toByteArray(Charsets.UTF_8)
         val gzipPayload = java.io.ByteArrayOutputStream().also { out ->
             java.util.zip.GZIPOutputStream(out).use { it.write(rawPayload) }
         }.toByteArray()
@@ -478,13 +508,13 @@ object HongguoStreamResolver {
             val v5Params = linkedMapOf(
                 "aid" to "8662",
                 "app_name" to "novelread",
-                "version_code" to "74332",
-                "version_name" to "7.4.3.32",
-                "channel" to "vivo_8662_64",
+                "version_code" to VendorConstants.mobileV5VersionCode,
+                "version_name" to VendorConstants.mobileV5VersionName,
+                "channel" to VendorConstants.mobileV5Channel,
                 "device_platform" to "android",
-                "device_type" to "PGT-AN10",
-                "os_version" to "12",
-                "update_version_code" to "74332",
+                "device_type" to VendorConstants.mobileV5DeviceType,
+                "os_version" to VendorConstants.mobileV5OsVersion,
+                "update_version_code" to VendorConstants.mobileV5VersionCode,
                 "iid" to installId,
                 "cdid" to cdid,
                 "device_id" to deviceId,
@@ -498,7 +528,7 @@ object HongguoStreamResolver {
                 for ((k, v) in signed.headers) {
                     reqBuilder.header(k, v)
                 }
-                reqBuilder.header("User-Agent", VendorConstants.MOBILE_V5_UA)
+                reqBuilder.header("User-Agent", VendorConstants.mobileV5Ua)
                 reqBuilder.header("Accept", "application/json")
                 reqBuilder.header("Content-Type", "application/json; charset=utf-8")
                 reqBuilder.header("Content-Encoding", "gzip")
@@ -1290,6 +1320,25 @@ object HongguoStreamResolver {
                     )
                     return result
                 }
+            }
+        }
+
+        // 终极兜底: 若内置通道均返回空响应，自动触发一次带 60s 冷却保护的上游协议热更新并重试首选通道
+        val prevVer = VendorConstants.mobileV5VersionCode
+        VendorConstants.syncHotConfig(client, force = false)
+        if (VendorConstants.mobileV5VersionCode != prevVer || VendorConstants.hotSyncSource.startsWith("upstream")) {
+            val hotResult = tryExecuteProvider(PROVIDER_MOBILE_V5, rotated)
+            if (hotResult != null) {
+                recordSourceSuccess(seriesId, PROVIDER_MOBILE_V5)
+                val totalElapsed = System.currentTimeMillis() - resolveStart
+                HongguoDiagnostic.log("INFO", "stream_resolver", "RESOLVE_HOT_OK", "上游热更新后取流成功 [画质: ${hotResult["quality"]}, 总耗时: ${totalElapsed}ms]")
+                HongguoDiagnostic.updateReport(
+                    stage = "stream_resolver",
+                    code = "RESOLVE_OK",
+                    elapsedMs = totalElapsed,
+                    summary = "热更内核后取流成功: ${hotResult["quality"]}"
+                )
+                return hotResult
             }
         }
 

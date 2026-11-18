@@ -874,7 +874,7 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
             pending[2] = x
             k = x xor k.rotateLeft(3)
         }
-        val plain = playbackPad("$ts-646637794-8662".toByteArray(Charsets.UTF_8))
+        val plain = playbackPad("$ts-${VendorConstants.mobileV5License}-8662".toByteArray(Charsets.UTF_8))
         for (at in plain.indices step 16) {
             var a = ByteBuffer.wrap(plain, at, 8).order(ByteOrder.LITTLE_ENDIAN).long.toULong()
             var b = ByteBuffer.wrap(plain, at + 8, 8).order(ByteOrder.LITTLE_ENDIAN).long.toULong()
@@ -910,7 +910,7 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
                 "$k=${encode(v)}"
             }
             val qHash = sm3(query.toByteArray(Charsets.UTF_8))
-            if ((iv(qHash, bodyMd5, ts) and 15) == 12) {
+            if ((iv(qHash, bodyMd5, ts) and 15) == (VendorConstants.mobileV5Branch and 15)) {
                 querySm3 = qHash
                 break
             }

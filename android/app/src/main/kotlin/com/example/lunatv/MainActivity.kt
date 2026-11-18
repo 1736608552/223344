@@ -166,17 +166,7 @@ class MainActivity : FlutterActivity() {
                 "resetDeviceIdentity" -> {
                     Thread {
                         try {
-                            val client = org.moontechlab.lunatv.hongguo.HongguoStreamResolver.client
-                            val fresh = org.moontechlab.lunatv.hongguo.PlaybackDeviceSession.shared.resetAll(client)
-                            org.moontechlab.lunatv.hongguo.HongguoDiagnostic.log(
-                                "INFO", "context", "RESET_DEVICE",
-                                "手动重置设备身份完成，已换发全新设备: did=${fresh.values["device_id"]}"
-                            )
-                            val map = mapOf(
-                                "deviceId" to (fresh.values["device_id"] ?: ""),
-                                "installId" to (fresh.values["iid"] ?: ""),
-                                "cookie" to fresh.cookie
-                            )
+                            val map = org.moontechlab.lunatv.hongguo.HongguoStreamResolver.syncHotConfigAndResetDevice()
                             runOnUiThread { result.success(map) }
                         } catch (e: Exception) {
                             runOnUiThread { result.error("RESET_ERROR", e.message, null) }
