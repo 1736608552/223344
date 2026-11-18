@@ -373,7 +373,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                 var resolvedUrl = ""
                 var decryptionKey = ""
                 var vid = ""
-                org.moontechlab.selenetv.hongguo.HongguoDiagnostic.setContext(title, index + 1, vid)
+                org.moontechlab.selenetv.hongguo.HongguoDiagnostic.setContext(launch.title, index + 1, vid)
 
                 // 分集 vid 解析（带网络抖动自愈重试）
                 for (vAttempt in 0..1) {
@@ -387,7 +387,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                             vids.getOrNull(index) ?: ""
                         }
                         if (vid.isNotEmpty()) {
-                            org.moontechlab.selenetv.hongguo.HongguoDiagnostic.setContext(title, index + 1, vid)
+                            org.moontechlab.selenetv.hongguo.HongguoDiagnostic.setContext(launch.title, index + 1, vid)
                             break
                         }
                     } catch (e: Exception) {
@@ -1084,7 +1084,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                     .padding(horizontal = 20.dp, vertical = 12.dp),
             ) {
                 Text(
-                    text = if (isDramaMode) "短剧播放异常 · 按菜单键呼出面板查看【日记】" else "此源播放失败，请尝试换源",
+                    text = if (isShortDrama) "短剧播放异常 · 按菜单键呼出面板查看【日记】" else "此源播放失败，请尝试换源",
                     color = Color.White,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.W600,

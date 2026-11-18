@@ -4270,9 +4270,6 @@ class _PlayerScreenState extends State<PlayerScreen>
             ),
           ),
         );
-      }
-          ),
-        );
         setState(() {
           _isBuffering = false;
         });
