@@ -537,7 +537,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           } catch (_) {}
         }());
 
-        // 关键自愈：进入后预选中历史或首集，并自动秒开起播进入播放状态，消除卡在选集页面的体验缺陷
+        // 关键体验保障：进入后默认完整展示详情页与选集网格（_phase == 'detail'），预选中历史或首集，绝不强制自动切全屏
         if (mounted) {
           final targetEp = widget.videoInfo.index > 0
               ? (widget.videoInfo.index - 1).clamp(0, (widget.initialDetail!.episodes.length - 1).clamp(0, 9999))
@@ -545,7 +545,6 @@ class _PlayerScreenState extends State<PlayerScreen>
           setState(() {
             _currentEpisodeIndex = targetEp;
           });
-          _playEpisode(targetEp);
         }
       }
     } else {
@@ -3024,8 +3023,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         setState(() {
           _currentEpisodeIndex = targetEpisodeIndex;
         });
-        // 短剧历史恢复后自动秒开起播，绝不将用户卡在详情选集页
-        _playEpisode(targetEpisodeIndex);
+        // 恢复播放记录后保持在详情态，高亮选中历史集数，绝不强行跳过选集页面
       }
       return;
     }

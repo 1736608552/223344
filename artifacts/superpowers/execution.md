@@ -1,23 +1,20 @@
-# 彻底攻克短剧取流四大通道 0 字节丢包与 CI 编译阻断执行记录 (v2.7.68)
+# 彻底恢复短剧选集页面与交互流畅流转执行记录 (v2.7.69)
 
-## 1. 故障快速定位 (Source-First 诊断)
-- **CI 阻断根因**：
-  - Android Job (ID: `134602827707`) 与 TV Job (ID: `134602827727`) 报出：
-    `HongguoStreamResolver.kt:565:13 Conflicting declarations: local val installId`
-    `HongguoStreamResolver.kt:621:13 Conflicting declarations: local val installId`
-  - 原因为在 `executeVideoTab` 与 `executeSingleVideoModel` 内部重复声明了已存在的 `val installId`。
+## 1. 故障分析与交互定位
+- **问题根因**：
+  在 `player_screen.dart` 的 `initState` 与短剧历史恢复逻辑中调用了 `_playEpisode`，导致用户刚进入短剧页面就瞬间触发状态机切为 `_phase = 'playing'`，强行跳过了详情选集页，造成用户看不到 1~80 集选集列表。
 
 ## 2. 代码自愈清单
-1. `android/app/src/main/kotlin/com/example/lunatv/hongguo/HongguoStreamResolver.kt`
-   - 清理重复的 `val installId` 声明，统一使用外部已经安全解析的变量。
-2. `tv/app/src/main/java/org/moontechlab/selenetv/hongguo/HongguoStreamResolver.kt`
-   - 同步清理重复变量声明，Kotlin 语法完全合规。
-3. `pubspec.yaml`
-   - 版本更新至 `2.7.68+20868`。
-4. `.github/changelogs.json`
-   - 补充 `v2.7.68` 变更日志。
+1. `lib/screens/player_screen.dart`
+   - 移除了两处强制自动起播调用；
+   - 保证进入短剧页面时保持在 `_phase = 'detail'`，海报、简介与选集网格 100% 完整可见；
+   - 用户点击选集或底部播放大按钮时才进入播放态 `_phase = 'playing'`。
+2. `pubspec.yaml`
+   - 版本更新至 `2.7.69+20869`。
+3. `.github/changelogs.json`
+   - 新增 `v2.7.69` 更新日志。
 
 ## 3. 验证与审查
-- 全端变量作用域扫描验证：`grep -n "val installId"` 每个方法内仅保留唯一声明；
-- 词法 AST 校验 100% 通过；
-- 清理临时文件，保持工作区纯净。
+- Dart 词法与类作用域检查通过；
+- 状态机流转符合预期（进入时 detail，点击时 playing，返回时 detail）；
+- 全端代码整洁，无废弃变量。
