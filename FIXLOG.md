@@ -1,5 +1,14 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.66 (2026-11-18)
+
+### 紧急修复CI编译错误 (duanju_core_bridge.dart 静态方法中访问 _planCache 实例成员报错) + 全端构建通过与发布
+
+#### 核心自愈与升级说明
+1. **紧急修复 Android 与 Windows CI 编译阻断 (Source-First 铁证)**：
+   - **深层故障根因**：在 `duanju_core_bridge.dart` 新增的 `static Future<Map<String, dynamic>> resetDeviceSessionStatic()` 静态方法中，直接调用了 `_planCache.clear()` 等实例成员，导致 Flutter 编译器在 `compileFlutterBuildRelease` / `flutter_assemble` 阶段抛出 `Error: Undefined name '_planCache'` / `_playbackUrlCache` / `_playbackMultiResCache` / `_playbackResolutionCache` 错误，造成 Android APK 与 Windows 构建失败；
+   - **彻底自愈重构**：规范改用单例引用 `instance._planCache.clear()`、`instance._playbackUrlCache.clear()`、`instance._playbackMultiResCache.clear()` 与 `instance._playbackResolutionCache.clear()`，彻底消除未定义标识符错误，确保全平台 CI 极速编译通过！
+
 ## v2.7.65 (2026-11-18)
 
 ### 彻底攻克字节风控静默丢包拦截 (HTTP 200 / 0字节空响应) + 设备黑名单持久化驱逐与破除12秒冷却换发 + 诊断面板一键重置设备解封自愈 + 全端包名严格统一 com.phoenix.read

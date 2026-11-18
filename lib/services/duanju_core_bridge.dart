@@ -1867,10 +1867,10 @@ class DuanjuCoreBridge {
     } catch (_) {}
 
     // 4. 清理所有播放计划与分辨率缓存，确保下一次取流必定换发请求
-    _planCache.clear();
-    _playbackUrlCache.clear();
-    _playbackMultiResCache.clear();
-    _playbackResolutionCache.clear();
+    instance._planCache.clear();
+    instance._playbackUrlCache.clear();
+    instance._playbackMultiResCache.clear();
+    instance._playbackResolutionCache.clear();
 
     DiaryService.add('[短剧] 设备身份已成功重置换发: did=$newDid, iid=$newIid');
 
