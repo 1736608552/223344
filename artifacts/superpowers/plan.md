@@ -1,44 +1,27 @@
-# 播放诊断日记系统实施计划
+# 手机端与TV端短剧“卡在选集打不开播放页”及设备注册失效 (DEVICE_REGISTER_INVALID) 彻底自愈计划
 
-## 1. 目标与背景
-用户反馈在 TV 端和手机端仍然无法播放短剧（卡在 00:00 或加载失败），要求增加**日记/诊断功能**，在 TV 端和手机端记录全链路报错日志，使用户可以随时查看、复制并提供给开发者进行精准修复。
+## 1. 故障核心定位 (Root Cause Analysis)
+1. **视图状态机死锁 (`_phase` 无法切换)**：
+   - 手机端从短剧专区或搜索进入 `PlayerScreen` 时，初始状态为 `_phase = 'detail'`，且 `initState` 中未自动触发起播；
+   - 用户在详情页选集网格点击某一集时，调用 `_playEpisode(index)`，但由于网络延迟或取流受阻，代码在第 4257 行因为 `!actualSourceUrl.startsWith('http')` 直接执行了 `return`，而 `_phase = 'playing'` 位于第 4345 行，导致永远无法切换到播放器视图，用户被死死卡在选集网格中；
+2. **设备注册风控与空身份拦截 (`DEVICE_REGISTER_INVALID`)**：
+   - 字节红果服务器在同一宽带 IP 频繁请求时，对 `device_register` 返回 `HTTP 200 · 响应 100 字节`（包含 `device_id: 0`），导致原生层四通道取流排空；
+   - 缺少免设备注册的官方 Web 穿透兜底与预置合法会话池轮换；
+3. **日记与诊断入口隐蔽过深**：
+   - 原日记入口只在播放态（`_phase == 'playing'`）的齿轮设置菜单中，用户在详情态根本无法看到和使用。
 
-## 2. 架构设计与实施模块
-
-### 模块 A：全链路播放日志收集器 (PlaybackLogCollector / HongguoDiagnostic)
-- **TV 端原生 (Kotlin)**：`org.moontechlab.selenetv.hongguo.HongguoDiagnostic`
-  - 维护内存环形日志队列（最大 200 条），记录关键时间戳、模块分类、级别（INFO / WARN / ERROR）、详情。
-  - 覆盖全链路：
-    1. **设备注册 (DeviceRegister)**：请求 URL、HTTP 状态码、响应字节数、解析出的 did/iid、是否触发 100 字节防刷或空 did。
-    2. **解析与取流 (HongguoStreamResolver)**：剧集 ID、VID、尝试通道（single_registered / multi_video_model / video_model / fallback_api）、HTTP 状态、Key 提取状态、解析耗时。
-    3. **本地解密服务 (HongguoLocalServer)**：服务启动端口、客户端 Range 请求范围、分片下载字节、AES-128-CBC 解密状态、下游写入状态与耗时。
-    4. **播放器核心 (PlayerController / ExoPlayer)**：加载 URL、准备阶段、缓冲进度、首帧是否渲染、播放器异常 (PlaybackException) 详细错误码与堆栈。
-  - 状态快照与判定引擎：自动生成类似标杆 app 的诊断报告（当前阶段、失败判定依据、核心指标、简明排查建议）。
-
-- **手机端原生 (Kotlin) 与 Flutter 桥接**：`org.moontechlab.lunatv.hongguo.HongguoDiagnostic`
-  - 手机端原生层与 TV 端完全同步全链路事件。
-  - 通过 `MethodChannel('com.example.lunatv/hongguo_resolver')` 暴露获取诊断日志接口：`getDiagnosticLogs`、`getDiagnosticReport`、`clearDiagnosticLogs`。
-  - Dart 侧 `DuanjuCoreBridge` 与播放器日志整合，记录 Dart 层取流重试、播放器启动及抛出的错误。
-
-### 模块 B：TV 端「播放诊断日记」弹窗与快捷交互
-- 在 `PlayerScreen.kt` 与控制栏面板 `PlayerPanel.kt` 中：
-  - 控制栏快捷菜单增加「播放诊断」入口（显示为诊断/日志图标或文本）。
-  - 支持遥控器按键快捷唤起（长按菜单键或在控制栏一键点击）。
-  - 弹窗采用深色透明悬浮卡片（Compose for TV）：
-    - 顶部：直观的状态指示（✅ 取流成功 / ⚠️ 设备异常 / ❌ 播放失败）、阶段、判定依据。
-    - 中部：关键指标网格（Device ID、HTTP 状态、响应字节、本地代理端口、ExoPlayer 状态）。
-    - 底部：滚动的最近全链路实时日志详情（带时间戳和高亮颜色区分 INFO/WARN/ERROR）。
-
-### 模块 C：手机端「播放诊断日记」面板与一键复制功能
-- 在 Flutter 播放页面（或短剧详情/设置菜单）：
-  - 播放器控制面板增加「日记/诊断」按钮。
-  - 点击弹出优雅的底部抽屉（BottomSheet）或弹窗：
-    - 展示当前播放的剧集、VID、诊断报告。
-    - 实时滚动展示日志。
-    - 提供【一键复制日记】按钮，一键将完整诊断报告和日志复制到系统剪贴板，带有 Toast 提示，方便用户长按直接粘贴发送。
-    - 提供【清空重测】按钮。
-
-### 模块 D：双端代码审查与编译验证
-- 严格代码审查：检查语法、空指针、类型推断、导入路径、AST 闭合。
-- 升级版本号至 `v2.7.62+20862`，更新 `pubspec.yaml`、`FIXLOG.md`、`.github/changelogs.json`。
-- 推送代码并提交 Release 构建。
+## 2. 实施步骤规划 (Implementation Steps)
+- **步骤 1：重构 `player_screen.dart` 的起播与视图状态流转**
+  - 短剧点击后立即在下一帧自动起播目标集数（支持记忆恢复）；
+  - 进入 `_playEpisode` 时第一时间将 `_phase` 切为 `'playing'`，展示沉浸式播放器全屏界面；
+  - 若解析受阻，全屏播放器中央展示优雅的错误与诊断卡片（包含【一键复制诊断日记】、【重试】、【换源】等按钮）；
+  - 在详情页（`_buildDetailView`）顶部及选集区增加醒目的【播放诊断/日记】按钮。
+- **步骤 2：在 `short_drama_screen.dart` 中增加全局日记/诊断入口**
+  - 在短剧专区右上角增加【诊断日记】图标，支持随时随地一键复制日志。
+- **步骤 3：增强 Android 原生层与 Flutter 端设备注册风控抵御 (`DeviceRegister.kt` / `DuanjuCoreBridge.dart`)**
+  - 在遭遇 `DEVICE_REGISTER_INVALID` 时，启用预置高权重合法设备指纹池（Preset Official Profiles），杜绝 `device_id=0`；
+  - 完善 Web 官方免注册通道穿透，当设备注册临时受阻时无缝降级直取官方原画流。
+- **步骤 4：代码语法静态检查、AST 验证与自检闭环**
+  - 运行静态检查，确认无括号缺失与类型错误。
+- **步骤 5：升级版本至 `v2.7.63+20863`，同步更新更新日志与发布工件**
+  - 提交并推送 GitHub 触发自动化构建发布。

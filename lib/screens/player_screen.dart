@@ -537,7 +537,15 @@ class _PlayerScreenState extends State<PlayerScreen>
           } catch (_) {}
         }());
 
-        // 短剧进入后保持就绪待播状态，由用户主动点击「立即播放」或选择具体集数时起播
+        // 关键自愈：短剧专区点击卡片进入后首帧自动切入全屏播放，消除停留选集列表与繁琐等待
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _phase != 'playing') {
+            final targetEp = widget.videoInfo.index > 0
+                ? (widget.videoInfo.index - 1).clamp(0, (widget.initialDetail!.episodes.length - 1).clamp(0, 9999))
+                : 0;
+            _playEpisode(targetEp);
+          }
+        });
       }
     } else {
       _loadSources();
@@ -3020,6 +3028,9 @@ class _PlayerScreenState extends State<PlayerScreen>
           }
         } catch (_) {}
       }());
+      if (mounted) {
+        _playEpisode(targetEpisodeIndex);
+      }
       return;
     }
 
@@ -4115,6 +4126,18 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (index < 0 || index >= source.episodes.length) return;
     final originalUrl = source.episodes[index];
     if (originalUrl.isEmpty) return;
+
+    // ★ 关键重构：立即将视图切换至播放器全屏状态，展示加载指示器，绝不将用户卡在详情选集页
+    if (mounted) {
+      setState(() {
+        _phase = 'playing';
+        _isBuffering = true;
+        _currentEpisodeIndex = index;
+        _error = null;
+      });
+      _setKeepScreenOn(true);
+      _enableVolumeInterception();
+    }
     // v2.0.23: 播放 URL 不再走 buildProxiedUrl 包 worker
     //   v2.0.14 把播放 URL 包了一层 CF Worker (https://<worker>/m3u8?url=...),
     //   导致"从 v2.0.14 开始没速度, 关掉 CF 加速就正常".
@@ -4140,9 +4163,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         widget.videoInfo.source == 'hongguo' ||
         widget.videoInfo.source == 'shortdrama';
 
-    // 等待异步初始化完成，杜绝快速点击播放时并发重建播放器
+    // 等待异步初始化完成，杜绝快速点击播放时并发重建播放器 (超时4秒兜底，防止挂起)
     if (_initPlayerFuture != null) {
-      await _initPlayerFuture;
+      await _initPlayerFuture?.timeout(const Duration(seconds: 4), onTimeout: () => null);
     }
 
     // 播放器后端类型自适应：桌面端或短剧使用 DuanjuMediaKitBackend，移动端非短剧维持 ExoPlayerBackend
@@ -4258,7 +4281,11 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (mounted) {
         final hintText = (isShortDrama && index >= 3)
             ? '第${index + 1}集为官方VIP保护剧集，前3集可免费秒开体验'
-            : '第${index + 1}集视频地址解析中，请稍候重试...';
+            : '第${index + 1}集视频地址解析中或受设备风控，可点击复制日记发给开发者修复';
+        setState(() {
+          _isBuffering = false;
+          _error = hintText;
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(hintText),
@@ -4270,9 +4297,6 @@ class _PlayerScreenState extends State<PlayerScreen>
             ),
           ),
         );
-        setState(() {
-          _isBuffering = false;
-        });
       }
       return;
     }
@@ -5037,6 +5061,11 @@ class _PlayerScreenState extends State<PlayerScreen>
               ),
             ),
           ),
+          IconButton(
+            tooltip: '播放诊断与日记',
+            icon: const Icon(Icons.bug_report_outlined, color: Color(0xFF38BDF8)),
+            onPressed: _showPlaybackDiagnosticSheet,
+          ),
         ],
       ),
     );
@@ -5576,6 +5605,27 @@ class _PlayerScreenState extends State<PlayerScreen>
           Row(
             children: [
               _buildSectionTitle('选集', isDark),
+              const SizedBox(width: 8),
+              InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: _showPlaybackDiagnosticSheet,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0284C7).withOpacity(0.18),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFF38BDF8).withOpacity(0.5), width: 0.8),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.terminal_rounded, size: 12, color: Color(0xFF38BDF8)),
+                      SizedBox(width: 4),
+                      Text('日记', style: TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                ),
+              ),
               const Spacer(),
               // v2.0.51: 翻页指示器 (1/2) — 用户滑动 PageView 时实时更新
               if (source != null && source.episodes.isNotEmpty)
@@ -7849,6 +7899,104 @@ class _PlayerScreenState extends State<PlayerScreen>
           ),
         // v2.6.113: 下一季居中卡片自动连播浮层 (类似 YouTube / Netflix 风格)
         if (_showNextSeasonOverlay) _buildNextSeasonCenterOverlay(),
+        // 播放异常/解析受阻居中诊断卡片 (全屏居中显示，包含一键复制日记大按钮)
+        if (_error != null && !_isPlaying)
+          Positioned.fill(
+            child: Container(
+              color: Colors.black.withOpacity(0.88),
+              alignment: Alignment.center,
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.error_outline_rounded, color: Color(0xFFF59E0B), size: 48),
+                  const SizedBox(height: 12),
+                  Text(
+                    _error!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    '若提示设备注册异常或接口风控，可点击下方「一键复制日记」发送给开发者排查',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                  const SizedBox(height: 20),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 10,
+                    alignment: WrapAlignment.center,
+                    children: [
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF38BDF8),
+                          foregroundColor: Colors.black87,
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                        ),
+                        icon: const Icon(Icons.copy_rounded, size: 18),
+                        label: const Text('一键复制诊断日记', style: TextStyle(fontWeight: FontWeight.bold)),
+                        onPressed: () async {
+                          final nativeReport = await DuanjuCoreBridge.instance.getDiagnosticReport();
+                          final nativeLogs = await DuanjuCoreBridge.instance.getDiagnosticLogs();
+                          final localEntries = DiaryService.getAll()
+                              .where((e) => e.contains('短剧') || e.contains('Duanju') || e.contains('Player'))
+                              .toList();
+                          final sb = StringBuffer();
+                          sb.writeln(nativeReport);
+                          sb.writeln('\n=== 本地 Flutter 最近短剧日记 ===');
+                          for (final e in localEntries.reversed.take(40)) {
+                            sb.writeln(e);
+                          }
+                          if (nativeLogs.isNotEmpty) {
+                            sb.writeln('\n=== Android 原生底层全量日志 ===');
+                            sb.writeln(nativeLogs);
+                          }
+                          await Clipboard.setData(ClipboardData(text: sb.toString()));
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('✓ 播放诊断日记已复制到剪贴板，可直接发送给开发者！'),
+                                backgroundColor: Color(0xFF10B981),
+                                duration: Duration(seconds: 4),
+                              ),
+                            );
+                          }
+                        },
+                      ),
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          side: const BorderSide(color: Colors.white38),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                        ),
+                        icon: const Icon(Icons.refresh_rounded, size: 18),
+                        label: const Text('重新加载'),
+                        onPressed: () {
+                          setState(() {
+                            _error = null;
+                            _isBuffering = true;
+                          });
+                          _playEpisode(_currentEpisodeIndex);
+                        },
+                      ),
+                      TextButton.icon(
+                        style: TextButton.styleFrom(
+                          foregroundColor: const Color(0xFF38BDF8),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        ),
+                        icon: const Icon(Icons.article_outlined, size: 18),
+                        label: const Text('查看完整日记'),
+                        onPressed: _showPlaybackDiagnosticSheet,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
       ],
     ),
   );

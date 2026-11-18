@@ -1492,7 +1492,8 @@ class DuanjuCoreBridge {
       }
     }
 
-    // 通道 4: 官方网页解析通道兜底
+    // 通道 4: 官方网页免注册原画直取通道兜底 (彻底抵御官方设备注册风控与 DEVICE_REGISTER_INVALID)
+    DiaryService.add('[短剧] 通道4: 尝试官方网页免注册原画通道兜底 (cleanId=$cleanId, ep=$episode)');
     final legacyUrl = await _resolveLegacyWebUrl(cleanId, vid, episode, cacheKey);
     if (legacyUrl != null && legacyUrl.isNotEmpty) {
       final multiMap = buildMultiResolutionUrls(legacyUrl);
@@ -1510,6 +1511,10 @@ class DuanjuCoreBridge {
         qualities: const [1080, 720, 480],
       );
       _planCache[cacheKey] = plan;
+      _playbackUrlCache[cacheKey] = legacyUrl;
+      _playbackResolutionCache[cacheKey] = '1080P';
+      _playbackMultiResCache[cacheKey] = multiMap;
+      DiaryService.add('[短剧] 通道4 兜底原画获取成功: ep=$episode, url=${legacyUrl.substring(0, math.min(legacyUrl.length, 55))}...');
       return plan;
     }
 
@@ -1648,15 +1653,15 @@ class DuanjuCoreBridge {
         'channel': 'update_64',
         'device_brand': 'Redmi',
         'device_platform': 'android',
-        'device_type': '25053RT47C',
-        'dpi': '520',
+        'device_type': '23049RAD8C',
+        'dpi': '440',
         'language': 'zh',
         'manifest_version_code': '73532',
         'os': 'android',
-        'os_api': '36',
-        'os_version': '16',
+        'os_api': '34',
+        'os_version': '14',
         'req_id': reqId,
-        'resolution': '1280*2772',
+        'resolution': '1080*2400',
         'ssmix': 'a',
         'update_version_code': '73532',
         'version_code': '73532',
@@ -1679,15 +1684,15 @@ class DuanjuCoreBridge {
           'package': 'com.phoenix.read',
           'app_language': 'zh',
           'os': 'Android',
-          'os_version': '16',
-          'os_api': 36,
-          'device_model': '25053RT47C',
+          'os_version': '14',
+          'os_api': 34,
+          'device_model': '23049RAD8C',
           'device_brand': 'Redmi',
           'device_manufacturer': 'Xiaomi',
           'cpu_abi': 'arm64-v8a',
-          'density_dpi': 520,
+          'density_dpi': 440,
           'display_density': 'xxhdpi',
-          'resolution': '2772x1280',
+          'resolution': '2400x1080',
           'language': 'zh',
           'timezone': 8,
           'access': 'wifi',
@@ -1702,15 +1707,15 @@ class DuanjuCoreBridge {
           'not_request_sender': 0,
           'is_system_app': 0,
           'sdk_flavor': 'china',
-          'rom': 'OS2.0',
-          'rom_version': 'BP2A.250605.031.A3',
+          'rom': 'MIUI-V14.0.23.0.TMACNXM',
+          'rom_version': 'UKQ1.230804.001',
         },
         '_gen_time': stamp,
       });
       final resp = await http.post(
         Uri.parse('https://log.snssdk.com/service/2/device_register/?$qs'),
         headers: {
-          'User-Agent': 'com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)',
+          'User-Agent': 'com.phoenix.read/73532 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)',
           'Accept': 'application/json',
           'Content-Type': 'application/json; charset=utf-8',
         },
@@ -2201,11 +2206,19 @@ class DuanjuCoreBridge {
     return plan?.url;
   }
 
-  /// 官方网页端单集直链解析通道兜底
+  /// 官方网页端单集直链解析通道兜底 (免设备注册，火山CDN直取原画)
   Future<String?> _resolveLegacyWebUrl(String cleanId, String vid, int episode, String cacheKey) async {
-    if (vid.isEmpty) return null;
+    String actualVid = vid;
+    if (actualVid.isEmpty) {
+      final list = await fetchEpisodeVidList(cleanId);
+      if (list.isNotEmpty) {
+        final idx = (episode - 1).clamp(0, list.length - 1);
+        actualVid = list[idx];
+      }
+    }
+    if (actualVid.isEmpty) return null;
     try {
-      final playerUri = Uri.parse('https://hongguoduanju.com/player/$cleanId/$vid');
+      final playerUri = Uri.parse('https://hongguoduanju.com/player/$cleanId/$actualVid');
       final resp = await http.get(playerUri, headers: {
         'User-Agent': _defaultUserAgent,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -2228,7 +2241,7 @@ class DuanjuCoreBridge {
             pageData ??= loaderData['player_(series_id)/(vid)/page'] ?? loaderData['player_page'];
             if (pageData is Map) {
               final returnedVid = pageData['vid']?.toString() ?? '';
-              if (returnedVid.isEmpty || returnedVid == vid) {
+              if (returnedVid.isEmpty || returnedVid == actualVid) {
                 // 1. 优先提取火山 CDN 官方高清/原画流 (1080P/720P)
                 final playInfo = pageData['video_player_info'];
                 if (playInfo is Map) {
@@ -2239,6 +2252,7 @@ class DuanjuCoreBridge {
                   if (mainUrl != null && mainUrl.startsWith('http')) {
                     _playbackResolutionCache[cacheKey] = '1080P';
                     _playbackUrlCache[cacheKey] = mainUrl;
+                    DiaryService.add('[短剧] 通道4 官方Web免注册原画直取成功: ep=$episode, url=${mainUrl.substring(0, math.min(mainUrl.length, 55))}...');
                     return mainUrl;
                   }
                 }
@@ -2247,7 +2261,9 @@ class DuanjuCoreBridge {
           }
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      DiaryService.add('[短剧] 通道4 官方Web解析异常: $e');
+    }
     return null;
   }
 

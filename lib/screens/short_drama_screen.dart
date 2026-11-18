@@ -7,6 +7,7 @@ import 'package:luna_tv/models/video_info.dart';
 import 'package:luna_tv/models/search_result.dart';
 import 'package:luna_tv/screens/player_screen.dart';
 import 'package:luna_tv/services/duanju_core_bridge.dart';
+import 'package:luna_tv/services/diary_service.dart';
 // v2.5.3: 列表/分类/图片走 ShortDramaDirectService (直连 3 源, 不依赖
 //   serverUrl). 播放解析仍走 ShortDramaService.parseEpisode (serverUrl
 //   后端代理, 含反爬/防盗链/CDN 缓存).
@@ -604,47 +605,266 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
               ),
             ],
           ),
-          InkWell(
-            onTap: _openShortDramaSearch,
-            borderRadius: BorderRadius.circular(20),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                color: themeService.isDarkMode
-                    ? Colors.white.withOpacity(0.08)
-                    : const Color(0xFFF3F4F6),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              InkWell(
+                onTap: _showGlobalDiagnosticSheet,
                 borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: themeService.isDarkMode
-                      ? Colors.white.withOpacity(0.12)
-                      : const Color(0xFFE5E7EB),
-                ),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    Icons.search_rounded,
-                    size: 18,
-                    color: Color(0xFF22C55E),
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    '搜索短剧',
-                    style: FontUtils.poppins(context,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                      color: themeService.isDarkMode
-                          ? Colors.white70
-                          : const Color(0xFF4B5563),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  margin: const EdgeInsets.only(right: 8),
+                  decoration: BoxDecoration(
+                    color: themeService.isDarkMode
+                        ? Colors.white.withOpacity(0.08)
+                        : const Color(0xFFF3F4F6),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: const Color(0xFF38BDF8).withOpacity(0.5),
+                      width: 1,
                     ),
                   ),
-                ],
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.terminal_rounded,
+                        size: 16,
+                        color: Color(0xFF38BDF8),
+                      ),
+                      SizedBox(width: 4),
+                      Text(
+                        '日记',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF38BDF8),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
-            ),
+              InkWell(
+                onTap: _openShortDramaSearch,
+                borderRadius: BorderRadius.circular(20),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: themeService.isDarkMode
+                        ? Colors.white.withOpacity(0.08)
+                        : const Color(0xFFF3F4F6),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: themeService.isDarkMode
+                          ? Colors.white.withOpacity(0.12)
+                          : const Color(0xFFE5E7EB),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.search_rounded,
+                        size: 18,
+                        color: Color(0xFF22C55E),
+                      ),
+                      SizedBox(width: 6),
+                      Text(
+                        '搜索短剧',
+                        style: FontUtils.poppins(context,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: themeService.isDarkMode
+                              ? Colors.white70
+                              : const Color(0xFF4B5563),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),
+    );
+  }
+
+  /// 打开全局播放诊断与日记底栏面板 (支持一键复制，用户排查神器)
+  Future<void> _showGlobalDiagnosticSheet() async {
+    final nativeReport = await DuanjuCoreBridge.instance.getDiagnosticReport();
+    final nativeLogs = await DuanjuCoreBridge.instance.getDiagnosticLogs();
+    final localEntries = DiaryService.getAll()
+        .where((e) => e.contains('短剧') || e.contains('Duanju') || e.contains('Player'))
+        .toList();
+
+    if (!mounted) return;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF111827),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        final combinedReport = StringBuffer();
+        combinedReport.writeln(nativeReport);
+        combinedReport.writeln('\n=== 本地 Flutter 最近短剧日记 ===');
+        if (localEntries.isEmpty) {
+          combinedReport.writeln('(暂无 Flutter 短剧日记)');
+        } else {
+          for (final e in localEntries.reversed.take(40)) {
+            combinedReport.writeln(e);
+          }
+        }
+        if (nativeLogs.isNotEmpty) {
+          combinedReport.writeln('\n=== Android 原生底层全量日志 ===');
+          combinedReport.writeln(nativeLogs);
+        }
+        final reportText = combinedReport.toString();
+
+        return SafeArea(
+          child: Container(
+            height: MediaQuery.of(context).size.height * 0.78,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.terminal_rounded, color: Color(0xFF38BDF8), size: 20),
+                        SizedBox(width: 8),
+                        Text(
+                          '短剧播放诊断与日记',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white70),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1F2937),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.white10),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.info_outline, color: Color(0xFF38BDF8), size: 16),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '如遇短剧无法播放，请点击下方「一键复制日记」发送给开发者精准定位。',
+                          style: TextStyle(color: Colors.white70, fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF030712),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: SingleChildScrollView(
+                      child: SelectableText(
+                        reportText,
+                        style: const TextStyle(
+                          color: Color(0xFFE5E7EB),
+                          fontSize: 12,
+                          fontFamily: 'monospace',
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF2563EB),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                        icon: const Icon(Icons.copy_rounded, size: 18),
+                        label: const Text('一键复制日记', style: TextStyle(fontWeight: FontWeight.bold)),
+                        onPressed: () async {
+                          await Clipboard.setData(ClipboardData(text: reportText));
+                          if (!mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('已复制诊断日记到剪贴板，可直接发送给开发者！'),
+                              backgroundColor: Color(0xFF16A34A),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white70,
+                        side: const BorderSide(color: Colors.white24),
+                        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      child: const Text('清空日记'),
+                      onPressed: () async {
+                        await DuanjuCoreBridge.instance.clearDiagnosticLogs();
+                        DiaryService.clear();
+                        Navigator.pop(ctx);
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('已清空日记记录')),
+                          );
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 

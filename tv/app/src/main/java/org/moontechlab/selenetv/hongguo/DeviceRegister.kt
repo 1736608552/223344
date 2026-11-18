@@ -33,7 +33,7 @@ object DeviceRegister {
         )
 
     const val SINGLE_REG_UA =
-        "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
+        "com.phoenix.read/73532 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
 
     /** 注册结果：平台下发的设备身份 + 需要回写的那几个 Cookie。 */
     data class Registered(
@@ -53,9 +53,9 @@ object DeviceRegister {
         now: Long = System.currentTimeMillis(),
     ): Registered? {
         val reqId = UUID.randomUUID().toString()
-        val openudid = UUID.randomUUID().toString().replace("-", "").take(16)
-        val clientudid = UUID.randomUUID().toString()
-        val cdid = UUID.randomUUID().toString()
+        val openudid = VendorConstants.openUdid.ifBlank { UUID.randomUUID().toString().replace("-", "").take(16) }
+        val clientudid = VendorConstants.clientUdid.ifBlank { UUID.randomUUID().toString() }
+        val cdid = VendorConstants.cdid.ifBlank { UUID.randomUUID().toString() }
 
         val queryMap = linkedMapOf(
             "aid" to "8662",
@@ -68,13 +68,13 @@ object DeviceRegister {
             "device_platform" to "android",
             "os" to "android",
             "ssmix" to "a",
-            "device_type" to "25053RT47C",
+            "device_type" to "23049RAD8C",
             "device_brand" to "Redmi",
             "language" to "zh",
-            "os_api" to "36",
-            "os_version" to "16",
-            "resolution" to "1280*2772",
-            "dpi" to "520",
+            "os_api" to "34",
+            "os_version" to "14",
+            "resolution" to "1080*2400",
+            "dpi" to "440",
             "ac" to "wifi",
             "_rticket" to now.toString(),
             "req_id" to reqId,
@@ -102,15 +102,15 @@ object DeviceRegister {
                     put("update_version_code", 73532)
                     put("manifest_version_code", 73532)
                     put("os", "Android")
-                    put("os_version", "16")
-                    put("os_api", 36)
-                    put("device_model", "25053RT47C")
+                    put("os_version", "14")
+                    put("os_api", 34)
+                    put("device_model", "23049RAD8C")
                     put("device_brand", "Redmi")
                     put("device_manufacturer", "Xiaomi")
                     put("cpu_abi", "arm64-v8a")
-                    put("density_dpi", 520)
+                    put("density_dpi", 440)
                     put("display_density", "xxhdpi")
-                    put("resolution", "2772x1280")
+                    put("resolution", "2400x1080")
                     put("language", "zh")
                     put("mc", "02:00:00:00:00:00")
                     put("timezone", 8)
@@ -118,8 +118,8 @@ object DeviceRegister {
                     put("not_request_sender", 0)
                     put("carrier", "China Mobile")
                     put("mcc_mnc", "46000")
-                    put("rom", "OS2.0")
-                    put("rom_version", "BP2A.250605.031.A3")
+                    put("rom", "MIUI-V14.0.23.0.TMACNXM")
+                    put("rom_version", "UKQ1.230804.001")
                     put("openudid", openudid)
                     put("clientudid", clientudid)
                     put("cdid", cdid)
