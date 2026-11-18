@@ -612,7 +612,6 @@ object HongguoStreamResolver {
             .header("User-Agent", VendorConstants.VIDEO_UA)
             .header("Accept", "application/json; charset=utf-8")
 
-        val installId = profile.values["iid"] ?: profile.values["install_id"] ?: ""
         val cookie = if (profile.cookie.isNotBlank()) {
             profile.cookie
         } else {
@@ -777,7 +776,6 @@ object HongguoStreamResolver {
             reqBuilder.header("X-SS-DP", "8662")
             reqBuilder.header("Lc", "101")
             reqBuilder.header("X-Reading-Request", "$stamp-$nonce")
-            val installId = profile.values["iid"] ?: profile.values["install_id"] ?: ""
             val cookie = if (profile.cookie.isNotBlank()) {
                 profile.cookie
             } else {
