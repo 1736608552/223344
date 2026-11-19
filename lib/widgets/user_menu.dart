@@ -1666,9 +1666,12 @@ class _UserMenuState extends State<UserMenu> {
                 currentValue: _doubanDataSource,
                 options: const [
                   '直连',
-                  'Cors Proxy By Zwei',
                   '豆瓣 CDN By CMLiussss（腾讯云）',
                   '豆瓣 CDN By CMLiussss（阿里云）',
+                  'Cors Proxy By Zwei',
+                  'AllOrigins 公共代理',
+                  'CorsProxy.io 公共代理',
+                  'CodeTabs 公共代理',
                 ],
                 onChanged: (value) async {
                   await UserDataService.saveDoubanDataSource(value);
@@ -1687,9 +1690,14 @@ class _UserMenuState extends State<UserMenu> {
                 currentValue: _doubanImageSource,
                 options: const [
                   '直连',
-                  '豆瓣官方精品 CDN',
+                  '豆瓣官方精品 CDN（img3）',
+                  '豆瓣官方 CDN（img1）',
+                  '豆瓣官方 CDN（img2）',
+                  '豆瓣官方 CDN（img9）',
                   '豆瓣 CDN By CMLiussss（腾讯云）',
                   '豆瓣 CDN By CMLiussss（阿里云）',
+                  'WordPress Photon 加速',
+                  'Weserv 全球图像 CDN',
                 ],
                 onChanged: (value) async {
                   await UserDataService.saveDoubanImageSource(value);

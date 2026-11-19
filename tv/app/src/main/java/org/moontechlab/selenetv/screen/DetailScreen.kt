@@ -302,7 +302,8 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
                         state = state.copy(details = resp.data, detailsLoading = false)
                     }
                 }
-                is ApiResponse.Error -> state = state.copy(detailsError = resp.message, detailsLoading = false)
+                // 豆瓣详情拉取失败时优雅降级，使用海报卡片/播放源信息正常展示详情与播放按钮，不再整页报错阻断观看
+                is ApiResponse.Error -> state = state.copy(detailsError = null, detailsLoading = false)
             }
         }
     }
@@ -313,7 +314,7 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
             state = state.copy(detailsLoading = true, detailsError = null)
             when (val resp = bangumiService.getBangumiDetail(entry.bangumiId.toString())) {
                 is ApiResponse.Success -> state = state.copy(bangumiDetails = resp.data, detailsLoading = false)
-                is ApiResponse.Error -> state = state.copy(detailsError = resp.message, detailsLoading = false)
+                is ApiResponse.Error -> state = state.copy(detailsError = null, detailsLoading = false)
             }
         }
     }
@@ -690,20 +691,17 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
         val epIndex = ((rec?.index ?: 1) - 1).coerceAtLeast(0)
         // 使用 PlayProgress.normalizePlayTimeMs 智能规整跨端进度单位 (兼容手机端毫秒与旧版TV秒)，
         // 彻底根除乘以 1000 放大导致起播越界挂死与 -19:15:34 倒数畸形。
-        val startMs = org.moontechlab.selenetv.screen.player.PlayProgress.normalizePlayTimeMs(rec?.playTime ?: 0L, isShortDrama)
+        val rawStartMs = org.moontechlab.selenetv.screen.player.PlayProgress.normalizePlayTimeMs(rec?.playTime ?: 0L, isShortDrama)
         val totalMs = org.moontechlab.selenetv.screen.player.PlayProgress.normalizePlayTimeMs(rec?.totalTime ?: 0L, isShortDrama)
+        // 临近片尾（剩余不足 3 秒）归零重播当前集，避免开播瞬间直接被末尾守卫跳过至下一集
+        val startMs = if (rawStartMs > 0L && totalMs > 5000L && rawStartMs >= totalMs - 3000L) 0L else rawStartMs
         launchPlayer(source, epIndex, startMs, totalMs)
     }
 
     val onPlay: () -> Unit = lam@{
         val source = state.selectedSource ?: return@lam
-        val rec = state.selectedPlayRecord
-        when {
-            // 有续看记录时「播放」语义为「从头播放」
-            rec != null -> launchPlayer(source, 0, 0L, 0L)
-            source.episodes.size > 1 -> state = state.copy(episodePickerVisible = true)
-            else -> launchPlayer(source, 0, 0L, 0L)
-        }
+        // 点击「播放 / 从头播放」一律直接从第 1 集 00:00 开播；选集由独立「选集」按钮打开
+        launchPlayer(source, 0, 0L, 0L)
     }
 
     // ==================== 迁移播放记录 ====================
@@ -943,6 +941,9 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
                                     val total = org.moontechlab.selenetv.screen.player.PlayProgress.normalizePlayTimeMs(record.totalTime, isShort).toFloat()
                                     if (total > 0f) (play / total).coerceIn(0f, 1f) else 0f
                                 } else 0f,
+                                // 多集视频独立展示「选集」按钮，点击「播放」直接从第 1 集开播
+                                showEpisodePicker = hasSource && epCount > 1,
+                                onOpenEpisodePicker = { state = state.copy(episodePickerVisible = true) },
                                 // 当前源无记录、且本片其他源有可迁移记录时显示「迁移记录」
                                 showMigrate = hasSource && !hasRecord && migrateCandidates.isNotEmpty(),
                                 onMigrate = { migratePickerEverOpened = true; migratePickerVisible = true },

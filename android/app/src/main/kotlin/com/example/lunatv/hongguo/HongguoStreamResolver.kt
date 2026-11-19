@@ -483,7 +483,16 @@ object HongguoStreamResolver {
         )
     }
 
-    private data class VideoCandidate(val qNum: Int, val mainUrl: String, val spadeA: String)
+    private data class VideoCandidate(
+        val qNum: Int,
+        val mainUrl: String,
+        val spadeA: String,
+        val vwidth: Int = 0,
+        val vheight: Int = 0,
+    )
+
+    private fun isOddDimension(w: Int, h: Int): Boolean =
+        (w > 0 && w != 540 && w % 8 != 0) || (h > 0 && h != 540 && h % 8 != 0)
 
     /**
      * Provider 00 (100% 对齐 aston314/hongguo-tv v0.2.173 minireel_mobile_v5.go & mobile-playback-v5.js):
@@ -997,9 +1006,11 @@ object HongguoStreamResolver {
                 }
                 if (qNum == 0) qNum = 720
 
+                val vw = meta.optInt("vwidth", meta.optInt("width", item.optInt("vwidth", item.optInt("width", 0))))
+                val vh = meta.optInt("vheight", meta.optInt("height", item.optInt("vheight", item.optInt("height", 0))))
                 val encInfo = item.optJSONObject("encrypt_info")
                 val spadeA = encInfo?.optString("spade_a")?.ifEmpty { item.optString("spade_a") } ?: item.optString("spade_a")
-                candidateList.add(VideoCandidate(qNum, mainUrl, spadeA))
+                candidateList.add(VideoCandidate(qNum, mainUrl, spadeA, vw, vh))
             }
         } else if (rawVideoList is JSONObject) {
             val keys = rawVideoList.keys()
@@ -1032,9 +1043,11 @@ object HongguoStreamResolver {
                 }
                 if (qNum == 0) qNum = 720
 
+                val vw = meta.optInt("vwidth", meta.optInt("width", item.optInt("vwidth", item.optInt("width", 0))))
+                val vh = meta.optInt("vheight", meta.optInt("height", item.optInt("vheight", item.optInt("height", 0))))
                 val encInfo = item.optJSONObject("encrypt_info")
                 val spadeA = encInfo?.optString("spade_a")?.ifEmpty { item.optString("spade_a") } ?: item.optString("spade_a")
-                candidateList.add(VideoCandidate(qNum, mainUrl, spadeA))
+                candidateList.add(VideoCandidate(qNum, mainUrl, spadeA, vw, vh))
             }
         }
 
@@ -1080,8 +1093,10 @@ object HongguoStreamResolver {
                                     }
                                 }
                                 val qNum = Regex("(\\d+)").find(qDesc)?.groupValues?.get(1)?.toIntOrNull() ?: 720
+                                val vw = item.optInt("vwidth", item.optInt("width", 0))
+                                val vh = item.optInt("vheight", item.optInt("height", 0))
                                 val spadeA = item.optString("spade_a")
-                                candidateList.add(VideoCandidate(qNum, mainUrl, spadeA))
+                                candidateList.add(VideoCandidate(qNum, mainUrl, spadeA, vw, vh))
                             }
                         }
                     }
@@ -1123,8 +1138,10 @@ object HongguoStreamResolver {
                                             }
                                         }
                                         val qNum = Regex("(\\d+)").find(qDesc)?.groupValues?.get(1)?.toIntOrNull() ?: 720
+                                        val vw = item.optInt("vwidth", item.optInt("width", 0))
+                                        val vh = item.optInt("vheight", item.optInt("height", 0))
                                         val spadeA = item.optString("spade_a")
-                                        candidateList.add(VideoCandidate(qNum, mainUrl, spadeA))
+                                        candidateList.add(VideoCandidate(qNum, mainUrl, spadeA, vw, vh))
                                     }
                                     if (candidateList.isNotEmpty()) break
                                 }
@@ -1140,8 +1157,8 @@ object HongguoStreamResolver {
 
         val multiMap = mutableMapOf<String, String>()
         val keysMap = mutableMapOf<String, String>()
+        val softDecMap = mutableMapOf<String, Boolean>()
         val qualityList = mutableListOf<Int>()
-        var fallbackKey = ""
 
         for (cand in candidateList) {
             val qNum = cand.qNum
@@ -1170,16 +1187,19 @@ object HongguoStreamResolver {
                 val qLabel = "${qNum}P"
                 multiMap[qLabel] = rawUrl
                 if (!qualityList.contains(qNum)) qualityList.add(qNum)
+                softDecMap[qLabel] = isOddDimension(cand.vwidth, cand.vheight)
 
+                // 按清晰度严格隔离密钥：明文流清除 keysMap 对应项，杜绝跨清晰度串用 AES Key 导致整段解码花屏
                 val spadeA = cand.spadeA
                 if (spadeA.isNotEmpty()) {
                     val derived = MediaCrypto.deriveKeyHex(spadeA)
                     if (derived.isNotEmpty()) {
                         keysMap[qLabel] = derived
-                        if (fallbackKey.isEmpty()) {
-                            fallbackKey = derived
-                        }
+                    } else {
+                        keysMap.remove(qLabel)
                     }
+                } else {
+                    keysMap.remove(qLabel)
                 }
             }
         }
@@ -1188,8 +1208,10 @@ object HongguoStreamResolver {
             val targetQuality = qualityList.firstOrNull { it <= maxQuality } ?: qualityList.first()
             val targetLabel = "${targetQuality}P"
             val primaryUrl = multiMap[targetLabel] ?: multiMap.values.first()
-            val primaryKey = keysMap[targetLabel] ?: fallbackKey
+            val primaryKey = keysMap[targetLabel] ?: ""
+            val needsSoft = softDecMap[targetLabel] == true
             multiMap["自动"] = primaryUrl
+            softDecMap["自动"] = needsSoft
 
             return mapOf(
                 "url" to primaryUrl,
@@ -1198,7 +1220,9 @@ object HongguoStreamResolver {
                 "quality" to targetLabel,
                 "actualQuality" to targetQuality,
                 "qualities" to qualityList,
-                "multiMap" to multiMap
+                "multiMap" to multiMap,
+                "needsSoftwareDecode" to needsSoft,
+                "softDecMap" to softDecMap
             )
         }
         return null

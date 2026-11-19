@@ -45,6 +45,7 @@ class DoubanService private constructor(private val context: Context) {
         }
         
         private const val TIMEOUT_MS = 30000
+        private const val NODE_TIMEOUT_MS = 10000
     }
     
     private val cacheService by lazy { DoubanCacheService.getInstance(context) }
@@ -78,30 +79,77 @@ class DoubanService private constructor(private val context: Context) {
     }
     
     /**
-     * 根据数据源构建 API URL
+     * 将 rexxar 相对路径按指定豆瓣数据源包装为最终请求 URL
      */
-    private fun buildApiUrl(
-        dataSourceKey: DoubanDataSourceKey,
-        kind: DoubanKind,
-        category: String,
-        type: String,
-        start: Int,
-        limit: Int
-    ): String {
-        val baseUrl = when (dataSourceKey) {
-            DoubanDataSourceKey.CDN_TENCENT -> "https://m.douban.cmliussss.net"
-            DoubanDataSourceKey.CDN_ALIYUN -> "https://m.douban.cmliussss.com"
-            else -> "https://m.douban.com"
+    private fun wrapDoubanUrl(dataSourceKey: DoubanDataSourceKey, rexxarPathAndQuery: String): String {
+        val cleanPath = if (rexxarPathAndQuery.startsWith("/")) rexxarPathAndQuery else "/$rexxarPathAndQuery"
+        val originUrl = "https://m.douban.com$cleanPath"
+        return when (dataSourceKey) {
+            DoubanDataSourceKey.CDN_TENCENT -> "https://m.douban.cmliussss.net$cleanPath"
+            DoubanDataSourceKey.CDN_ALIYUN -> "https://m.douban.cmliussss.com$cleanPath"
+            DoubanDataSourceKey.CORS_PROXY -> "https://ciao-cors.is-an.org/${URLEncoder.encode(originUrl, "UTF-8")}"
+            DoubanDataSourceKey.CORS_ALLORIGINS -> "https://api.allorigins.win/raw?url=${URLEncoder.encode(originUrl, "UTF-8")}"
+            DoubanDataSourceKey.CORS_PROXY_IO -> "https://corsproxy.io/?${URLEncoder.encode(originUrl, "UTF-8")}"
+            DoubanDataSourceKey.CORS_CODETABS -> "https://api.codetabs.com/v1/proxy?quest=${URLEncoder.encode(originUrl, "UTF-8")}"
+            DoubanDataSourceKey.DIRECT -> originUrl
         }
-        
-        val kindStr = kind.name.lowercase()
-        val apiUrl = "$baseUrl/rexxar/api/v2/subject/recent_hot/$kindStr?start=$start&limit=$limit&category=$category&type=$type"
-        
-        return if (dataSourceKey == DoubanDataSourceKey.CORS_PROXY) {
-            "https://ciao-cors.is-an.org/${URLEncoder.encode(apiUrl, "UTF-8")}"
-        } else {
-            apiUrl
+    }
+
+    /**
+     * 构建多路豆瓣 CDN 自动故障转移队列（用户首选节点置顶，失败/超时/非JSON反爬页自动顺延下一节点）
+     */
+    private fun buildFailoverQueue(primary: DoubanDataSourceKey): List<DoubanDataSourceKey> {
+        val all = listOf(
+            primary,
+            DoubanDataSourceKey.DIRECT,
+            DoubanDataSourceKey.CDN_TENCENT,
+            DoubanDataSourceKey.CDN_ALIYUN,
+            DoubanDataSourceKey.CORS_PROXY,
+            DoubanDataSourceKey.CORS_ALLORIGINS,
+            DoubanDataSourceKey.CORS_PROXY_IO,
+            DoubanDataSourceKey.CORS_CODETABS,
+        )
+        return all.distinct()
+    }
+
+    /**
+     * 多路豆瓣 CDN 自动故障转移 GET（单节点 10s 超时 + 自动识别 HTML 拦截页并切换下一 CDN）
+     */
+    private suspend fun httpGetWithFailover(
+        rexxarPathAndQuery: String,
+        primarySource: DoubanDataSourceKey,
+    ): Pair<Int, String> {
+        val queue = buildFailoverQueue(primarySource)
+        var lastCode = -1
+        var lastBody = ""
+        var lastError: Exception? = null
+        for (node in queue) {
+            val url = wrapDoubanUrl(node, rexxarPathAndQuery)
+            val headers = mutableMapOf(
+                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Referer" to "https://movie.douban.com/",
+                "Accept" to "application/json, text/plain, */*"
+            )
+            if (node == DoubanDataSourceKey.CORS_PROXY) {
+                headers["Origin"] = getUniqueOrigin()
+            }
+            try {
+                val (code, body) = httpGet(url, headers, NODE_TIMEOUT_MS)
+                lastCode = code
+                lastBody = body
+                val trimmed = body.trimStart()
+                val isJson = trimmed.startsWith("{") || trimmed.startsWith("[")
+                if (code == HttpURLConnection.HTTP_OK && isJson) {
+                    return code to body
+                }
+                android.util.Log.d("DoubanService", "豆瓣节点 $node 返回异常 (code=$code, nonJson=${!isJson}), 自动切换下一节点")
+            } catch (e: Exception) {
+                lastError = e
+                android.util.Log.d("DoubanService", "豆瓣节点 $node 请求异常: ${e.message}, 自动切换下一节点")
+            }
         }
+        if (lastCode > 0) return lastCode to lastBody
+        throw (lastError ?: RuntimeException("所有豆瓣数据源节点均不可用"))
     }
     
     /**
@@ -109,13 +157,14 @@ class DoubanService private constructor(private val context: Context) {
      */
     private suspend fun httpGet(
         url: String,
-        headers: Map<String, String> = emptyMap()
+        headers: Map<String, String> = emptyMap(),
+        timeoutMs: Int = TIMEOUT_MS
     ): Pair<Int, String> = withContext(Dispatchers.IO) {
         val connection = URL(url).openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "GET"
-            connection.connectTimeout = TIMEOUT_MS
-            connection.readTimeout = TIMEOUT_MS
+            connection.connectTimeout = timeoutMs
+            connection.readTimeout = timeoutMs
             
             headers.forEach { (key, value) ->
                 connection.setRequestProperty(key, value)
@@ -232,20 +281,11 @@ class DoubanService private constructor(private val context: Context) {
         }
         
         val start = page * pageLimit
-        val apiUrl = buildApiUrl(dataSourceKey, kind, category, type, start, pageLimit)
+        val kindStr = kind.name.lowercase()
+        val rexxarPath = "/rexxar/api/v2/subject/recent_hot/$kindStr?start=$start&limit=$pageLimit&category=$category&type=$type"
         
         return try {
-            val headers = mutableMapOf(
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Referer" to "https://movie.douban.com/",
-                "Accept" to "application/json, text/plain, */*"
-            )
-            
-            if (dataSourceKey == DoubanDataSourceKey.CORS_PROXY) {
-                headers["Origin"] = getUniqueOrigin()
-            }
-            
-            val (statusCode, responseBody) = httpGet(apiUrl, headers)
+            val (statusCode, responseBody) = httpGetWithFailover(rexxarPath, dataSourceKey)
             
             if (statusCode == HttpURLConnection.HTTP_OK) {
                 try {
@@ -352,13 +392,6 @@ class DoubanService private constructor(private val context: Context) {
             tags.add(platformParam)
         }
         
-        // 根据数据源选项构建不同的基础URL
-        val baseUrl = when (dataSourceKey) {
-            DoubanDataSourceKey.CDN_TENCENT -> "https://m.douban.cmliussss.net/rexxar/api/v2/${params.kind}/recommend"
-            DoubanDataSourceKey.CDN_ALIYUN -> "https://m.douban.cmliussss.com/rexxar/api/v2/${params.kind}/recommend"
-            else -> "https://m.douban.com/rexxar/api/v2/${params.kind}/recommend"
-        }
-        
         // 构建查询参数
         val selectedCategoriesJson = json.encodeToString(
             MapSerializer(String.serializer(), String.serializer()),
@@ -383,24 +416,10 @@ class DoubanService private constructor(private val context: Context) {
             "$key=${URLEncoder.encode(value, "UTF-8")}"
         }
         
-        var targetUrl = "$baseUrl?$urlParams"
-        
-        if (dataSourceKey == DoubanDataSourceKey.CORS_PROXY) {
-            targetUrl = "https://ciao-cors.is-an.org/${URLEncoder.encode(targetUrl, "UTF-8")}"
-        }
+        val rexxarPath = "/rexxar/api/v2/${params.kind}/recommend?$urlParams"
         
         return try {
-            val headers = mutableMapOf(
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Referer" to "https://movie.douban.com/",
-                "Accept" to "application/json, text/plain, */*"
-            )
-            
-            if (dataSourceKey == DoubanDataSourceKey.CORS_PROXY) {
-                headers["Origin"] = getUniqueOrigin()
-            }
-            
-            val (statusCode, responseBody) = httpGet(targetUrl, headers)
+            val (statusCode, responseBody) = httpGetWithFailover(rexxarPath, dataSourceKey)
             
             if (statusCode == HttpURLConnection.HTTP_OK) {
                 try {
@@ -457,29 +476,10 @@ class DoubanService private constructor(private val context: Context) {
         // 改用 rexxar JSON 接口替代抓取 HTML 网页：
         // HTML 详情页 movie.douban.com/subject/{id} 会被豆瓣反爬 302 跳到 sec.douban.com 校验页（按 IP 拦截，
         // 改 cookie/UA 都绕不过）；而 rexxar JSON 接口与首页推荐同源、未被拦截，且字段更全。
-        val rexxarUrl = when (dataSourceKey) {
-            DoubanDataSourceKey.CDN_TENCENT -> "https://m.douban.cmliussss.net/rexxar/api/v2/subject/$doubanId"
-            DoubanDataSourceKey.CDN_ALIYUN -> "https://m.douban.cmliussss.com/rexxar/api/v2/subject/$doubanId"
-            else -> "https://m.douban.com/rexxar/api/v2/subject/$doubanId"
-        }
-        val apiUrl = if (dataSourceKey == DoubanDataSourceKey.CORS_PROXY) {
-            "https://ciao-cors.is-an.org/${URLEncoder.encode(rexxarUrl, "UTF-8")}"
-        } else {
-            rexxarUrl
-        }
+        val rexxarPath = "/rexxar/api/v2/subject/$doubanId"
 
         return try {
-            val headers = mutableMapOf(
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Referer" to "https://movie.douban.com/",
-                "Accept" to "application/json, text/plain, */*"
-            )
-
-            if (dataSourceKey == DoubanDataSourceKey.CORS_PROXY) {
-                headers["Origin"] = getUniqueOrigin()
-            }
-
-            val (statusCode, responseBody) = httpGet(apiUrl, headers)
+            val (statusCode, responseBody) = httpGetWithFailover(rexxarPath, dataSourceKey)
 
             if (statusCode == HttpURLConnection.HTTP_OK) {
                 try {
@@ -566,6 +566,9 @@ class DoubanService private constructor(private val context: Context) {
         val key = AppDataService.getDoubanDataSourceKeySync()
         return when (key) {
             "cors_proxy" -> DoubanDataSourceKey.CORS_PROXY
+            "cors_allorigins" -> DoubanDataSourceKey.CORS_ALLORIGINS
+            "cors_proxy_io" -> DoubanDataSourceKey.CORS_PROXY_IO
+            "cors_codetabs" -> DoubanDataSourceKey.CORS_CODETABS
             "cdn_tencent" -> DoubanDataSourceKey.CDN_TENCENT
             "cdn_aliyun" -> DoubanDataSourceKey.CDN_ALIYUN
             else -> DoubanDataSourceKey.DIRECT

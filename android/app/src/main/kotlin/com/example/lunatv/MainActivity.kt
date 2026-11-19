@@ -45,20 +45,24 @@ class MainActivity : FlutterActivity() {
                                 val rawMulti = (resolved["multiMap"] as? Map<String, String>) ?: emptyMap()
                                 @Suppress("UNCHECKED_CAST")
                                 val keysMap = (resolved["keys"] as? Map<String, String>) ?: emptyMap()
+                                val needsSoft = resolved["needsSoftwareDecode"] as? Boolean ?: false
+                                @Suppress("UNCHECKED_CAST")
+                                val softDecMap = (resolved["softDecMap"] as? Map<String, Boolean>) ?: emptyMap()
                                 if (rawUrl.isNotEmpty() && decKey.length == 32) {
                                     val keyBytes = decKey.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-                                    val primaryInfo = org.moontechlab.lunatv.hongguo.StreamInfo(rawUrl, keyBytes, qStr)
+                                    val primaryInfo = org.moontechlab.lunatv.hongguo.StreamInfo(rawUrl, keyBytes, qStr, needsSoft)
                                     val localPlayUrl = localServer.getPlayUrl(primaryInfo, repo.http, eagerWarm = true)
                                     val localMultiMap = linkedMapOf<String, String>()
                                     for ((label, u) in rawMulti) {
                                         if (label == "自动" || label == qStr) {
                                             localMultiMap[label] = localPlayUrl
                                         } else {
-                                            val kHex = keysMap[label]?.takeIf { it.length == 32 } ?: decKey
+                                            val kHex = keysMap[label]?.takeIf { it.length == 32 } ?: ""
+                                            val labelSoft = softDecMap[label] == true
                                             if (u.startsWith("http") && kHex.length == 32) {
                                                 val kb = kHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
                                                 localMultiMap[label] = localServer.getPlayUrl(
-                                                    org.moontechlab.lunatv.hongguo.StreamInfo(u, kb, label),
+                                                    org.moontechlab.lunatv.hongguo.StreamInfo(u, kb, label, labelSoft),
                                                     repo.http,
                                                     eagerWarm = false
                                                 )
@@ -91,7 +95,8 @@ class MainActivity : FlutterActivity() {
                                     "actualQuality" to qNum,
                                     "qualities" to listOf(qNum),
                                     "multiMap" to mapOf(info.quality to localPlayUrl),
-                                    "keys" to mapOf(info.quality to keyHex)
+                                    "keys" to mapOf(info.quality to keyHex),
+                                    "needsSoftwareDecode" to info.needsSoftwareDecode
                                 )
                             }
                             runOnUiThread { result.success(res) }

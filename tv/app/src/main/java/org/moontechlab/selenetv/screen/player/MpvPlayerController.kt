@@ -83,6 +83,7 @@ class MpvPlayerController(
         }
 
     private val currentDecodeMode = decodeMode
+    @Volatile private var softDecForcedForCurrentLoad = false
 
     init {
         mpv.setOptionString("vo", "gpu")
@@ -126,6 +127,8 @@ class MpvPlayerController(
         mpv.observeProperty("pause", MPVLib.MpvFormat.MPV_FORMAT_FLAG)
         mpv.observeProperty("paused-for-cache", MPVLib.MpvFormat.MPV_FORMAT_FLAG)
         mpv.observeProperty("eof-reached", MPVLib.MpvFormat.MPV_FORMAT_FLAG)
+        mpv.observeProperty("width", MPVLib.MpvFormat.MPV_FORMAT_INT64)
+        mpv.observeProperty("height", MPVLib.MpvFormat.MPV_FORMAT_INT64)
         mpv.addObserver(this)
     }
 
@@ -176,38 +179,35 @@ class MpvPlayerController(
         if (fileActive) pendingStopEndFiles++
         fileActive = true
 
+        softDecForcedForCurrentLoad = false
         val rawKey = decryptionKey?.trim() ?: ""
         val cleanKey = if (rawKey.matches(Regex("^[0-9a-fA-F]{32}$"))) rawKey.lowercase() else ""
-        if (cleanKey.isNotEmpty()) {
-            // 对齐手机端成熟的解密推流配置：必须包含 protocol_whitelist=[http,https,tcp,tls,crypto,data,file]
-            val lavfOptions = if (!url.contains("127.0.0.1")) "decryption_key=$cleanKey" else "" 
+        val isShortDramaStream = cleanKey.isNotEmpty() || url.contains("127.0.0.1") || url.contains("/hongguo/")
+        val activeDecodeMode = org.moontechlab.selenetv.service.AppDataService.getDecodeModeSync()
+        val forceSoft = currentDecodeMode == AppDataService.DecodeMode.SOFTWARE ||
+            activeDecodeMode == AppDataService.DecodeMode.SOFTWARE ||
+            url.contains("softdec=1")
+
+        if (isShortDramaStream) {
+            val lavfOptions = if (cleanKey.isNotEmpty() && !url.contains("127.0.0.1")) "decryption_key=$cleanKey" else ""
             try {
                 mpv.setPropertyString("demuxer-lavf-o", lavfOptions)
                 mpv.setPropertyString("network-timeout", "10")
-                // 极速探测起播：缩短 lavf 分析时长与探测尺寸，大幅缩短首帧与起播等待
                 mpv.setPropertyString("demuxer-lavf-analyzeduration", "1000000")
                 mpv.setPropertyString("demuxer-lavf-probesize", "1048576")
                 mpv.setPropertyString("force-seekable", "yes")
                 mpv.setPropertyString("hr-seek", "default")
-                // 核心：严格遵循用户设置中选择的解码方式 (硬解 / 软解)
-                val activeDecodeMode = org.moontechlab.selenetv.service.AppDataService.getDecodeModeSync()
-                when (activeDecodeMode) {
-                    org.moontechlab.selenetv.service.AppDataService.DecodeMode.HARDWARE -> {
-                        // 100% 对齐手机端短剧成熟方案：统一采用 auto-safe，硬件零拷贝优先，异常自动回退软解
-                        mpv.setPropertyString("hwdec", "auto-safe")
-                        mpv.setPropertyString("hwdec-codecs", "all")
-                    }
-                    org.moontechlab.selenetv.service.AppDataService.DecodeMode.SOFTWARE -> {
-                        // 软解模式：走纯 CPU 软解，100% 杜绝机顶盒硬件黑屏
-                        mpv.setPropertyString("hwdec", "no")
-                        // 极致多核软解性能调优：开启多线程并发与快速解码算法，彻底杜绝慢放与掉帧
-                        val cpuCores = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
-                        mpv.setPropertyString("vd-lavc-threads", cpuCores.toString())
-                        mpv.setPropertyString("vd-lavc-fast", "yes")
-                        mpv.setPropertyString("vd-lavc-skiploopfilter", "nonkey")
-                    }
+                if (forceSoft) {
+                    softDecForcedForCurrentLoad = true
+                    mpv.setPropertyString("hwdec", "no")
+                    val cpuCores = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+                    mpv.setPropertyString("vd-lavc-threads", cpuCores.toString())
+                    mpv.setPropertyString("vd-lavc-fast", "yes")
+                    mpv.setPropertyString("vd-lavc-skiploopfilter", "nonkey")
+                } else {
+                    mpv.setPropertyString("hwdec", "auto-safe")
+                    mpv.setPropertyString("hwdec-codecs", "all")
                 }
-                // 核心音画同步保障：设为 no 防止强制丢帧，音画双时钟对齐
                 mpv.setPropertyString("framedrop", "no")
                 mpv.setPropertyString("video-sync", "audio")
                 mpv.setPropertyString("scale", "bilinear")
@@ -219,18 +219,16 @@ class MpvPlayerController(
         } else {
             try {
                 mpv.setPropertyString("demuxer-lavf-o", "")
-                val activeDecodeMode = org.moontechlab.selenetv.service.AppDataService.getDecodeModeSync()
-                when (activeDecodeMode) {
-                    AppDataService.DecodeMode.HARDWARE -> {
-                        mpv.setPropertyString("hwdec", "auto-safe")
-                        mpv.setPropertyString("hwdec-codecs", "h264,hevc,vp9,av1")
-                    }
-                    AppDataService.DecodeMode.SOFTWARE -> {
-                        mpv.setPropertyString("hwdec", "no")
-                        val cpuCores = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
-                        mpv.setPropertyString("vd-lavc-threads", cpuCores.toString())
-                        mpv.setPropertyString("vd-lavc-fast", "yes")
-                    }
+                if (forceSoft) {
+                    softDecForcedForCurrentLoad = true
+                    mpv.setPropertyString("hwdec", "no")
+                    val cpuCores = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+                    mpv.setPropertyString("vd-lavc-threads", cpuCores.toString())
+                    mpv.setPropertyString("vd-lavc-fast", "yes")
+                    mpv.setPropertyString("vd-lavc-skiploopfilter", "nonkey")
+                } else {
+                    mpv.setPropertyString("hwdec", "auto-safe")
+                    mpv.setPropertyString("hwdec-codecs", "h264,hevc,vp9,av1")
                 }
             } catch (_: Exception) {}
         }
@@ -293,14 +291,26 @@ class MpvPlayerController(
 
     // ---- MPVLib.EventObserver（工作线程回调，切主线程更新 Compose 状态）----
     override fun eventProperty(property: String) {}
-    override fun eventProperty(property: String, value: Long) {}
+    override fun eventProperty(property: String, value: Long) {
+        if ((property == "width" || property == "height") && value > 0L && value != 540L && value % 8L != 0L && !softDecForcedForCurrentLoad && !released) {
+            softDecForcedForCurrentLoad = true
+            try {
+                mpv.setPropertyString("hwdec", "no")
+                val cpuCores = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+                mpv.setPropertyString("vd-lavc-threads", cpuCores.toString())
+                mpv.setPropertyString("vd-lavc-fast", "yes")
+                mpv.setPropertyString("vd-lavc-skiploopfilter", "nonkey")
+                android.util.Log.w("MpvPlayerController", "检测到非8对齐奇数分辨率($property=$value)，已即时切纯FFmpeg软解防花屏")
+            } catch (_: Throwable) {}
+        }
+    }
     override fun eventProperty(property: String, value: Boolean) {
         main.post {
             if (released) return@post
             when (property) {
                 "pause" -> isPlaying = !value
                 "paused-for-cache" -> isBuffering = value
-                "eof-reached" -> if (value) onEnded()
+                "eof-reached" -> if (value && hasStarted) onEnded()
             }
         }
     }

@@ -96,6 +96,78 @@ class DoubanService {
   }
 
   /// 初始化缓存服务
+  static const List<String> _allDoubanDataSourceKeys = [
+    'direct',
+    'cdn_tencent',
+    'cdn_aliyun',
+    'cors_proxy',
+    'cors_allorigins',
+    'cors_proxy_io',
+    'cors_codetabs',
+  ];
+
+  static String _wrapDoubanRexxarUrl(String sourceKey, String rexxarPathAndQuery) {
+    final cleanPath = rexxarPathAndQuery.startsWith('/') ? rexxarPathAndQuery : '/$rexxarPathAndQuery';
+    final originUrl = 'https://m.douban.com$cleanPath';
+    switch (sourceKey) {
+      case 'cdn_tencent':
+        return 'https://m.douban.cmliussss.net$cleanPath';
+      case 'cdn_aliyun':
+        return 'https://m.douban.cmliussss.com$cleanPath';
+      case 'cors_proxy':
+        return 'https://ciao-cors.is-an.org/${Uri.encodeComponent(originUrl)}';
+      case 'cors_allorigins':
+        return 'https://api.allorigins.win/raw?url=${Uri.encodeComponent(originUrl)}';
+      case 'cors_proxy_io':
+        return 'https://corsproxy.io/?${Uri.encodeComponent(originUrl)}';
+      case 'cors_codetabs':
+        return 'https://api.codetabs.com/v1/proxy?quest=${Uri.encodeComponent(originUrl)}';
+      case 'direct':
+      default:
+        return originUrl;
+    }
+  }
+
+  /// 多路豆瓣 CDN 自动故障转移请求（用户所选节点优先，单节点超时/非200/反爬HTML页自动顺延下一节点）
+  static Future<http.Response> _fetchDoubanJsonWithFailover(
+    String rexxarPathAndQuery,
+    String primaryKey, {
+    Duration perNodeTimeout = const Duration(seconds: 10),
+  }) async {
+    final queue = <String>[
+      primaryKey,
+      ..._allDoubanDataSourceKeys.where((k) => k != primaryKey),
+    ];
+    http.Response? lastResp;
+    Object? lastErr;
+    for (final node in queue) {
+      final target = _wrapDoubanRexxarUrl(node, rexxarPathAndQuery);
+      final headers = <String, String>{
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Referer': 'https://movie.douban.com/',
+        'Accept': 'application/json, text/plain, */*',
+      };
+      if (node == 'cors_proxy') {
+        headers['Origin'] = _getUniqueOrigin();
+      }
+      try {
+        final response = await http
+            .get(Uri.parse(target), headers: headers)
+            .timeout(perNodeTimeout);
+        lastResp = response;
+        final trimmed = response.body.trimLeft();
+        if (response.statusCode == 200 &&
+            (trimmed.startsWith('{') || trimmed.startsWith('['))) {
+          return response;
+        }
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (lastResp != null) return lastResp;
+    throw lastErr ?? Exception('所有豆瓣数据源节点均不可用');
+  }
+
   static Future<void> _initCache() async {
     if (!_cacheInitialized) {
       await _cacheService.init();
@@ -159,43 +231,15 @@ class DoubanService {
       // 缓存读取失败，继续执行网络请求
       print('读取缓存失败: $e');
     }
-    // 获取用户存储的豆瓣数据源选项
+    // 获取用户存储的豆瓣数据源选项（多路 CDN 自动故障转移）
     final dataSourceKey = await UserDataService.getDoubanDataSourceKey();
-    
-    // 根据数据源选项构建不同的基础URL
-    String apiUrl;
-    switch (dataSourceKey) {
-      case 'cdn_tencent':
-        apiUrl = 'https://m.douban.cmliussss.net/rexxar/api/v2/subject/recent_hot/$kind?start=${page * pageLimit}&limit=$pageLimit&category=$category&type=$type';
-        break;
-      case 'cdn_aliyun':
-        apiUrl = 'https://m.douban.cmliussss.com/rexxar/api/v2/subject/recent_hot/$kind?start=${page * pageLimit}&limit=$pageLimit&category=$category&type=$type';
-        break;
-      case 'direct':
-      default:
-        apiUrl = 'https://m.douban.com/rexxar/api/v2/subject/recent_hot/$kind?start=${page * pageLimit}&limit=$pageLimit&category=$category&type=$type';
-        break;
-    }
-    if (dataSourceKey == 'cors_proxy') {
-      apiUrl = 'https://ciao-cors.is-an.org/${Uri.encodeComponent(apiUrl)}';
-    }
-    
+    final rexxarPath = '/rexxar/api/v2/subject/recent_hot/$kind?start=${page * pageLimit}&limit=$pageLimit&category=$category&type=$type';
+
     try {
-      final headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Referer': 'https://movie.douban.com/',
-        'Accept': 'application/json, text/plain, */*',
-      };
-      
-      // 如果使用 cors_proxy，添加 Origin 头
-      if (dataSourceKey == 'cors_proxy') {
-        headers['Origin'] = _getUniqueOrigin();
-      }
-      
-      final response = await http.get(
-        Uri.parse(apiUrl),
-        headers: headers,
-      ).timeout(const Duration(seconds: 30));
+      final response = await _fetchDoubanJsonWithFailover(
+        rexxarPath,
+        dataSourceKey,
+      );
 
       if (response.statusCode == 200) {
         try {
@@ -369,23 +413,8 @@ class DoubanService {
       tags.add(platform);
     }
 
-    // 获取用户存储的豆瓣数据源选项
+    // 获取用户存储的豆瓣数据源选项（多路 CDN 自动故障转移）
     final dataSourceKey = await UserDataService.getDoubanDataSourceKey();
-    
-    // 根据数据源选项构建不同的基础URL
-    String baseUrl;
-    switch (dataSourceKey) {
-      case 'cdn_tencent':
-        baseUrl = 'https://m.douban.cmliussss.net/rexxar/api/v2/${params.kind}/recommend';
-        break;
-      case 'cdn_aliyun':
-        baseUrl = 'https://m.douban.cmliussss.com/rexxar/api/v2/${params.kind}/recommend';
-        break;
-      case 'direct':
-      default:
-        baseUrl = 'https://m.douban.com/rexxar/api/v2/${params.kind}/recommend';
-        break;
-    }
     
     // 构建查询参数
     final queryParams = <String, String>{
@@ -402,28 +431,15 @@ class DoubanService {
       queryParams['sort'] = sort;
     }
 
-    final uri = Uri.parse(baseUrl).replace(queryParameters: queryParams);
-    String target = uri.toString();
-    if (dataSourceKey == 'cors_proxy') {
-      target = 'https://ciao-cors.is-an.org/${Uri.encodeComponent(target)}';
-    }
+    final uri = Uri.parse('https://m.douban.com/rexxar/api/v2/${params.kind}/recommend')
+        .replace(queryParameters: queryParams);
+    final rexxarPath = '${uri.path}?${uri.query}';
 
     try {
-      final headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Referer': 'https://movie.douban.com/',
-        'Accept': 'application/json, text/plain, */*',
-      };
-      
-      // 如果使用 cors_proxy，添加 Origin 头
-      if (dataSourceKey == 'cors_proxy') {
-        headers['Origin'] = _getUniqueOrigin();
-      }
-      
-      final response = await http.get(
-        Uri.parse(target),
-        headers: headers,
-      ).timeout(const Duration(seconds: 30));
+      final response = await _fetchDoubanJsonWithFailover(
+        rexxarPath,
+        dataSourceKey,
+      );
 
       if (response.statusCode == 200) {
         try {
@@ -505,41 +521,19 @@ class DoubanService {
       print('读取豆瓣搜索缓存失败: $e');
     }
     final dataSourceKey = await UserDataService.getDoubanDataSourceKey();
-    String baseUrl;
-    switch (dataSourceKey) {
-      case 'cdn_tencent':
-        baseUrl = 'https://m.douban.cmliussss.net/rexxar/api/v2/search';
-        break;
-      case 'cdn_aliyun':
-        baseUrl = 'https://m.douban.cmliussss.com/rexxar/api/v2/search';
-        break;
-      case 'direct':
-      default:
-        baseUrl = 'https://m.douban.com/rexxar/api/v2/search';
-        break;
-    }
     final queryParams = <String, String>{
       'q': query.trim(),
       'count': count.toString(),
     };
-    final uri = Uri.parse(baseUrl).replace(queryParameters: queryParams);
-    String target = uri.toString();
-    if (dataSourceKey == 'cors_proxy') {
-      target = 'https://ciao-cors.is-an.org/${Uri.encodeComponent(target)}';
-    }
+    final uri = Uri.parse('https://m.douban.com/rexxar/api/v2/search')
+        .replace(queryParameters: queryParams);
+    final rexxarPath = '${uri.path}?${uri.query}';
     try {
-      final headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Referer': 'https://movie.douban.com/',
-        'Accept': 'application/json, text/plain, */*',
-      };
-      if (dataSourceKey == 'cors_proxy') {
-        headers['Origin'] = _getUniqueOrigin();
-      }
-      final response = await http.get(
-        Uri.parse(target),
-        headers: headers,
-      ).timeout(const Duration(seconds: 8));
+      final response = await _fetchDoubanJsonWithFailover(
+        rexxarPath,
+        dataSourceKey,
+        perNodeTimeout: const Duration(seconds: 6),
+      );
       if (response.statusCode != 200) {
         return ApiResponse.error(
           '获取豆瓣搜索失败: ${response.statusCode}',
@@ -728,45 +722,15 @@ class DoubanService {
       print('读取豆瓣详情缓存失败: $e');
     }
 
-    // 获取用户存储的豆瓣数据源选项
+    // 获取用户存储的豆瓣数据源选项（多路 CDN 自动故障转移）
     final dataSourceKey = await UserDataService.getDoubanDataSourceKey();
-    
-    // 根据数据源选项构建不同的详情 API URL。HTML 页面会被豆瓣反爬跳到
-    // sec.douban.com 校验页；rexxar JSON 接口和推荐列表同源，能稳定取详情。
-    String apiUrl;
-    switch (dataSourceKey) {
-      case 'cdn_tencent':
-        apiUrl = 'https://m.douban.cmliussss.net/rexxar/api/v2/subject/$doubanId';
-        break;
-      case 'cdn_aliyun':
-        apiUrl = 'https://m.douban.cmliussss.com/rexxar/api/v2/subject/$doubanId';
-        break;
-      case 'direct':
-      default:
-        apiUrl = 'https://m.douban.com/rexxar/api/v2/subject/$doubanId';
-        break;
-    }
-    
-    if (dataSourceKey == 'cors_proxy') {
-      apiUrl = 'https://ciao-cors.is-an.org/${Uri.encodeComponent(apiUrl)}';
-    }
+    final rexxarPath = '/rexxar/api/v2/subject/$doubanId';
     
     try {
-      final headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Referer': 'https://movie.douban.com/',
-        'Accept': 'application/json, text/plain, */*',
-      };
-      
-      // 如果使用 cors_proxy，添加 Origin 头
-      if (dataSourceKey == 'cors_proxy') {
-        headers['Origin'] = _getUniqueOrigin();
-      }
-      
-      final response = await http.get(
-        Uri.parse(apiUrl),
-        headers: headers,
-      ).timeout(const Duration(seconds: 30));
+      final response = await _fetchDoubanJsonWithFailover(
+        rexxarPath,
+        dataSourceKey,
+      );
 
       if (response.statusCode == 200) {
         try {

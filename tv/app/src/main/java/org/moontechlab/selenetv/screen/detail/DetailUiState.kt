@@ -52,7 +52,11 @@ data class DetailUiState(
         get() {
             val base = when (entry) {
                 is DetailEntry.Douban -> details?.toHeroInfo()
+                    ?: selectedSource?.toHeroInfo()
+                    ?: HeroInfo(title = entry.title, poster = entry.poster, subLine = entry.year.takeIf { it.isNotBlank() })
                 is DetailEntry.Bangumi -> bangumiDetails?.toHeroInfo()
+                    ?: selectedSource?.toHeroInfo()
+                    ?: HeroInfo(title = entry.title, poster = entry.poster, subLine = entry.year.takeIf { it.isNotBlank() })
                 is DetailEntry.History,
                 is DetailEntry.SearchAggregate -> details?.toHeroInfo() ?: selectedSource?.toHeroInfo()
             }

@@ -82,26 +82,7 @@ String getImageUrlSync(
       processed = _upgradeDoubanPosterUrl(processed);
     }
 
-    switch (imageSourceKey) {
-      case 'official_cdn':
-        return processed.replaceAll(
-          RegExp(r'img\d+\.doubanio\.com'),
-          'img3.doubanio.com',
-        );
-      case 'cdn_tencent':
-        return processed.replaceAll(
-          RegExp(r'img\d+\.doubanio\.com'),
-          'img.doubanio.cmliussss.net',
-        );
-      case 'cdn_aliyun':
-        return processed.replaceAll(
-          RegExp(r'img\d+\.doubanio\.com'),
-          'img.doubanio.cmliussss.com',
-        );
-      case 'direct':
-      default:
-        return processed;
-    }
+    return _applyDoubanImageSource(processed, imageSourceKey);
   }
   if (source == 'bangumi' && originalUrl.isNotEmpty) {
     return UserDataService.buildBangumiImageUrl(originalUrl);
@@ -131,15 +112,27 @@ Future<String> getImageUrl(
 ///   平板缩到 1024+ 宽会糊, l_cover 1280x720 平板 2K 屏不糊.
 ///
 /// CDN 切换跟 [getImageUrl] 一致 (official_cdn / cdn_tencent / cdn_aliyun / direct).
-Future<String> getDoubanCoverUrl(String coverUrl) async {
-  if (coverUrl.isEmpty) return coverUrl;
-  final imageSourceKey = await UserDataService.getDoubanImageSourceKey();
-  String processed = _upgradeDoubanCoverUrl(coverUrl);
+String _applyDoubanImageSource(String processed, String imageSourceKey) {
   switch (imageSourceKey) {
     case 'official_cdn':
       return processed.replaceAll(
         RegExp(r'img\d+\.doubanio\.com'),
         'img3.doubanio.com',
+      );
+    case 'img1_cdn':
+      return processed.replaceAll(
+        RegExp(r'img\d+\.doubanio\.com'),
+        'img1.doubanio.com',
+      );
+    case 'img2_cdn':
+      return processed.replaceAll(
+        RegExp(r'img\d+\.doubanio\.com'),
+        'img2.doubanio.com',
+      );
+    case 'img9_cdn':
+      return processed.replaceAll(
+        RegExp(r'img\d+\.doubanio\.com'),
+        'img9.doubanio.com',
       );
     case 'cdn_tencent':
       return processed.replaceAll(
@@ -151,10 +144,22 @@ Future<String> getDoubanCoverUrl(String coverUrl) async {
         RegExp(r'img\d+\.doubanio\.com'),
         'img.doubanio.cmliussss.com',
       );
+    case 'wp_photon':
+      final stripped = processed.replaceFirst(RegExp(r'^https?://'), '');
+      return 'https://i0.wp.com/$stripped';
+    case 'weserv':
+      return 'https://images.weserv.nl/?url=${Uri.encodeComponent(processed)}';
     case 'direct':
     default:
       return processed;
   }
+}
+
+Future<String> getDoubanCoverUrl(String coverUrl) async {
+  if (coverUrl.isEmpty) return coverUrl;
+  final imageSourceKey = await UserDataService.getDoubanImageSourceKey();
+  final processed = _upgradeDoubanCoverUrl(coverUrl);
+  return _applyDoubanImageSource(processed, imageSourceKey);
 }
 
 /// 返回加载网络图片所需的 HTTP 头（主要用于绕过特定站点的反盗链）。

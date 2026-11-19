@@ -197,7 +197,7 @@ internal object VendorConstants {
             "is_android_pad_screen" to "0"
         )
     // === 红果官方内核免重装热更新引擎 (带 APK 升级防冲突版本锁) ===
-    const val BUILTIN_APP_VERSION_CODE = 20872
+    const val BUILTIN_APP_VERSION_CODE = 20873
     private const val KEY_HOT_BASE_APP_VER = "key_hot_base_app_ver"
     private const val KEY_HOT_CONFIG_JSON = "key_hot_config_json"
 

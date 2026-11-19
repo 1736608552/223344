@@ -19,7 +19,7 @@ data class Series(val id: String, val title: String, val cover: String = "", val
     companion object { fun fromJson(o: JSONObject) = Series(o.str("id"),o.str("title"),o.str("cover"),o.str("description"),o.str("badge"),o.str("tags")) }
 }
 data class Detail(val series: Series, val episodes: List<String>)
-data class StreamInfo(val url: String, val key: ByteArray?, val quality: String)
+data class StreamInfo(val url: String, val key: ByteArray?, val quality: String, val needsSoftwareDecode: Boolean = false)
 
 /** 站点 CDN 在重定向时下发 ttwid 并拦截无 Cookie 的后续请求，内存 Cookie 罐使其自动流转。 */
 class MemoryCookies : okhttp3.CookieJar {
@@ -214,10 +214,14 @@ open class ContentRepository(
                                             url = runCatching { String(decode64(url), Charsets.UTF_8) }.getOrDefault(url)
                                         }
                                         if (url.startsWith("https://") || url.startsWith("http://")) {
+                                            val meta = item.optJSONObject("video_meta")
+                                            val vw = meta?.optInt("vwidth", meta.optInt("width", 0))?.takeIf { it > 0 } ?: item.optInt("vwidth", item.optInt("width", 0))
+                                            val vh = meta?.optInt("vheight", meta.optInt("height", 0))?.takeIf { it > 0 } ?: item.optInt("vheight", item.optInt("height", 0))
+                                            val needsSoft = (vw > 0 && vw != 540 && vw % 8 != 0) || (vh > 0 && vh != 540 && vh % 8 != 0)
                                             val spade = item.optJSONObject("encrypt_info")?.str("spade_a")?.ifEmpty { item.str("spade_a") } ?: item.str("spade_a")
                                             val key = spade.takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
                                             val quality = if (selected.first > 0) "${selected.first}P" else "1080P"
-                                            return StreamInfo(url, key, quality)
+                                            return StreamInfo(url, key, quality, needsSoft)
                                         }
                                     }
                                 }
@@ -258,9 +262,12 @@ open class ContentRepository(
                                     val seed = info.str("key_seed")
                                     if (seed.isNotEmpty()) url = MediaCrypto.decryptUrl(url, decode64(seed))
                                     if (url.startsWith("https://") || url.startsWith("http://")) {
+                                        val vw = item.optInt("vwidth", item.optInt("width", 0))
+                                        val vh = item.optInt("vheight", item.optInt("height", 0))
+                                        val needsSoft = (vw > 0 && vw != 540 && vw % 8 != 0) || (vh > 0 && vh != 540 && vh % 8 != 0)
                                         val key = item.str("spade_a").takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
                                         val quality = if (selected.first > 0) "${selected.first}P" + (if (selected.first > maxQuality) "（兼容资源）" else "") else "自动"
-                                        return StreamInfo(url, key, quality)
+                                        return StreamInfo(url, key, quality, needsSoft)
                                     }
                                 }
                             }

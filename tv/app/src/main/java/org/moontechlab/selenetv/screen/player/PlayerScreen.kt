@@ -111,7 +111,17 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         launch.sources.any { it.source == "hongguo" || it.source == "shortdrama" || it.sourceName.contains("精品短剧") || it.typeName == "短剧" } ||
         launch.selectedSourceKey.startsWith("hongguo") ||
         launch.selectedSourceKey.startsWith("shortdrama")
-    val controller: VideoPlayer = remember { PlayerFactory.create(context, preferMpv = false, isShortDrama = isShortDrama) }
+    var currentDecodeModeState by remember { mutableStateOf(org.moontechlab.selenetv.service.AppDataService.getDecodeModeSync()) }
+    var forceMpvSoftForOddStream by remember { mutableStateOf(false) }
+    val useMpvSoftEngine = (currentDecodeModeState == org.moontechlab.selenetv.service.AppDataService.DecodeMode.SOFTWARE || forceMpvSoftForOddStream) &&
+        android.os.Build.VERSION.SDK_INT >= MPV_MIN_SDK
+    // 软解或奇数分辨率流真实重建为 libmpv 纯 FFmpeg CPU 软解内核（彻底绕开 MediaCodec + Gralloc Surface stride 花屏）
+    val controller: VideoPlayer = remember(useMpvSoftEngine, currentDecodeModeState) {
+        PlayerFactory.create(context, preferMpv = useMpvSoftEngine, isShortDrama = isShortDrama)
+    }
+    var pendingPreResolvedStream by remember { mutableStateOf<Triple<Int, Long, org.moontechlab.selenetv.hongguo.StreamInfo>?>(null) }
+    var pendingReloadAfterEngineSwitch by remember { mutableStateOf<Pair<Int, Long>?>(null) }
+    var initialLoadDispatched by remember { mutableStateOf(false) }
     val reporter = remember { PlayProgressReporter() }
 
     // 播放页处于独立 Dialog 窗口（见 DetailScreen 用 Dialog 隔离焦点域）。Compose Dialog 在
@@ -147,11 +157,11 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     // 播放倍速 + 唤出弹窗状态。speed 变化 → 推到 controller（ExoPlayer/MPV 各自原生 API）。
     var playbackSpeed by remember { androidx.compose.runtime.mutableFloatStateOf(1f) }
     var speedPopupOpen by remember { mutableStateOf(false) }
-    LaunchedEffect(playbackSpeed) { controller.speed = playbackSpeed }
+    LaunchedEffect(controller, playbackSpeed) { controller.speed = playbackSpeed }
 
     var resizeMode by remember { mutableStateOf(VideoResizeMode.FIT) }
     var aspectPopupOpen by remember { mutableStateOf(false) }
-    LaunchedEffect(resizeMode) { controller.resizeMode = resizeMode }
+    LaunchedEffect(controller, resizeMode) { controller.resizeMode = resizeMode }
 
     // 播放状态全部来自播放器后端（VideoPlayer）
     val isPlaying = controller.isPlaying
@@ -350,8 +360,10 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             if (!isShort) return
             (index + 1).toString()
         }
-        // 短剧起播位置保护：若起播位置 > 10 分钟 (明显是跨端脏数据或放大溢出)，安全归零从头播放，彻底杜绝越界黑屏
-        val safeStartMs = if (isShort && startMs > 10 * 60 * 1000L) 0L else startMs
+        // 起播位置保护：短剧 > 10 分钟或临近片尾（剩余不足 3 秒）均安全归零从头播放，杜绝越界黑屏或开播秒跳下一集
+        val rawSafeStartMs = if (isShort && startMs > 10 * 60 * 1000L) 0L else startMs
+        val knownDur = if (controller.durationMs > 0L) controller.durationMs else launch.durationMs
+        val safeStartMs = if (rawSafeStartMs > 0L && knownDur > 5000L && rawSafeStartMs >= knownDur - 3000L) 0L else rawSafeStartMs
         playEpisodeJob = scope.launch {
             if (isShort || src?.source == "hongguo" || src?.source == "shortdrama" || src?.sourceName?.contains("精品短剧") == true || src?.typeName == "短剧") {
                 // 机顶盒待机断 WiFi 唤醒保护：若检测到当前 WiFi 正在重连中，轻量等待网络就绪后再请求，严禁断网期盲目刷接口
@@ -399,37 +411,50 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                 // 100% 对齐 1736608552/hongguo-tv 与手机端生产架构：优先通过本地 HTTP 回环服务输出纯明文 MP4 流
                 if (vid.isNotEmpty()) {
                     val maxQ = 1080
-                    var streamInfo: org.moontechlab.selenetv.hongguo.StreamInfo? = null
                     val repoInstance = org.moontechlab.selenetv.hongguo.ContentRepository()
-
-                    for (rAttempt in 0..1) {
-                        try {
-                            val info = withContext(Dispatchers.IO) {
-                                val resolved = org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ, seriesId = seriesId)
-                                val streamUrl = resolved["url"] as? String ?: ""
-                                val keyHex = resolved["decryptionKey"] as? String ?: ""
-                                val keyBytes = if (keyHex.length == 32) {
-                                    keyHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-                                } else null
-                                val quality = resolved["quality"] as? String ?: "${maxQ}P"
-                                if (streamUrl.isNotBlank()) {
-                                    org.moontechlab.selenetv.hongguo.StreamInfo(streamUrl, keyBytes, quality)
-                                } else {
-                                    repoInstance.stream(vid, maxQuality = maxQ)
+                    val preResolved = pendingPreResolvedStream?.takeIf { it.first == index }
+                    var streamInfo: org.moontechlab.selenetv.hongguo.StreamInfo? = preResolved?.third
+                    if (preResolved != null) {
+                        pendingPreResolvedStream = null
+                    } else {
+                        for (rAttempt in 0..1) {
+                            try {
+                                val info = withContext(Dispatchers.IO) {
+                                    val resolved = org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ, seriesId = seriesId)
+                                    val streamUrl = resolved["url"] as? String ?: ""
+                                    val keyHex = resolved["decryptionKey"] as? String ?: ""
+                                    val keyBytes = if (keyHex.length == 32) {
+                                        keyHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                                    } else null
+                                    val quality = resolved["quality"] as? String ?: "${maxQ}P"
+                                    val needsSoft = resolved["needsSoftwareDecode"] as? Boolean ?: false
+                                    if (streamUrl.isNotBlank()) {
+                                        org.moontechlab.selenetv.hongguo.StreamInfo(streamUrl, keyBytes, quality, needsSoft)
+                                    } else {
+                                        repoInstance.stream(vid, maxQuality = maxQ)
+                                    }
                                 }
-                            }
-                            streamInfo = info
-                            break
-                        } catch (e: Exception) {
-                            android.util.Log.w("PlayerScreen", "短剧取流异常 (attempt $rAttempt): ${e.message}")
-                            if (rAttempt == 0) {
-                                org.moontechlab.selenetv.hongguo.HongguoStreamResolver.evictConnections()
-                                kotlinx.coroutines.delay(400)
+                                streamInfo = info
+                                break
+                            } catch (e: Exception) {
+                                android.util.Log.w("PlayerScreen", "短剧取流异常 (attempt $rAttempt): ${e.message}")
+                                if (rAttempt == 0) {
+                                    org.moontechlab.selenetv.hongguo.HongguoStreamResolver.evictConnections()
+                                    kotlinx.coroutines.delay(400)
+                                }
                             }
                         }
                     }
 
                     if (streamInfo != null) {
+                        // 命中奇数非8对齐分辨率流（如 1924x1080）且当前仍在 ExoPlayer 硬解引擎上：
+                        // 携带已解析的 streamInfo 零重复取流切换至 libmpv 纯软解引擎，彻底根除花屏！
+                        if (streamInfo.needsSoftwareDecode && !useMpvSoftEngine && android.os.Build.VERSION.SDK_INT >= MPV_MIN_SDK) {
+                            android.util.Log.w("PlayerScreen", "短剧第 ${index + 1} 集命中奇数分辨率流，免重复取流自动切换 libmpv 软解引擎")
+                            pendingPreResolvedStream = Triple(index, safeStartMs, streamInfo)
+                            forceMpvSoftForOddStream = true
+                            return@launch
+                        }
                         val keyHex = streamInfo.key?.joinToString("") { "%02x".format(it.toInt() and 0xff) } ?: ""
                         val dramaHeaders = mapOf(
                             "User-Agent" to org.moontechlab.selenetv.hongguo.VendorConstants.VIDEO_UA,
@@ -582,7 +607,6 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     val speedPillFocus = remember { FocusRequester() }
     val aspectPillFocus = remember { FocusRequester() }
     val decodePillFocus = remember { FocusRequester() }
-    var currentDecodeModeState by remember { mutableStateOf(org.moontechlab.selenetv.service.AppDataService.getDecodeModeSync()) }
     val danmakuPillFocus = remember { FocusRequester() }   // 弹幕开关段（主）
     val danmakuGearFocus = remember { FocusRequester() }   // 弹幕齿轮段（进设置）
     val skipFocus = remember { FocusRequester() }
@@ -590,13 +614,23 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     // 焦点是否落在按钮行（弹幕/比例/倍速 等 pill）：为真时抑制 OSD 自动隐藏，避免操作途中控制条消失。
     var controlsRowHasFocus by remember { mutableStateOf(false) }
 
-    // 首帧载入起播集（带进入时的续看位置）
-    LaunchedEffect(Unit) {
-        playEpisode(currentEpisode, launch.startPositionMs.coerceAtLeast(0))
+    // 首帧载入起播集 & 引擎切换（ExoPlayer <-> libmpv 软解）后无缝续播当前集
+    LaunchedEffect(controller) {
+        val pre = pendingPreResolvedStream
+        val pendingReload = pendingReloadAfterEngineSwitch
+        if (pre != null) {
+            playEpisode(pre.first, pre.second)
+        } else if (pendingReload != null) {
+            pendingReloadAfterEngineSwitch = null
+            playEpisode(pendingReload.first, pendingReload.second)
+        } else if (!initialLoadDispatched) {
+            initialLoadDispatched = true
+            playEpisode(currentEpisode, launch.startPositionMs.coerceAtLeast(0))
+        }
     }
 
     // 周期把播放器后端位置同步到 State
-    LaunchedEffect(Unit) {
+    LaunchedEffect(controller) {
         while (true) {
             controller.syncProgress()
             kotlinx.coroutines.delay(500)
@@ -747,22 +781,37 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         if (hasNext) goNext() else onPlayCompleted()
     }
 
-    // 播放自然结束 → 自动下一集（最后一集或电影则触发居中连播/推荐弹层）
-    DisposableEffect(currentEpisode, currentSourceKey, hasNext) {
+    // 播放自然结束 → 自动下一集 + ExoPlayer 运行期检测到奇数分辨率时即时切 libmpv 软解
+    DisposableEffect(controller, currentEpisode, currentSourceKey, hasNext) {
         controller.onEnded = {
             triggerAutoNext()
         }
-        onDispose { controller.onEnded = {} }
+        val exoCtl = controller as? PlayerController
+        exoCtl?.onNeedMpvSoftwareFallback = {
+            if (!useMpvSoftEngine && android.os.Build.VERSION.SDK_INT >= MPV_MIN_SDK) {
+                val resumeAt = controller.positionMs.coerceAtLeast(0L)
+                pendingReloadAfterEngineSwitch = currentEpisode to resumeAt
+                forceMpvSoftForOddStream = true
+                org.moontechlab.selenetv.ui.MoonToast.show("检测到特殊分辨率片源，已自动切换纯软解防花屏")
+            }
+        }
+        onDispose {
+            controller.onEnded = {}
+            exoCtl?.onNeedMpvSoftwareFallback = null
+        }
     }
 
-    // 双轨进度守卫：针对某些短剧流尾部缺少 EOF 关键帧卡在最后一帧的场景，在末尾 350ms 内主动触发切集
-    LaunchedEffect(currentEpisode, currentSourceKey, isPlaying) {
+    // 双轨进度守卫：仅在播放器真实起播(hasStarted)且获取到真实片长(controller.durationMs > 3s)时才允许末尾 350ms 触发切集，
+    // 彻底杜绝开播瞬间因 fallback 假片长或残留进度误触连播跳第 2 集
+    LaunchedEffect(controller, currentEpisode, currentSourceKey, isPlaying) {
         while (true) {
             kotlinx.coroutines.delay(200)
-            if (isPlaying && durationMs > 0) {
-                val remainMs = durationMs - positionMs
+            val realDur = controller.durationMs
+            val realPos = controller.positionMs
+            if (controller.hasStarted && controller.isPlaying && realDur > 3000L && realPos > 1500L) {
+                val remainMs = realDur - realPos
                 val endThresholdMs = if (isShortDrama) 350L else 400L
-                if (remainMs in 0..endThresholdMs && positionMs > 1000L) {
+                if (remainMs in 0..endThresholdMs) {
                     triggerAutoNext()
                 }
             }
@@ -775,7 +824,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     }
 
     // 播放出错：短剧原地自愈重试，普通源唤出换源面板
-    LaunchedEffect(controller.error) {
+    LaunchedEffect(controller, controller.error) {
         val err = controller.error
         if (err != null) {
             val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
@@ -797,7 +846,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     // App 退到后台：强制保存 + 暂停播放；恢复前台(如电视睡眠唤醒)：清理僵尸连接 + 短剧断点智能自愈
     val lifecycleOwner = LocalLifecycleOwner.current
     var wasPausedByLifecycle by remember { mutableStateOf(false) }
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(controller, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_PAUSE -> {
@@ -835,8 +884,8 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // 退出 / 离开时释放播放器
-    DisposableEffect(Unit) {
+    // 退出 / 离开或引擎重建切换时释放旧播放器实例
+    DisposableEffect(controller) {
         onDispose { controller.release() }
     }
 
@@ -1004,7 +1053,9 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             .focusProperties { exit = { FocusRequester.Cancel } },
     ) {
 
-        controller.VideoSurface(Modifier.fillMaxSize())
+        androidx.compose.runtime.key(controller) {
+            controller.VideoSurface(Modifier.fillMaxSize())
+        }
 
         // 弹幕层：叠在画面之上、压暗/控制条之下。区域决定占屏高度（上对齐）：1/3 / 半屏 / 全屏。
         // 只要弹幕开启就常驻挂载（不再按 comments 是否为空卸载/重建）——避免每集开头空窗、切换间隙频繁
@@ -1271,13 +1322,23 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                                     } else {
                                         org.moontechlab.selenetv.service.AppDataService.DecodeMode.HARDWARE
                                     }
-                                    currentDecodeModeState = next
+                                    val resumePos = controller.positionMs.coerceAtLeast(0L)
+                                    pendingReloadAfterEngineSwitch = currentEpisode to resumePos
+                                    if (next == org.moontechlab.selenetv.service.AppDataService.DecodeMode.HARDWARE) {
+                                        forceMpvSoftForOddStream = false
+                                    }
                                     scope.launch {
                                         org.moontechlab.selenetv.service.AppDataService.saveDecodeMode(next.displayName)
                                         withContext(Dispatchers.Main) {
-                                            org.moontechlab.selenetv.ui.MoonToast.show("已切换为${next.displayName}，重新加载中")
+                                            org.moontechlab.selenetv.ui.MoonToast.show(
+                                                if (next == org.moontechlab.selenetv.service.AppDataService.DecodeMode.SOFTWARE) {
+                                                    "已切换为纯FFmpeg软解(libmpv)，重新加载中"
+                                                } else {
+                                                    "已切换为${next.displayName}，重新加载中"
+                                                }
+                                            )
+                                            currentDecodeModeState = next
                                         }
-                                        playEpisode(currentEpisode, positionMs)
                                     }
                                     wake()
                                 },

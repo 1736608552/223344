@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -83,6 +84,9 @@ fun DetailActionButtons(
     upTarget: FocusRequester? = null,
     continueEpisode: Int? = null,
     continueProgress: Float = 0f,
+    // 多集视频单独提供「选集」入口，点击「播放」直接从第 1 集开播，杜绝遥控器选集弹窗误触跳第 2 集
+    showEpisodePicker: Boolean = false,
+    onOpenEpisodePicker: () -> Unit = {},
     // 当前源无播放记录、但其他源有可迁移记录时显示「迁移记录」。点击打开记录选择弹窗。
     showMigrate: Boolean = false,
     onMigrate: () -> Unit = {},
@@ -125,6 +129,13 @@ fun DetailActionButtons(
                     modifier = if (showContinue) Modifier else Modifier.focusRequester(primaryFocusRequester),
                 )
             }
+        }
+        if (showEpisodePicker) {
+            PillActionButton(
+                text = "选集",
+                icon = Icons.Default.List,
+                onClick = onOpenEpisodePicker,
+            )
         }
         if (showMigrate) {
             // 无记录时占位于「播放」之后；播放按钮仍承接 primaryFocus，本按钮为次级动作

@@ -62,6 +62,7 @@ fun EpisodePickerDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         val firstFocus = remember { FocusRequester() }
+        val openedAtMs = remember { System.currentTimeMillis() }
         // 弹窗窗口挂载后把焦点落到首集；网格首项的 requester 可能晚一帧挂上，重试数帧确保夺焦成功。
         LaunchedEffect(Unit) {
             repeat(12) {
@@ -102,7 +103,7 @@ fun EpisodePickerDialog(
                         val label = episodesTitles?.getOrNull(index)?.takeIf { it.isNotEmpty() } ?: "第 ${index + 1} 集"
                         EpisodeChip(
                             label = label,
-                            onClick = { onSelect(index) },
+                            onClick = { if (System.currentTimeMillis() - openedAtMs >= 250L) onSelect(index) },
                             modifier = if (index == 0) Modifier.focusRequester(firstFocus) else Modifier,
                         )
                     }

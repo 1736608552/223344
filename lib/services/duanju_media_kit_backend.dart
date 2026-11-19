@@ -109,6 +109,9 @@ class DuanjuMediaKitBackend implements PlayerBackend {
       _player.stream.width.listen((w) {
         if (_disposed) return;
         _width = w ?? 0;
+        if (_isOddDimension(_width)) {
+          _switchToSoftwareDecodeIfNeeded('width=$_width');
+        }
       }),
     );
 
@@ -116,8 +119,32 @@ class DuanjuMediaKitBackend implements PlayerBackend {
       _player.stream.height.listen((h) {
         if (_disposed) return;
         _height = h ?? 0;
+        if (_isOddDimension(_height)) {
+          _switchToSoftwareDecodeIfNeeded('height=$_height');
+        }
       }),
     );
+  }
+
+  bool _softDecForcedForCurrentMedia = false;
+
+  bool _isOddDimension(int dim) => dim > 0 && dim != 540 && dim % 8 != 0;
+
+  Future<void> _switchToSoftwareDecodeIfNeeded(String reason) async {
+    if (_disposed || _softDecForcedForCurrentMedia) return;
+    _softDecForcedForCurrentMedia = true;
+    try {
+      final dynamic platform = _player.platform;
+      await platform.setProperty('hwdec', 'no');
+      await platform.setProperty('vd-lavc-threads', '4');
+      await platform.setProperty('vd-lavc-fast', 'yes');
+      await platform.setProperty('vd-lavc-skiploopfilter', 'nonkey');
+      DiaryService.add('[DuanjuMediaKit] 检测到非8对齐奇数分辨率($reason)，已自动切纯软解防花屏');
+    } catch (e) {
+      if (kDebugMode) {
+        print('[DuanjuMediaKit] auto softdec switch error: $e');
+      }
+    }
   }
 
   void _safeAdd<T>(StreamController<T> ctl, T val) {
@@ -185,6 +212,7 @@ class DuanjuMediaKitBackend implements PlayerBackend {
 
     try {
       _isCompleted = false;
+      _softDecForcedForCurrentMedia = false;
       _safeAdd(_completedCtl, false);
 
       // 关键解密注入：对齐 guoapp 底层解密参数 (向 demuxer-lavf-o 注入 decryption_key)
@@ -207,8 +235,18 @@ class DuanjuMediaKitBackend implements PlayerBackend {
           await platform.setProperty('demuxer-lavf-probesize', '1048576');
           await platform.setProperty('force-seekable', 'yes');
           await platform.setProperty('hr-seek', 'default');
-          await platform.setProperty('hwdec', 'auto-safe');
-          await platform.setProperty('hwdec-codecs', 'all');
+          final forceSoft = url.contains('softdec=1');
+          if (forceSoft) {
+            _softDecForcedForCurrentMedia = true;
+            await platform.setProperty('hwdec', 'no');
+            await platform.setProperty('vd-lavc-threads', '4');
+            await platform.setProperty('vd-lavc-fast', 'yes');
+            await platform.setProperty('vd-lavc-skiploopfilter', 'nonkey');
+            DiaryService.add('[DuanjuMediaKit] 命中奇数分辨率流(softdec=1)，启用纯FFmpeg多线程软解防花屏');
+          } else {
+            await platform.setProperty('hwdec', 'auto-safe');
+            await platform.setProperty('hwdec-codecs', 'all');
+          }
           await platform.setProperty('framedrop', 'no');
           await platform.setProperty('video-sync', 'audio');
           await platform.setProperty('scale', 'bilinear');

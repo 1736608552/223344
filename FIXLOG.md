@@ -1,5 +1,25 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.73 (2026-11-18)
+
+### 彻底根治短剧非8对齐奇数分辨率(1924×1080)花屏与TV端切换软解失效 + 手机/TV双端豆瓣多路CDN自动容灾 + TV端开播误跳第2集修复
+
+#### 核心根因定位与修复说明
+1. **彻底根治《烛九阴第九季》第 76/77+ 集播放花屏 & TV 端手动切软解仍花屏（手机 + TV 双端实测验证）**：
+   - **底层实测根因**：第 75 集为标准 `1920×1080` HEVC 流，第 76/77/78+ 集 1080P HEVC 流为非 8 像素对齐的 `1924×1080`（`coded_width=1928`、HEVC Level 6.2），导致 Android 芯片硬解及 Gralloc Surface NV12 stride 对齐错位花屏；旧版 TV 端点击「软解」仅保存配置并在同一 ExoPlayer 硬解实例上重载，且 Android 系统 `OMX.google.hevc.decoder` 最高仅支持 Level 5.1/1920，仍会静默回退硬件解码或因 Surface stride 继续花屏；
+   - **保留 1080P 原画 + 密钥严格隔离 (`HongguoStreamResolver.kt` / `ContentRepository.kt` / `HongguoLocalServer.kt` / `MainActivity.kt`)**：精准识别非 8 对齐分辨率（排除标准 540P），按清晰度严格隔离 CENC AES Key 防止跨清晰度串用，保留 1080P 原画并透传 `needsSoftwareDecode` / `?softdec=1` 标记；
+   - **TV 端真正切换 libmpv 纯 FFmpeg 多线程 CPU 软解 (`PlayerFactory.kt` / `MpvPlayerController.kt` / `PlayerController.kt` / `PlayerScreen.kt`)**：无论在设置/播放页手动切换软解，或解析期/运行期（`onVideoSizeChanged`）检测到奇数分辨率流，均真实重建为 `MpvPlayerController(SOFTWARE)`（`hwdec=no` + 多线程 `vd-lavc-threads` + OpenGL ES 纹理直出），彻底绕开 MediaCodec 与 Gralloc Surface 限制，且携带预解析流信息零重复取流秒开；
+   - **手机端 `DuanjuMediaKitBackend` 同步护航 (`duanju_media_kit_backend.dart`)**：命中 `?softdec=1` 或实时检测到非 8 对齐宽高时立即强制 `hwdec=no` 纯 FFmpeg 多线程软解。
+2. **手机端与 TV 端豆瓣数据源 / 图片源全面扩容并支持多路 CDN 自动故障转移 (`AppDataService.kt` / `DoubanService.kt` / `ImageUrl.kt` / `Douban.kt` / `user_data_service.dart` / `user_menu.dart` / `douban_service.dart` / `image_url.dart`)**：
+   - 豆瓣数据源新增 **AllOrigins / CorsProxy.io / CodeTabs** 公共代理，内置 **7 节点自动容灾队列**（用户首选节点置顶，单节点 10 秒超时、HTTP 异常或返回反爬 HTML 页时毫秒级自动切换下一节点）；
+   - 豆瓣图片源新增 **img1 / img2 / img9 官方 CDN、WordPress Photon 加速、Weserv 全球图像 CDN**；
+   - TV 端详情页 (`DetailScreen.kt` / `DetailUiState.kt`) 豆瓣/Bangumi 详情拉取失败时优雅降级展示海报与播放源，不再整页报错阻断观看。
+3. **修复 TV 端详情页点「播放」或刚起播误跳第 2 集 (`DetailScreen.kt` / `DetailActionButtons.kt` / `EpisodePickerDialog.kt` / `PlayerController.kt` / `PlayerScreen.kt`)**：
+   - 详情页点击「播放」直接从第 1 集 `00:00` 起播，多集剧集拆出独立「选集」按钮（选集弹窗增加 250ms 防抖避免遥控器按键抬起误选）；
+   - 拦截首帧未渲染/刚起播（`<= 1.5s`）时的误报 `STATE_ENDED`，并加固临近片尾续播归零与真实片长守卫。
+4. **版本升级**：
+   - 版本更新至 `v2.7.73`（versionCode: `20873`），全平台构建产物自动分发至 `1736608552/LunaTV-Release`。
+
 ## v2.7.72 (2026-11-18)
 
 ### 手机端与TV端「GitHub加速源」全面新增「CDN 加速」免配置默认项 + 短剧热更新接入多路全球CDN镜像

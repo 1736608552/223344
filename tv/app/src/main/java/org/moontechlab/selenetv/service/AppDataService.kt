@@ -359,9 +359,12 @@ object AppDataService {
      */
     enum class DoubanDataSource(val key: String, val displayName: String) {
         DIRECT("direct", "直连"),
-        CORS_PROXY("cors_proxy", "Cors Proxy By Zwei"),
         CDN_TENCENT("cdn_tencent", "豆瓣 CDN By CMLiussss（腾讯云）"),
-        CDN_ALIYUN("cdn_aliyun", "豆瓣 CDN By CMLiussss（阿里云）");
+        CDN_ALIYUN("cdn_aliyun", "豆瓣 CDN By CMLiussss（阿里云）"),
+        CORS_PROXY("cors_proxy", "Cors Proxy By Zwei"),
+        CORS_ALLORIGINS("cors_allorigins", "AllOrigins 公共代理"),
+        CORS_PROXY_IO("cors_proxy_io", "CorsProxy.io 公共代理"),
+        CORS_CODETABS("cors_codetabs", "CodeTabs 公共代理");
 
         companion object {
             fun fromKey(key: String): DoubanDataSource =
@@ -378,9 +381,14 @@ object AppDataService {
     enum class DoubanImageSource(val key: String, val displayName: String) {
         DIRECT("direct", "直连"),
         SERVER_PROXY("server_proxy", "服务器代理"),
-        OFFICIAL_CDN("official_cdn", "豆瓣官方精品 CDN"),
+        OFFICIAL_CDN("official_cdn", "豆瓣官方精品 CDN（img3）"),
+        IMG1_CDN("img1_cdn", "豆瓣官方 CDN（img1）"),
+        IMG2_CDN("img2_cdn", "豆瓣官方 CDN（img2）"),
+        IMG9_CDN("img9_cdn", "豆瓣官方 CDN（img9）"),
         CDN_TENCENT("cdn_tencent", "豆瓣 CDN By CMLiussss（腾讯云）"),
-        CDN_ALIYUN("cdn_aliyun", "豆瓣 CDN By CMLiussss（阿里云）");
+        CDN_ALIYUN("cdn_aliyun", "豆瓣 CDN By CMLiussss（阿里云）"),
+        WP_PHOTON("wp_photon", "WordPress Photon 加速"),
+        WESERV("weserv", "Weserv 全球图像 CDN");
 
         companion object {
             fun fromKey(key: String): DoubanImageSource =

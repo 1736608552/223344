@@ -265,12 +265,18 @@ class UserDataService {
     switch (dataSource) {
       case '直连':
         return 'direct';
-      case 'Cors Proxy By Zwei':
-        return 'cors_proxy';
       case '豆瓣 CDN By CMLiussss（腾讯云）':
         return 'cdn_tencent';
       case '豆瓣 CDN By CMLiussss（阿里云）':
         return 'cdn_aliyun';
+      case 'Cors Proxy By Zwei':
+        return 'cors_proxy';
+      case 'AllOrigins 公共代理':
+        return 'cors_allorigins';
+      case 'CorsProxy.io 公共代理':
+        return 'cors_proxy_io';
+      case 'CodeTabs 公共代理':
+        return 'cors_codetabs';
       default:
         return 'direct';
     }
@@ -282,11 +288,22 @@ class UserDataService {
       case '直连':
         return 'direct';
       case '豆瓣官方精品 CDN':
+      case '豆瓣官方精品 CDN（img3）':
         return 'official_cdn';
+      case '豆瓣官方 CDN（img1）':
+        return 'img1_cdn';
+      case '豆瓣官方 CDN（img2）':
+        return 'img2_cdn';
+      case '豆瓣官方 CDN（img9）':
+        return 'img9_cdn';
       case '豆瓣 CDN By CMLiussss（腾讯云）':
         return 'cdn_tencent';
       case '豆瓣 CDN By CMLiussss（阿里云）':
         return 'cdn_aliyun';
+      case 'WordPress Photon 加速':
+        return 'wp_photon';
+      case 'Weserv 全球图像 CDN':
+        return 'weserv';
       default:
         return 'direct';
     }
@@ -297,12 +314,18 @@ class UserDataService {
     switch (key) {
       case 'direct':
         return '直连';
-      case 'cors_proxy':
-        return 'Cors Proxy By Zwei';
       case 'cdn_tencent':
         return '豆瓣 CDN By CMLiussss（腾讯云）';
       case 'cdn_aliyun':
         return '豆瓣 CDN By CMLiussss（阿里云）';
+      case 'cors_proxy':
+        return 'Cors Proxy By Zwei';
+      case 'cors_allorigins':
+        return 'AllOrigins 公共代理';
+      case 'cors_proxy_io':
+        return 'CorsProxy.io 公共代理';
+      case 'cors_codetabs':
+        return 'CodeTabs 公共代理';
       default:
         return '直连';
     }
@@ -314,11 +337,21 @@ class UserDataService {
       case 'direct':
         return '直连';
       case 'official_cdn':
-        return '豆瓣官方精品 CDN';
+        return '豆瓣官方精品 CDN（img3）';
+      case 'img1_cdn':
+        return '豆瓣官方 CDN（img1）';
+      case 'img2_cdn':
+        return '豆瓣官方 CDN（img2）';
+      case 'img9_cdn':
+        return '豆瓣官方 CDN（img9）';
       case 'cdn_tencent':
         return '豆瓣 CDN By CMLiussss（腾讯云）';
       case 'cdn_aliyun':
         return '豆瓣 CDN By CMLiussss（阿里云）';
+      case 'wp_photon':
+        return 'WordPress Photon 加速';
+      case 'weserv':
+        return 'Weserv 全球图像 CDN';
       default:
         return '直连';
     }

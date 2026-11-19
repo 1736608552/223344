@@ -40,36 +40,46 @@ class PlayerController(
     decodeMode: AppDataService.DecodeMode = AppDataService.DecodeMode.HARDWARE,
 ) : VideoPlayer {
 
+    private val forceSoftwareDecode = java.util.concurrent.atomic.AtomicBoolean(decodeMode == AppDataService.DecodeMode.SOFTWARE)
+
+    var onNeedMpvSoftwareFallback: (() -> Unit)? = null
+    private var triggeredMpvFallbackForCurrentLoad: Boolean = false
+
+    private val dynamicSelector = androidx.media3.exoplayer.mediacodec.MediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
+        if (forceSoftwareDecode.get()) {
+            SoftwareFirstSelector.getDecoderInfos(mimeType, requiresSecureDecoder, requiresTunnelingDecoder)
+        } else {
+            androidx.media3.exoplayer.mediacodec.MediaCodecSelector.DEFAULT.getDecoderInfos(
+                mimeType, requiresSecureDecoder, requiresTunnelingDecoder
+            )
+        }
+    }
+
     private val exo: ExoPlayer = ExoPlayer.Builder(context)
         .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
         .setLoadControl(org.moontechlab.selenetv.util.DeviceMemoryManager.createExoLoadControl(context))
-        .apply {
-            if (decodeMode == AppDataService.DecodeMode.SOFTWARE) {
-                setRenderersFactory(object : DefaultRenderersFactory(context) {
-                    override fun buildVideoRenderers(
-                        ctx: Context,
-                        extensionRendererMode: Int,
-                        mediaCodecSelector: androidx.media3.exoplayer.mediacodec.MediaCodecSelector,
-                        enableDecoderFallback: Boolean,
-                        eventHandler: android.os.Handler,
-                        eventListener: androidx.media3.exoplayer.video.VideoRendererEventListener,
-                        allowedVideoJoiningTimeMs: Long,
-                        out: ArrayList<androidx.media3.exoplayer.Renderer>,
-                    ) {
-                        super.buildVideoRenderers(
-                            ctx, extensionRendererMode, SoftwareFirstSelector,
-                            enableDecoderFallback, eventHandler, eventListener,
-                            allowedVideoJoiningTimeMs, out,
-                        )
-                    }
-                })
-            } else {
-                setRenderersFactory(DefaultRenderersFactory(context).apply {
-                    setEnableDecoderFallback(true)
-                    setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
-                })
+        .setRenderersFactory(object : DefaultRenderersFactory(context) {
+            init {
+                setEnableDecoderFallback(true)
+                setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
             }
-        }
+            override fun buildVideoRenderers(
+                ctx: Context,
+                extensionRendererMode: Int,
+                mediaCodecSelector: androidx.media3.exoplayer.mediacodec.MediaCodecSelector,
+                enableDecoderFallback: Boolean,
+                eventHandler: android.os.Handler,
+                eventListener: androidx.media3.exoplayer.video.VideoRendererEventListener,
+                allowedVideoJoiningTimeMs: Long,
+                out: ArrayList<androidx.media3.exoplayer.Renderer>,
+            ) {
+                super.buildVideoRenderers(
+                    ctx, extensionRendererMode, dynamicSelector,
+                    enableDecoderFallback, eventHandler, eventListener,
+                    allowedVideoJoiningTimeMs, out,
+                )
+            }
+        })
         .build().apply {
             videoScalingMode = androidx.media3.common.C.VIDEO_SCALING_MODE_SCALE_TO_FIT
             setAudioAttributes(
@@ -165,6 +175,17 @@ class PlayerController(
                 summary = "播放正常 (首帧已成功上屏渲染)"
             )
         }
+        override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+            val w = videoSize.width
+            val h = videoSize.height
+            val isOdd = (w > 0 && w != 540 && w % 8 != 0) || (h > 0 && h != 540 && h % 8 != 0)
+            if (isOdd && !triggeredMpvFallbackForCurrentLoad) {
+                triggeredMpvFallbackForCurrentLoad = true
+                android.util.Log.w("PlayerController", "ExoPlayer 检测到非8对齐奇数分辨率(${w}x${h})，触发切换 libmpv 纯FFmpeg软解防花屏")
+                HongguoDiagnostic.log("WARN", "player", "ODD_RES_MPV_SOFTDEC", "检测到异常分辨率 ${w}x${h}，自动切 libmpv 软解")
+                onNeedMpvSoftwareFallback?.invoke()
+            }
+        }
         override fun onPlaybackStateChanged(state: Int) {
             isBuffering = state == Player.STATE_BUFFERING
             val stateName = when (state) {
@@ -187,7 +208,12 @@ class PlayerController(
             }
             if (state == Player.STATE_ENDED) {
                 mainHandler.removeCallbacks(bufferingWatchdogRunnable)
-                onEnded()
+                val curPos = exo.currentPosition
+                if (!hasStarted || !hasRenderedFirstFrameThisLoad || curPos <= 1500L) {
+                    android.util.Log.w("PlayerController", "拦截首帧未就绪/刚起播时的误报 STATE_ENDED (hasStarted=$hasStarted, firstFrame=$hasRenderedFirstFrameThisLoad, pos=$curPos)")
+                } else {
+                    onEnded()
+                }
             }
         }
         override fun onPlayerError(e: PlaybackException) {
@@ -240,6 +266,7 @@ class PlayerController(
         error = null
         hasStarted = false
         hasRenderedFirstFrameThisLoad = false
+        triggeredMpvFallbackForCurrentLoad = false
         positionMs = startMs.coerceAtLeast(0L)
         durationMs = 0L
         bufferedMs = 0L
@@ -281,6 +308,7 @@ class PlayerController(
         error = null
         hasStarted = false
         hasRenderedFirstFrameThisLoad = false
+        triggeredMpvFallbackForCurrentLoad = false
         positionMs = startMs.coerceAtLeast(0L)
         durationMs = 0L
         bufferedMs = 0L
@@ -331,6 +359,8 @@ class PlayerController(
                 releaseCurrentRemoteVideo()
                 error = null
                 hasStarted = false
+                hasRenderedFirstFrameThisLoad = false
+                triggeredMpvFallbackForCurrentLoad = false
                 try {
                     val remote = HongguoRemoteVideo(MediaHttp.httpClient, url, keyBytes, headers)
                     currentRemoteVideo = remote

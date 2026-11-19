@@ -142,7 +142,8 @@ class HongguoLocalServer private constructor() {
             }
         }
 
-        return "http://127.0.0.1:$port/hongguo/media/$token.mp4"
+        val softSuffix = if (info.needsSoftwareDecode) "?softdec=1" else ""
+        return "http://127.0.0.1:$port/hongguo/media/$token.mp4$softSuffix"
     }
 
     private fun registerRemote(token: String, remote: RemoteVideo) {

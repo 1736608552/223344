@@ -32,10 +32,18 @@ object PlayerFactory {
             return PlayerController(context, ds, decode)
         }
 
-        // 短剧架构守则 (100% 遵照标杆项目 hongguoTV 工业级实践)：
-        // 电视端短剧必须依托 HongguoVideoDataSource + MediaCrypto 内存透明解密管线直接喂给 ExoPlayer，
-        // 触发底层 MediaCodec 芯片硬件解码零拷贝秒开播放。MPV 缺乏 CENC 透明解密数据源，严禁路由至 MPV。
+        // 短剧软解 / 非8对齐异常分辨率（如 1924x1080 HEVC Level 6.2）强制路由至 libmpv 纯 FFmpeg CPU 软解：
+        // 彻底绕开 MediaCodec / OMX.google.hevc.decoder (Level 5.1上限) 与 Gralloc Surface NV12 stride 对齐花屏！
+        // 仅在硬件解码模式下保持 ExoPlayer 零拷贝硬解默认路由。
         if (isShortDrama) {
+            if ((preferMpv || decode == AppDataService.DecodeMode.SOFTWARE) && Build.VERSION.SDK_INT >= MPV_MIN_SDK) {
+                return try {
+                    MpvPlayerController(context, userAgent, AppDataService.DecodeMode.SOFTWARE)
+                } catch (e: Throwable) {
+                    android.util.Log.e("PlayerFactory", "短剧 MPV 软解引擎初始化失败，回退 ExoPlayer", e)
+                    exo()
+                }
+            }
             return exo()
         }
 
