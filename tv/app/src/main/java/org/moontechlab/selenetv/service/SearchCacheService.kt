@@ -25,20 +25,24 @@ data class CachedPageEntry(
 /**
  * 本地搜索缓存服务
  * 实现搜索结果的分页缓存管理
+ * v2.7.77: 区分成功/空结果/超时/403 的缓存 TTL，杜绝单次超时污染缓存 10 分钟导致刷新不出源
  */
 object SearchCacheService {
     private const val TAG = "SearchCacheService"
-    
+
     // 缓存配置
-    private const val SEARCH_CACHE_TTL_MS = 10 * 60 * 1000L // 10分钟
-    private const val CACHE_CLEANUP_INTERVAL_MS = 5 * 60 * 1000L // 5分钟清理一次
+    private const val SEARCH_CACHE_TTL_MS = 10 * 60 * 1000L // 有效结果缓存 10 分钟
+    private const val EMPTY_OK_TTL_MS = 30 * 1000L // 空结果仅缓存 30 秒，便于刷新重试
+    private const val TIMEOUT_TTL_MS = 15 * 1000L // 超时仅短缓存 15 秒，绝不长封 10 分钟
+    private const val FORBIDDEN_TTL_MS = 60 * 1000L // 403 缓存 60 秒
+    private const val CACHE_CLEANUP_INTERVAL_MS = 5 * 60 * 1000L // 5 分钟清理一次
     private const val MAX_CACHE_SIZE = 1000 // 最大缓存条目数量
 
     private val searchCache = ConcurrentHashMap<String, CachedPageEntry>()
-    
+
     @Volatile
     private var cleanupTimer: java.util.Timer? = null
-    
+
     @Volatile
     private var lastCleanupTime: Long = 0L
 
@@ -89,9 +93,15 @@ object SearchCacheService {
             performCacheCleanup()
         }
 
+        val ttl = when (status) {
+            CachedPageStatus.OK -> if (data.isNotEmpty()) SEARCH_CACHE_TTL_MS else EMPTY_OK_TTL_MS
+            CachedPageStatus.TIMEOUT -> TIMEOUT_TTL_MS
+            CachedPageStatus.FORBIDDEN -> FORBIDDEN_TTL_MS
+        }
+
         val key = makeSearchCacheKey(sourceKey, query, page)
         searchCache[key] = CachedPageEntry(
-            expiresAt = now + SEARCH_CACHE_TTL_MS,
+            expiresAt = now + ttl,
             status = status,
             data = data,
             pageCount = pageCount
@@ -133,7 +143,7 @@ object SearchCacheService {
             val entries = searchCache.entries.toList()
             // 按照过期时间排序，最早过期的在前面
             val sortedEntries = entries.sortedBy { it.value.expiresAt }
-            
+
             val toRemove = searchCache.size - MAX_CACHE_SIZE
             for (i in 0 until toRemove) {
                 searchCache.remove(sortedEntries[i].key)

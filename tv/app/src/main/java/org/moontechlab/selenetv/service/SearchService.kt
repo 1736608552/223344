@@ -17,6 +17,7 @@ import java.net.URL
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 搜索进度信息
@@ -42,12 +43,20 @@ sealed class SearchEvent {
 /**
  * 流式搜索服务
  * 实现增量搜索结果推送
+ * v2.7.77:
+ *  - 放宽单源 12s / 全局 16s 上限（配合 OkHttp 连接池，快源仍 <1s 秒出，慢源不再被 7s/9s 一刀切误杀）
+ *  - 服务端 SSE 模式增加 2.5s 对冲本地直连 + 源数偏少(<5)自动补齐本地直连，并过滤无剧集空源
+ *  - 任何异常/空源路径必发 SearchEvent.Complete，杜绝详情页永久卡骨架屏
+ *  - 新增 stopSearchAndWait()，彻底杜绝上一次搜索的残留 Complete 事件串台
  */
 object SearchService {
     private const val TAG = "SearchService"
-    private const val SEARCH_TIMEOUT_MS = 9000L
-    private const val SINGLE_SOURCE_TIMEOUT_MS = 7000L
+    private const val SEARCH_TIMEOUT_MS = 16000L
+    private const val SINGLE_SOURCE_TIMEOUT_MS = 12000L
     private const val SSE_CONNECT_TIMEOUT_MS = 5000
+    private const val SSE_READ_TIMEOUT_MS = 10000
+    private const val SSE_HEDGE_DELAY_MS = 2500L
+    private const val SSE_MIN_SOURCES_BEFORE_SUPPLEMENT = 5
 
     // 搜索运行在服务自有的 scope 上，stopSearch 才能真正持有并取消 Job
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -66,8 +75,8 @@ object SearchService {
     // 服务端聚合搜索的 SSE 连接，stopSearch 时需主动 disconnect 才能让阻塞的 readLine 抛出
     @Volatile private var _serverConnection: HttpURLConnection? = null
 
-    // 事件流
-    private val _eventFlow = MutableSharedFlow<SearchEvent>(extraBufferCapacity = 64)
+    // 事件流：扩大缓冲至 256，防止 30+ 源并发吐出 Results + Progress 造成背压阻塞
+    private val _eventFlow = MutableSharedFlow<SearchEvent>(extraBufferCapacity = 256)
     val eventFlow: SharedFlow<SearchEvent> = _eventFlow.asSharedFlow()
 
     val isSearching: Boolean get() = _isSearching
@@ -86,6 +95,21 @@ object SearchService {
     }
 
     /**
+     * 停止上一次搜索并等待其协程彻底结束（避免残留 Complete/Results 事件污染新页面）
+     */
+    suspend fun stopSearchAndWait() {
+        try { _serverConnection?.disconnect() } catch (_: Exception) {}
+        _serverConnection = null
+        val oldJob = _searchJob
+        _searchJob = null
+        if (oldJob != null) {
+            try { oldJob.cancelAndJoin() } catch (_: Exception) {}
+        }
+        _isSearching = false
+        _currentQuery = null
+    }
+
+    /**
      * 开始搜索
      */
     suspend fun startSearch(query: String) {
@@ -94,7 +118,9 @@ object SearchService {
             throw IllegalArgumentException("搜索查询不能为空")
         }
 
-        // 取消上一次仍在进行的搜索并等待其结束，避免新旧结果交叉污染
+        // 先关旧连接再取消等待，避免阻塞中的 SSE 拖延 cancelAndJoin
+        try { _serverConnection?.disconnect() } catch (_: Exception) {}
+        _serverConnection = null
         _searchJob?.cancelAndJoin()
 
         _currentQuery = trimmedQuery
@@ -108,13 +134,15 @@ object SearchService {
         _searchJob = serviceScope.launch {
             try {
                 when (origin) {
-                    AppDataService.SearchOrigin.TV_DIRECT -> localSearch(trimmedQuery)
+                    AppDataService.SearchOrigin.TV_DIRECT -> localSearch(trimmedQuery, emitFinalComplete = true)
                     AppDataService.SearchOrigin.SERVER_AGGREGATED -> serverAggregatedSearch(trimmedQuery)
                 }
             } catch (e: CancellationException) {
                 Log.d(TAG, "搜索被取消")
+                _isSearching = false
             } catch (e: Exception) {
                 _eventFlow.emit(SearchEvent.Error("搜索失败: ${e.message}"))
+                _eventFlow.emit(SearchEvent.Complete)
                 _isSearching = false
             }
         }
@@ -123,7 +151,7 @@ object SearchService {
     /**
      * 本地搜索（并发搜索所有资源）
      */
-    private suspend fun localSearch(query: String) = coroutineScope {
+    private suspend fun localSearch(query: String, emitFinalComplete: Boolean = true) = coroutineScope {
         try {
             // 获取搜索资源列表
             val allResources = org.moontechlab.selenetv.data.Repositories.sources().getSearchResources()
@@ -131,7 +159,10 @@ object SearchService {
 
             if (resources.isEmpty()) {
                 _eventFlow.emit(SearchEvent.Error("没有可用的搜索资源"))
-                _isSearching = false
+                if (emitFinalComplete) {
+                    _eventFlow.emit(SearchEvent.Complete)
+                    _isSearching = false
+                }
                 return@coroutineScope
             }
 
@@ -170,29 +201,35 @@ object SearchService {
             try {
                 searchWithTimeout.await()
             } catch (e: TimeoutCancellationException) {
-                handleTimeout()
+                if (emitFinalComplete) {
+                    handleTimeout()
+                }
                 return@coroutineScope
             }
 
-            // 发送完成事件
-            _eventFlow.emit(
-                SearchEvent.Progress(
-                    SearchProgress(
-                        totalSources = _totalSources,
-                        completedSources = _totalSources,
-                        currentSource = null,
-                        isComplete = true
+            if (emitFinalComplete) {
+                // 发送完成事件
+                _eventFlow.emit(
+                    SearchEvent.Progress(
+                        SearchProgress(
+                            totalSources = _totalSources,
+                            completedSources = _totalSources,
+                            currentSource = null,
+                            isComplete = true
+                        )
                     )
                 )
-            )
-            _eventFlow.emit(SearchEvent.Complete)
-            _isSearching = false
-
+                _eventFlow.emit(SearchEvent.Complete)
+                _isSearching = false
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             _eventFlow.emit(SearchEvent.Error("本地搜索异常: ${e.message}"))
-            _isSearching = false
+            if (emitFinalComplete) {
+                _eventFlow.emit(SearchEvent.Complete)
+                _isSearching = false
+            }
         }
     }
 
@@ -201,14 +238,14 @@ object SearchService {
      */
     private suspend fun searchSingleResource(resource: SearchResource, query: String) {
         try {
-            // 单个资源 13 秒超时
             val results = withTimeout(SINGLE_SOURCE_TIMEOUT_MS) {
                 DownstreamService.searchFromApi(resource, query)
-            }
+            }.filter { it.episodes.isNotEmpty() }
 
+            currentCoroutineContext().ensureActive()
             val completed = _completedSources.incrementAndGet()
 
-            // 发送结果事件（只发送增量结果）
+            // 发送结果事件（只发送增量有效结果）
             if (results.isNotEmpty()) {
                 _eventFlow.emit(SearchEvent.Results(results))
             }
@@ -225,7 +262,7 @@ object SearchService {
                 )
             )
         } catch (e: TimeoutCancellationException) {
-            handleSourceError(resource, "搜索超时（13秒）")
+            handleSourceError(resource, "搜索超时")
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -258,7 +295,8 @@ object SearchService {
      */
     private suspend fun searchShortDramaResource(query: String) {
         try {
-            val dramaResults = ShortDramaService.searchDramas(query)
+            val dramaResults = ShortDramaService.searchDramas(query).filter { it.episodes.isNotEmpty() }
+            currentCoroutineContext().ensureActive()
             val completed = _completedSources.incrementAndGet()
 
             if (dramaResults.isNotEmpty()) {
@@ -311,160 +349,203 @@ object SearchService {
                 )
             )
         )
-        _eventFlow.emit(SearchEvent.Error("搜索超时（15秒）"))
+        _eventFlow.emit(SearchEvent.Error("部分源响应超时"))
         _eventFlow.emit(SearchEvent.Complete)
         _isSearching = false
     }
 
     /**
-     * 服务端聚合搜索（SSE 流式）
+     * 服务端聚合搜索（SSE 流式）+ 2.5s 本地直连对冲 + 低产自动补齐
      * 命中条件由调用方在 startSearch 中读 SearchOrigin 决定
      */
-    private suspend fun serverAggregatedSearch(query: String) = withContext(Dispatchers.IO) {
-        var connection: HttpURLConnection? = null
-        try {
-            val baseUrl = AppDataService.getServerUrlSync()
-                ?: throw IllegalStateException("未配置服务器地址")
-            val cookies = AppDataService.getCookiesSync()
-                ?: throw IllegalStateException("未登录，请先登录")
-            val cleanBase = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-            val url = "$cleanBase/api/search/ws?q=${URLEncoder.encode(query, "UTF-8")}"
+    private suspend fun serverAggregatedSearch(query: String) = coroutineScope {
+        val localJobLock = Any()
+        val localJobRef = AtomicReference<Deferred<Unit>?>(null)
+        val sseEmittedSources = ConcurrentHashMap.newKeySet<String>()
 
-            connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = SSE_CONNECT_TIMEOUT_MS
-                // v2.7.75: SSE 读超时设为 6s，防止服务端卡死导致永不回退本地多源并发搜索
-                readTimeout = 6000
-                setRequestProperty("Accept", "text/event-stream")
-                setRequestProperty("Cache-Control", "no-cache")
-                setRequestProperty("Cookie", cookies)
-            }
-            _serverConnection = connection
-
-            val code = connection.responseCode
-            if (code == 401) {
-                _eventFlow.emit(SearchEvent.Error("登录状态失效，请重新登录"))
-                _eventFlow.emit(SearchEvent.Complete)
-                _isSearching = false
-                return@withContext
-            }
-            if (code < 200 || code >= 300) {
-                Log.w(TAG, "服务端 SSE 返回 HTTP $code，自动回退本地多源并发搜索")
-                try { connection?.disconnect() } catch (_: Exception) {}
-                _serverConnection = null
-                localSearch(query)
-                return@withContext
-            }
-
-            Log.d(TAG, "服务端 SSE 已连接 code=$code url=$url")
-            var emittedCount = 0
-            connection.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                var completedNormally = false
-                while (isActive) {
-                    val line = try {
-                        reader.readLine()
-                    } catch (_: IOException) {
-                        null
-                    } ?: break
-
-                    if (!line.startsWith("data:")) continue
-                    val payload = line.removePrefix("data:").trim()
-                    if (payload.isEmpty()) continue
-
-                    val obj = try {
-                        json.parseToJsonElement(payload).jsonObject
-                    } catch (_: Exception) {
-                        continue
-                    }
-
-                    when (obj["type"]?.jsonPrimitive?.contentOrNull) {
-                        "start" -> {
-                            _totalSources = obj["totalSources"]?.jsonPrimitive?.intOrNull ?: 0
-                            _completedSources.set(0)
-                            _eventFlow.emit(SearchEvent.Progress(SearchProgress(
-                                totalSources = _totalSources,
-                                completedSources = 0,
-                                currentSource = null,
-                                isComplete = false
-                            )))
+        fun ensureLocalStarted() {
+            synchronized(localJobLock) {
+                if (localJobRef.get() == null) {
+                    localJobRef.set(
+                        async(Dispatchers.IO) {
+                            localSearch(query, emitFinalComplete = false)
                         }
-                        "source_result" -> {
-                            val sourceName = obj["sourceName"]?.jsonPrimitive?.contentOrNull
-                            val arr = obj["results"]?.jsonArray
-                            if (arr != null && arr.isNotEmpty()) {
-                                val parsed = arr.mapNotNull { el ->
-                                    try {
-                                        json.decodeFromJsonElement(SearchResult.serializer(), el)
-                                    } catch (e: Exception) {
-                                        Log.w(TAG, "服务端搜索条目解析失败: ${e.message} payload=$el")
-                                        null
-                                    }
-                                }
-                                if (parsed.isNotEmpty()) {
-                                    emittedCount += parsed.size
-                                    _eventFlow.emit(SearchEvent.Results(parsed))
-                                }
-                            }
-                            val completed = _completedSources.incrementAndGet()
-                            _eventFlow.emit(SearchEvent.Progress(SearchProgress(
-                                totalSources = _totalSources,
-                                completedSources = completed,
-                                currentSource = sourceName,
-                                isComplete = false
-                            )))
-                        }
-                        "source_error" -> {
-                            val sourceKey = obj["source"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                            val sourceName = obj["sourceName"]?.jsonPrimitive?.contentOrNull ?: sourceKey
-                            val errMsg = obj["error"]?.jsonPrimitive?.contentOrNull ?: "未知错误"
-                            if (sourceKey.isNotEmpty()) _sourceErrors[sourceKey] = errMsg
-                            val completed = _completedSources.incrementAndGet()
-                            _eventFlow.emit(SearchEvent.Progress(SearchProgress(
-                                totalSources = _totalSources,
-                                completedSources = completed,
-                                currentSource = sourceName,
-                                isComplete = false,
-                                error = errMsg
-                            )))
-                        }
-                        "complete" -> {
-                            completedNormally = true
-                            break
-                        }
-                    }
+                    )
                 }
-                if (emittedCount == 0 && isActive) {
-                    Log.w(TAG, "服务端 SSE 命中 0 条结果，自动回退本地多源并发搜索 (含咕噜专线映射)")
-                    try { connection?.disconnect() } catch (_: Exception) {}
-                    _serverConnection = null
-                    localSearch(query)
+            }
+        }
+
+        // 2.5s 对冲定时器：若服务端 SSE 2.5 秒内仍未吐出任何有效可播源，立刻并行启动客户端直连多源搜索
+        val hedgeJob = launch(Dispatchers.IO) {
+            delay(SSE_HEDGE_DELAY_MS)
+            if (sseEmittedSources.isEmpty() && isActive) {
+                Log.w(TAG, "服务端 SSE ${SSE_HEDGE_DELAY_MS}ms 内尚未吐出有效源，并行启动本地多源直连对冲")
+                ensureLocalStarted()
+            }
+        }
+
+        var connection: HttpURLConnection? = null
+        var authExpired = false
+        var completedNormally = false
+
+        try {
+            withContext(Dispatchers.IO) {
+                val baseUrl = AppDataService.getServerUrlSync()
+                    ?: throw IllegalStateException("未配置服务器地址")
+                val cookies = AppDataService.getCookiesSync()
+                    ?: throw IllegalStateException("未登录，请先登录")
+                val cleanBase = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
+                val url = "$cleanBase/api/search/ws?q=${URLEncoder.encode(query, "UTF-8")}"
+
+                connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = SSE_CONNECT_TIMEOUT_MS
+                    readTimeout = SSE_READ_TIMEOUT_MS
+                    setRequestProperty("Accept", "text/event-stream")
+                    setRequestProperty("Cache-Control", "no-cache")
+                    setRequestProperty("Cookie", cookies)
+                }
+                _serverConnection = connection
+
+                val code = connection!!.responseCode
+                if (code == 401) {
+                    authExpired = true
+                    _eventFlow.emit(SearchEvent.Error("登录状态失效，请重新登录"))
                     return@withContext
                 }
-                _eventFlow.emit(SearchEvent.Progress(SearchProgress(
-                    totalSources = _totalSources,
-                    completedSources = if (completedNormally) _totalSources else _completedSources.get(),
-                    currentSource = null,
-                    isComplete = true
-                )))
-                _eventFlow.emit(SearchEvent.Complete)
-                _isSearching = false
+                if (code < 200 || code >= 300) {
+                    Log.w(TAG, "服务端 SSE 返回 HTTP $code，自动回退本地多源并发搜索")
+                    ensureLocalStarted()
+                    return@withContext
+                }
+
+                Log.d(TAG, "服务端 SSE 已连接 code=$code url=$url")
+                connection!!.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                    while (isActive) {
+                        val line = try {
+                            reader.readLine()
+                        } catch (_: IOException) {
+                            null
+                        } ?: break
+
+                        if (!line.startsWith("data:")) continue
+                        val payload = line.removePrefix("data:").trim()
+                        if (payload.isEmpty()) continue
+
+                        val obj = try {
+                            json.parseToJsonElement(payload).jsonObject
+                        } catch (_: Exception) {
+                            continue
+                        }
+
+                        when (obj["type"]?.jsonPrimitive?.contentOrNull) {
+                            "start" -> {
+                                _totalSources = obj["totalSources"]?.jsonPrimitive?.intOrNull ?: 0
+                                _completedSources.set(0)
+                                _eventFlow.emit(SearchEvent.Progress(SearchProgress(
+                                    totalSources = _totalSources,
+                                    completedSources = 0,
+                                    currentSource = null,
+                                    isComplete = false
+                                )))
+                            }
+                            "source_result" -> {
+                                val sourceName = obj["sourceName"]?.jsonPrimitive?.contentOrNull
+                                val arr = obj["results"]?.jsonArray
+                                if (arr != null && arr.isNotEmpty()) {
+                                    val parsed = arr.mapNotNull { el ->
+                                        try {
+                                            val decoded = json.decodeFromJsonElement(SearchResult.serializer(), el)
+                                            // 过滤无剧集空条目，同时把服务端返回的 doubanId=0 归一化为 null
+                                            if (decoded.episodes.isEmpty()) {
+                                                null
+                                            } else if (decoded.doubanId != null && decoded.doubanId <= 0L) {
+                                                decoded.copy(doubanId = null)
+                                            } else {
+                                                decoded
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.w(TAG, "服务端搜索条目解析失败: ${e.message}")
+                                            null
+                                        }
+                                    }
+                                    if (parsed.isNotEmpty()) {
+                                        parsed.forEach { if (it.source.isNotBlank()) sseEmittedSources.add(it.source) }
+                                        _eventFlow.emit(SearchEvent.Results(parsed))
+                                    }
+                                }
+                                val completed = _completedSources.incrementAndGet()
+                                _eventFlow.emit(SearchEvent.Progress(SearchProgress(
+                                    totalSources = _totalSources,
+                                    completedSources = completed,
+                                    currentSource = sourceName,
+                                    isComplete = false
+                                )))
+                            }
+                            "source_error" -> {
+                                val sourceKey = obj["source"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                                val sourceName = obj["sourceName"]?.jsonPrimitive?.contentOrNull ?: sourceKey
+                                val errMsg = obj["error"]?.jsonPrimitive?.contentOrNull ?: "未知错误"
+                                if (sourceKey.isNotEmpty()) _sourceErrors[sourceKey] = errMsg
+                                val completed = _completedSources.incrementAndGet()
+                                _eventFlow.emit(SearchEvent.Progress(SearchProgress(
+                                    totalSources = _totalSources,
+                                    completedSources = completed,
+                                    currentSource = sourceName,
+                                    isComplete = false,
+                                    error = errMsg
+                                )))
+                            }
+                            "complete" -> {
+                                completedNormally = true
+                                break
+                            }
+                        }
+                    }
+                }
             }
         } catch (e: CancellationException) {
+            hedgeJob.cancel()
+            localJobRef.get()?.cancel()
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "服务端 SSE 搜索异常 (${e.message})，自动回退本地多源并发搜索")
-            try { connection?.disconnect() } catch (_: Exception) {}
-            _serverConnection = null
-            if (isActive) {
-                localSearch(query)
-            } else {
-                _eventFlow.emit(SearchEvent.Error("服务端搜索异常: ${e.message}"))
-                _eventFlow.emit(SearchEvent.Complete)
-                _isSearching = false
+            if (!authExpired && isActive) {
+                ensureLocalStarted()
             }
         } finally {
+            hedgeJob.cancel()
             try { connection?.disconnect() } catch (_: Exception) {}
             _serverConnection = null
+        }
+
+        // 若 SSE 非正常结束或仅返回很少源（<5，如服务端未映射咕噜专线或部分源失效），自动补齐本地多源直连搜索
+        if (!authExpired && isActive && (!completedNormally || sseEmittedSources.size < SSE_MIN_SOURCES_BEFORE_SUPPLEMENT)) {
+            Log.d(
+                TAG,
+                "服务端 SSE 结束 (normal=$completedNormally, sources=${sseEmittedSources.size})，自动启动本地直连补齐全部可用源"
+            )
+            ensureLocalStarted()
+        }
+
+        // 等待对冲/补齐本地搜索完成，再统一发出唯一一次 Complete
+        try {
+            synchronized(localJobLock) { localJobRef.get() }?.await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "本地兜底搜索异常: ${e.message}")
+        }
+
+        if (isActive) {
+            _eventFlow.emit(SearchEvent.Progress(SearchProgress(
+                totalSources = _totalSources,
+                completedSources = _totalSources,
+                currentSource = null,
+                isComplete = true
+            )))
+            _eventFlow.emit(SearchEvent.Complete)
+            _isSearching = false
         }
     }
 

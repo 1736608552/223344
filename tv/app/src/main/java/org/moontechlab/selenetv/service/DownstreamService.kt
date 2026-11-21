@@ -1,12 +1,13 @@
 package org.moontechlab.selenetv.service
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -14,20 +15,22 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Dispatcher
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
 import org.moontechlab.selenetv.model.SearchResource
 import org.moontechlab.selenetv.model.SearchResult
-import java.io.BufferedReader
-import java.net.HttpURLConnection
-import java.net.URL
+import java.io.IOException
+import java.io.InterruptedIOException
+import java.net.SocketTimeoutException
 import java.net.URLEncoder
 import java.nio.charset.Charset
-import java.security.SecureRandom
-import java.security.cert.X509Certificate
-import javax.net.ssl.HostnameVerifier
-import javax.net.ssl.HttpsURLConnection
-import javax.net.ssl.SSLContext
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * 分页搜索结果
@@ -40,32 +43,43 @@ data class SearchPageResult(
 /**
  * 下游搜索服务
  * 用于从第三方API搜索视频资源
+ * v2.7.77:
+ *  - 全面切换为 OkHttp 异步长连接池 + 协程即时取消 (call.cancel)，彻底消灭旧 HttpURLConnection 阻塞拖垮 Dispatchers.IO 线程池导致刷新不出源
+ *  - 修复 vod_douban_id == 0 被误解析为 0L 导致 SourceFilter 误杀大半采集源
+ *  - 合理放宽单页超时至 10s（配合 SearchCacheService 超时仅短缓存 15s）
  */
 object DownstreamService {
     private const val TAG = "DownstreamService"
     private const val MAX_SEARCH_PAGES = 2
-    private const val REQUEST_TIMEOUT = 6000 // 6秒超时
-    private const val DETAIL_TIMEOUT = 10000 // 详情请求 10 秒超时
     private const val UA =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
+    private val PUNCT_NORM_REGEX = Regex("""[\s\u3000:：·\-—_'"‘’“”()（）\[\]【】《》!！?？,，.。/\\~～]+""")
 
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
     }
-    
-    // 信任所有证书的 TrustManager
-    private val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
-        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-        override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-        override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
-    })
-    
-    // 信任所有证书的 SSLContext
-    private val trustAllSslContext: SSLContext by lazy {
-        SSLContext.getInstance("TLS").apply {
-            init(null, trustAllCerts, SecureRandom())
+
+    /**
+     * 专用多源并发搜索 OkHttpClient：
+     * 复用 MediaHttp 的信任全证书 SSLContext 与 ConnectionPool，
+     * 独立高并发 Dispatcher (maxRequests=96, maxRequestsPerHost=12)，绝不与播放器抢连接队列。
+     */
+    private val searchHttpClient: OkHttpClient by lazy {
+        val dispatcher = Dispatcher().apply {
+            maxRequests = 96
+            maxRequestsPerHost = 12
         }
+        MediaHttp.httpClient.newBuilder()
+            .dispatcher(dispatcher)
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .callTimeout(12, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .retryOnConnectionFailure(true)
+            .build()
     }
 
     /**
@@ -147,6 +161,81 @@ object DownstreamService {
         return "$trimmed$sep$queryParam"
     }
 
+    private data class HttpPayload(
+        val code: Int,
+        val contentType: String?,
+        val bytes: ByteArray
+    )
+
+    /**
+     * 可即时取消的 OkHttp 异步请求（协程取消/超时瞬间关闭底层连接，绝不泄漏阻塞线程）
+     */
+    private suspend fun executeCancellable(url: String, accept: String): HttpPayload =
+        suspendCancellableCoroutine { cont ->
+            val request = Request.Builder()
+                .url(url)
+                .get()
+                .header("User-Agent", UA)
+                .header("Accept", accept)
+                .build()
+            val call = searchHttpClient.newCall(request)
+            cont.invokeOnCancellation {
+                try { call.cancel() } catch (_: Throwable) {}
+            }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (cont.isActive) {
+                        cont.resumeWithException(e)
+                    }
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    try {
+                        response.use { resp ->
+                            val payload = HttpPayload(
+                                code = resp.code,
+                                contentType = resp.header("Content-Type"),
+                                bytes = resp.body?.bytes() ?: ByteArray(0)
+                            )
+                            if (cont.isActive) {
+                                cont.resume(payload)
+                            }
+                        }
+                    } catch (e: Throwable) {
+                        if (cont.isActive) {
+                            cont.resumeWithException(e)
+                        }
+                    }
+                }
+            })
+        }
+
+    private fun decodeResponseBody(bytes: ByteArray, contentType: String?): String {
+        val charset = contentType?.let {
+            Regex("charset=([^;]+)").find(it)?.groupValues?.get(1)?.lowercase()?.trim()
+        }
+        return when (charset) {
+            "gbk", "gb2312" -> {
+                try {
+                    String(bytes, Charset.forName("GBK"))
+                } catch (_: Exception) {
+                    String(bytes, Charsets.UTF_8)
+                }
+            }
+            else -> {
+                try {
+                    String(bytes, Charsets.UTF_8)
+                } catch (_: Exception) {
+                    try {
+                        String(bytes, Charset.forName("GBK"))
+                    } catch (_: Exception) {
+                        String(bytes)
+                    }
+                }
+            }
+        }
+    }
+
     /**
      * 从指定的搜索资源API搜索
      */
@@ -163,12 +252,12 @@ object DownstreamService {
             val results = firstPageResult.results.toMutableList()
             val pageCountFromFirst = firstPageResult.pageCount
 
-            // v2.7.75: 第 1 页已命中精准剧名直接短路，避免冗余翻页拖慢详情页出源
-            val normQ = query.trim().lowercase().replace(Regex("\\s+"), "")
-            val hasExactHitOnPage1 = results.any { r ->
+            // 第 1 页已命中精准剧名直接短路，避免冗余翻页拖慢详情页出源
+            val normQ = PUNCT_NORM_REGEX.replace(query.trim().lowercase(), "")
+            val hasExactHitOnPage1 = normQ.isNotEmpty() && results.any { r ->
                 r.episodes.isNotEmpty() && run {
-                    val t = r.title.trim().lowercase().replace(Regex("\\s+"), "")
-                    t == normQ || t.startsWith(normQ)
+                    val t = PUNCT_NORM_REGEX.replace(r.title.trim().lowercase(), "")
+                    t == normQ || t.startsWith(normQ) || normQ.startsWith(t)
                 }
             }
             val pagesToFetch = if (hasExactHitOnPage1) {
@@ -197,6 +286,8 @@ object DownstreamService {
             results.filter { result ->
                 !ContentFilterService.shouldFilter(result.typeName)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "搜索失败: ${e.message}", e)
             emptyList()
@@ -233,7 +324,7 @@ object DownstreamService {
     /**
      * 分页搜索
      */
-    private fun searchPage(
+    private suspend fun searchPage(
         resource: SearchResource,
         query: String,
         page: Int,
@@ -250,25 +341,10 @@ object DownstreamService {
         }
 
         try {
-            val connection = URL(url).openConnection() as HttpURLConnection
-            
-            // 对 HTTPS 连接设置信任所有证书
-            if (connection is HttpsURLConnection) {
-                connection.sslSocketFactory = trustAllSslContext.socketFactory
-                connection.hostnameVerifier = HostnameVerifier { _, _ -> true }
-            }
-            
-            connection.requestMethod = "GET"
-            connection.connectTimeout = REQUEST_TIMEOUT
-            connection.readTimeout = REQUEST_TIMEOUT
-            connection.setRequestProperty(
-                "User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            )
-            connection.setRequestProperty("Accept", "application/json")
+            val payload = executeCancellable(url, "application/json")
 
-            // 检查 403 状态码，缓存 forbidden
-            if (connection.responseCode == 403) {
+            // 检查 403 状态码，短缓存 forbidden
+            if (payload.code == 403) {
                 SearchCacheService.setCachedSearchPage(
                     resource.key, query, page,
                     CachedPageStatus.FORBIDDEN, emptyList()
@@ -276,42 +352,14 @@ object DownstreamService {
                 return SearchPageResult(emptyList(), 1)
             }
 
-            if (connection.responseCode !in 200..299) {
+            if (payload.code !in 200..299) {
                 return SearchPageResult(emptyList(), 1)
             }
 
-            // 尝试从响应头获取编码
-            val contentType = connection.contentType
-            val charset = contentType?.let {
-                Regex("charset=([^;]+)").find(it)?.groupValues?.get(1)?.lowercase()?.trim()
+            val responseBody = decodeResponseBody(payload.bytes, payload.contentType)
+            if (responseBody.isBlank()) {
+                return SearchPageResult(emptyList(), 1)
             }
-
-            // 获取响应体
-            val responseBody = connection.inputStream.use { inputStream ->
-                val bytes = inputStream.readBytes()
-                when (charset) {
-                    "gbk", "gb2312" -> {
-                        try {
-                            String(bytes, Charset.forName("GBK"))
-                        } catch (e: Exception) {
-                            String(bytes, Charsets.UTF_8)
-                        }
-                    }
-                    else -> {
-                        try {
-                            String(bytes, Charsets.UTF_8)
-                        } catch (e: Exception) {
-                            try {
-                                String(bytes, Charset.forName("GBK"))
-                            } catch (e2: Exception) {
-                                String(bytes)
-                            }
-                        }
-                    }
-                }
-            }
-
-            connection.disconnect()
 
             val data = json.parseToJsonElement(responseBody).jsonObject
             val list = data["list"]?.jsonArray
@@ -338,8 +386,16 @@ object DownstreamService {
             )
 
             return SearchPageResult(results, pageCount)
-        } catch (e: java.net.SocketTimeoutException) {
-            // 超时缓存 timeout 状态
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: SocketTimeoutException) {
+            // 超时仅短缓存 15s（由 SearchCacheService 控制）
+            SearchCacheService.setCachedSearchPage(
+                resource.key, query, page,
+                CachedPageStatus.TIMEOUT, emptyList()
+            )
+            return SearchPageResult(emptyList(), 1)
+        } catch (e: InterruptedIOException) {
             SearchCacheService.setCachedSearchPage(
                 resource.key, query, page,
                 CachedPageStatus.TIMEOUT, emptyList()
@@ -347,11 +403,10 @@ object DownstreamService {
             return SearchPageResult(emptyList(), 1)
         } catch (e: Exception) {
             // 其他异常不缓存，直接返回空结果
-            Log.e(TAG, "搜索页面失败: ${e.message}", e)
+            Log.e(TAG, "搜索页面失败(${resource.key}): ${e.message}")
             return SearchPageResult(emptyList(), 1)
         }
     }
-
 
     /**
      * 解析单个搜索结果项
@@ -417,6 +472,8 @@ object DownstreamService {
 
         val vodId = item["vod_id"]?.jsonPrimitive?.contentOrNull ?: return null
         val vodName = item["vod_name"]?.jsonPrimitive?.contentOrNull ?: return null
+        // v2.7.77: 采集站未填豆瓣 ID 时普遍返回 vod_douban_id=0，必须转为 null 避免被 SourceFilter 当成错误豆瓣 ID 误杀！
+        val validDoubanId = item["vod_douban_id"]?.jsonPrimitive?.longOrNull?.takeIf { it > 0L }
 
         return SearchResult(
             id = vodId,
@@ -430,7 +487,7 @@ object DownstreamService {
             year = year,
             desc = cleanHtmlTags(item["vod_content"]?.jsonPrimitive?.contentOrNull),
             typeName = item["type_name"]?.jsonPrimitive?.contentOrNull,
-            doubanId = item["vod_douban_id"]?.jsonPrimitive?.longOrNull
+            doubanId = validDoubanId
         )
     }
 
@@ -452,8 +509,6 @@ object DownstreamService {
 
                 // 优先走标准 JSON 详情接口（?ac=videolist&ids=），绝大多数 CMS 源此接口可用，
                 // 且能像搜索那样自动挑选 m3u8 播放组。仅当它拿不到剧集时再回退 HTML 抓取。
-                // （mobile 原逻辑是「detail 非空就走 HTML」，但部分源如 dyttzy 的 HTML 详情页已被
-                //   反爬墙拦截，反而 JSON 接口完好——故这里调换优先级。）
                 val fromJson = fetchJsonDetail(id, resource)
                 if (fromJson != null && fromJson.episodes.isNotEmpty()) {
                     return@withContext fromJson
@@ -467,6 +522,8 @@ object DownstreamService {
                     Log.w(TAG, "getDetailBySourceId: JSON 与 HTML 均无可用剧集 key=$source id=$id")
                 }
                 fromJson // 可能为 null 或 episodes 为空（交由调用方决定是否使用）
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "getDetailBySourceId 失败: ${e.message}", e)
                 null
@@ -476,7 +533,7 @@ object DownstreamService {
     /**
      * 标准 JSON 详情接口（?ac=videolist&ids=）解析为单条 SearchResult。无果返回 null。
      */
-    private fun fetchJsonDetail(id: String, resource: SearchResource): SearchResult? {
+    private suspend fun fetchJsonDetail(id: String, resource: SearchResource): SearchResult? {
         val effectiveApi = resolveEffectiveApi(resource)
         val detailUrl = buildSafeUrl(effectiveApi, "ac=videolist&ids=$id")
         val body = httpGet(detailUrl, "application/json") ?: return null
@@ -514,7 +571,7 @@ object DownstreamService {
      * 特殊源详情（detail 非空）：抓取 HTML 详情页并正则解析 m3u8/标题/封面等。
      * 迁移自 mobile SearchService._handleSpecialSourceDetail。
      */
-    private fun fetchSpecialSourceDetail(id: String, resource: SearchResource): SearchResult? {
+    private suspend fun fetchSpecialSourceDetail(id: String, resource: SearchResource): SearchResult? {
         val detailUrl = "${resource.detail}/index.php/vod/detail/id/$id.html"
         val html = httpGet(detailUrl, "text/html") ?: return null
 
@@ -561,33 +618,21 @@ object DownstreamService {
     }
 
     /**
-     * 简单 GET（信任所有证书），失败/非 2xx 返回 null。详情拉取用，与搜索分页解耦。
+     * 简单 GET（复用搜索 OkHttp 长连接池），失败/非 2xx 返回 null。
      */
-    private fun httpGet(url: String, accept: String): String? {
-        var connection: HttpURLConnection? = null
+    private suspend fun httpGet(url: String, accept: String): String? {
         return try {
-            connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                if (this is HttpsURLConnection) {
-                    sslSocketFactory = trustAllSslContext.socketFactory
-                    hostnameVerifier = HostnameVerifier { _, _ -> true }
-                }
-                requestMethod = "GET"
-                connectTimeout = DETAIL_TIMEOUT
-                readTimeout = DETAIL_TIMEOUT
-                setRequestProperty("User-Agent", UA)
-                setRequestProperty("Accept", accept)
-            }
-            val code = connection.responseCode
-            if (code !in 200..299) {
-                Log.w(TAG, "httpGet 非 2xx: $code url=$url")
+            val payload = executeCancellable(url, accept)
+            if (payload.code !in 200..299) {
+                Log.w(TAG, "httpGet 非 2xx: ${payload.code} url=$url")
                 return null
             }
-            connection.inputStream.use { String(it.readBytes(), Charsets.UTF_8) }
+            decodeResponseBody(payload.bytes, payload.contentType)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "httpGet 失败: $url ${e.message}")
             null
-        } finally {
-            connection?.disconnect()
         }
     }
 }
