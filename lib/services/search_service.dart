@@ -151,7 +151,7 @@ class SearchService {
       // 并发调用所有资源的搜索，每个调用增加 20 秒超时
       final searchFutures = resources.map((resource) {
         return DownstreamService.searchFromApi(resource, effectiveQuery)
-            .timeout(const Duration(seconds: 20))
+            .timeout(const Duration(seconds: 10))
             .catchError((error) {
           // 捕获错误，返回空列表
           return <SearchResult>[];
@@ -252,15 +252,11 @@ class SearchService {
       //   跟 SourceBrowser.getDetail / DownstreamService.searchPage 一致.
       //   之前 .endsWith('.m3u8') 把 .mp4 直链 / .m3u8?token=xxx 全部过滤掉了.
       if (videoDetail['vod_play_url'] != null) {
-        final vodPlayUrlArray =
-            (videoDetail['vod_play_url'] as String).split(r'$$$');
-
-        for (final url in vodPlayUrlArray) {
-          final parsed = HttpShared.parseVodPlayUrl(url);
-          if (parsed.length > episodes.length) {
-            episodes = parsed.map((e) => e.url).toList();
-            titles = parsed.map((e) => e.name).toList();
-          }
+        final parsed = HttpShared.parseBestVodPlayUrl(
+            videoDetail['vod_play_url'].toString());
+        if (parsed.isNotEmpty) {
+          episodes = parsed.map((e) => e.url).toList();
+          titles = parsed.map((e) => e.name).toList();
         }
       }
 

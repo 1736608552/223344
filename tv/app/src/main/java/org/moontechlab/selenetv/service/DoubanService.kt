@@ -45,7 +45,8 @@ class DoubanService private constructor(private val context: Context) {
         }
         
         private const val TIMEOUT_MS = 30000
-        private const val NODE_TIMEOUT_MS = 10000
+        private const val NODE_TIMEOUT_MS = 6000
+        private const val FRODO_API_KEY = "0ac44ae016490db2204ce0a042db2916"
     }
     
     private val cacheService by lazy { DoubanCacheService.getInstance(context) }
@@ -85,6 +86,11 @@ class DoubanService private constructor(private val context: Context) {
         val cleanPath = if (rexxarPathAndQuery.startsWith("/")) rexxarPathAndQuery else "/$rexxarPathAndQuery"
         val originUrl = "https://m.douban.com$cleanPath"
         return when (dataSourceKey) {
+            DoubanDataSourceKey.FRODO -> {
+                val frodoPath = if (cleanPath.startsWith("/rexxar")) cleanPath.removePrefix("/rexxar") else cleanPath
+                val sep = if (frodoPath.contains("?")) "&" else "?"
+                "https://frodo.douban.com$frodoPath${sep}apiKey=$FRODO_API_KEY"
+            }
             DoubanDataSourceKey.CDN_TENCENT -> "https://m.douban.cmliussss.net$cleanPath"
             DoubanDataSourceKey.CDN_ALIYUN -> "https://m.douban.cmliussss.com$cleanPath"
             DoubanDataSourceKey.CORS_PROXY -> "https://ciao-cors.is-an.org/${URLEncoder.encode(originUrl, "UTF-8")}"
@@ -96,24 +102,37 @@ class DoubanService private constructor(private val context: Context) {
     }
 
     /**
-     * 构建多路豆瓣 CDN 自动故障转移队列（用户首选节点置顶，失败/超时/非JSON反爬页自动顺延下一节点）
+     * 校验豆瓣响应体为有效业务 JSON（排除反爬 HTML 及 200 状态但返回 invalid_request/code:1284 的错误 JSON）
+     */
+    private fun isValidDoubanJson(trimmed: String): Boolean {
+        if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) return false
+        if (trimmed.contains(""invalid_request"")) return false
+        if (trimmed.contains(""code":1284") || trimmed.contains(""code": 1284")) return false
+        val looksLikeError = Regex(""code"\s*:\s*\d+").containsMatchIn(trimmed) &&
+            trimmed.contains(""msg"") &&
+            !trimmed.contains(""items"") &&
+            !trimmed.contains(""title"") &&
+            !trimmed.contains(""subjects"")
+        return !looksLikeError
+    }
+
+    /**
+     * 构建多路豆瓣 CDN 自动故障转移队列（用户首选节点置顶，国内裸连自动切换豆瓣小程序官方通道 FRODO）
      */
     private fun buildFailoverQueue(primary: DoubanDataSourceKey): List<DoubanDataSourceKey> {
         val all = listOf(
             primary,
+            DoubanDataSourceKey.FRODO,
             DoubanDataSourceKey.DIRECT,
             DoubanDataSourceKey.CDN_TENCENT,
             DoubanDataSourceKey.CDN_ALIYUN,
             DoubanDataSourceKey.CORS_PROXY,
-            DoubanDataSourceKey.CORS_ALLORIGINS,
-            DoubanDataSourceKey.CORS_PROXY_IO,
-            DoubanDataSourceKey.CORS_CODETABS,
         )
         return all.distinct()
     }
 
     /**
-     * 多路豆瓣 CDN 自动故障转移 GET（单节点 10s 超时 + 自动识别 HTML 拦截页并切换下一 CDN）
+     * 多路豆瓣 CDN 自动故障转移 GET（单节点 6s 超时 + 自动识别反爬页/1284 错误 JSON 并切换下一通道）
      */
     private suspend fun httpGetWithFailover(
         rexxarPathAndQuery: String,
@@ -125,11 +144,19 @@ class DoubanService private constructor(private val context: Context) {
         var lastError: Exception? = null
         for (node in queue) {
             val url = wrapDoubanUrl(node, rexxarPathAndQuery)
-            val headers = mutableMapOf(
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Referer" to "https://movie.douban.com/",
-                "Accept" to "application/json, text/plain, */*"
-            )
+            val headers = if (node == DoubanDataSourceKey.FRODO) {
+                mutableMapOf(
+                    "User-Agent" to "MicroMessenger/",
+                    "Referer" to "https://servicewechat.com/wx2f9b06c1de1ccfca/91/page-frame.html",
+                    "Accept" to "application/json"
+                )
+            } else {
+                mutableMapOf(
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                    "Referer" to "https://movie.douban.com/",
+                    "Accept" to "application/json, text/plain, */*"
+                )
+            }
             if (node == DoubanDataSourceKey.CORS_PROXY) {
                 headers["Origin"] = getUniqueOrigin()
             }
@@ -138,11 +165,11 @@ class DoubanService private constructor(private val context: Context) {
                 lastCode = code
                 lastBody = body
                 val trimmed = body.trimStart()
-                val isJson = trimmed.startsWith("{") || trimmed.startsWith("[")
-                if (code == HttpURLConnection.HTTP_OK && isJson) {
+                val validJson = isValidDoubanJson(trimmed)
+                if (code == HttpURLConnection.HTTP_OK && validJson) {
                     return code to body
                 }
-                android.util.Log.d("DoubanService", "豆瓣节点 $node 返回异常 (code=$code, nonJson=${!isJson}), 自动切换下一节点")
+                android.util.Log.d("DoubanService", "豆瓣节点 $node 返回异常 (code=$code, validJson=$validJson), 自动切换下一节点")
             } catch (e: Exception) {
                 lastError = e
                 android.util.Log.d("DoubanService", "豆瓣节点 $node 请求异常: ${e.message}, 自动切换下一节点")
@@ -565,6 +592,7 @@ class DoubanService private constructor(private val context: Context) {
     private fun getDoubanDataSourceKey(): DoubanDataSourceKey {
         val key = AppDataService.getDoubanDataSourceKeySync()
         return when (key) {
+            "frodo" -> DoubanDataSourceKey.FRODO
             "cors_proxy" -> DoubanDataSourceKey.CORS_PROXY
             "cors_allorigins" -> DoubanDataSourceKey.CORS_ALLORIGINS
             "cors_proxy_io" -> DoubanDataSourceKey.CORS_PROXY_IO

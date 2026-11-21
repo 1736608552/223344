@@ -358,13 +358,11 @@ object AppDataService {
      * 豆瓣数据源枚举
      */
     enum class DoubanDataSource(val key: String, val displayName: String) {
+        FRODO("frodo", "豆瓣小程序直连（国内裸连推荐）"),
         DIRECT("direct", "直连"),
         CDN_TENCENT("cdn_tencent", "豆瓣 CDN By CMLiussss（腾讯云）"),
         CDN_ALIYUN("cdn_aliyun", "豆瓣 CDN By CMLiussss（阿里云）"),
-        CORS_PROXY("cors_proxy", "Cors Proxy By Zwei"),
-        CORS_ALLORIGINS("cors_allorigins", "AllOrigins 公共代理"),
-        CORS_PROXY_IO("cors_proxy_io", "CorsProxy.io 公共代理"),
-        CORS_CODETABS("cors_codetabs", "CodeTabs 公共代理");
+        CORS_PROXY("cors_proxy", "Cors Proxy By Zwei");
 
         companion object {
             fun fromKey(key: String): DoubanDataSource =

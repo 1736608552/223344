@@ -263,6 +263,8 @@ class UserDataService {
   // 根据显示名称获取豆瓣数据源的key值（私有方法）
   static String _getDoubanDataSourceKeyFromDisplayName(String dataSource) {
     switch (dataSource) {
+      case '豆瓣小程序直连（国内裸连推荐）':
+        return 'frodo';
       case '直连':
         return 'direct';
       case '豆瓣 CDN By CMLiussss（腾讯云）':
@@ -312,6 +314,8 @@ class UserDataService {
   // 根据key值获取豆瓣数据源显示名称（私有方法）
   static String _getDoubanDataSourceDisplayNameFromKey(String key) {
     switch (key) {
+      case 'frodo':
+        return '豆瓣小程序直连（国内裸连推荐）';
       case 'direct':
         return '直连';
       case 'cdn_tencent':

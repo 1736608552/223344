@@ -93,6 +93,9 @@ data class DoubanRating(
  * 数据源类型
  */
 enum class DoubanDataSourceKey {
+    @SerialName("frodo")
+    FRODO,
+
     @SerialName("direct")
     DIRECT,
     

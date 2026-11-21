@@ -17,6 +17,7 @@ import 'package:volume_controller/volume_controller.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:luna_tv/services/api_service.dart';
 import 'package:luna_tv/services/search_result_ranker.dart';
+import 'package:luna_tv/services/search_service.dart';
 import 'package:luna_tv/services/diary_service.dart';
 import 'package:luna_tv/services/douban_service.dart';
 import 'package:luna_tv/services/page_cache_service.dart';
@@ -3057,41 +3058,99 @@ class _PlayerScreenState extends State<PlayerScreen>
       //      相似度阈值会把大部分源砍掉, 导致 app 源数远少于 web)
       //   4) /api/search/resources 拉全源列表, 没命中的源补占位
       //   最终展示数 = resources 列表长度 (18 个)
-      final resultsFut = ApiService.fetchSourcesData(title);
-      final resourcesFut = ApiService.getSearchResources();
-      final results = await resultsFut;
-      final resources = await resourcesFut;
+      // v2.7.74: 修复「选源播放」获取不到播放源和集数的根因：
+      //   1) 之前硬编码走 ApiService.fetchSourcesData(title) -> 服务端 /api/search，
+      //      完全无视本地模式 (isLocalMode) 与本地搜索 (isLocalSearch)，也未在服务端
+      //      /api/search 超时/未映射咕噜专线(glgl.tv/1ljx.com等)/返回空时自动降级
+      //      到客户端并发直连搜索 (SearchService.searchSync)。
+      //   2) 当严格年份匹配命中 0 个有集数源时，自动放宽年份做一次严格标题二次匹配
+      //      （防止豆瓣年份与采集站年份差 1 年导致整部剧误杀）。
+      //   3) 若仍无结果且入口已携带具体 source + id，直拉 getDetailSync 兜底。
+      final isLocalMode = await UserDataService.getIsLocalMode();
+      final isLocalSearch = await UserDataService.getLocalSearch();
+      final useLocalDirect = isLocalMode || isLocalSearch;
+
+      List<SearchResult> results;
+      List<dynamic> resources;
+      if (useLocalDirect) {
+        final resultsFut = SearchService.searchSync(title);
+        final resourcesFut = SearchService.getActiveResources();
+        results = await resultsFut;
+        resources = await resourcesFut;
+        DiaryService.add(
+            '[SourceFilter] 本地/直连模式并发搜源命中: ${results.length}, 激活源数: ${resources.length}');
+      } else {
+        final resultsFut = ApiService.fetchSourcesData(title);
+        final resourcesFut = ApiService.getSearchResources();
+        results = await resultsFut;
+        resources = await resourcesFut;
+      }
       if (!mounted) return;
 
-      // v2.6.14: 播放详情页用「联合去重」 — title substring + year 严格匹配.
-      //   跟搜索页 (search_screen) 不同: 搜索页用子序列匹配 (宽松, 让
-      //   「凡人修仙传」也能命中「凡人修仙传之风起」, 因为用户可能想看
-      //   子系列), 播放详情页必须精确命中用户点的那部剧.
-      //
-      //   联合去重 = 2 个条件 AND:
-      //   1. title 归一化后 substring 包含 query (去符号 + 子序列 -> 严格 substring)
-      //   2. year 完全一致 (排除不同年份版本, e.g. 凡人修仙传 2023 vs 2024)
-      //   搜「凡人修仙传」现在只会匹配:
-      //   - 「凡人修仙传」24集 (真目标)
-      //   - 「凡人修仙传 新版」24集 (同剧不同版本, OK)
-      //   - 「凡人修仙传 第2季」 (同剧, OK)
-      //   不会匹配:
-      //   - 「凡人修仙传之风起」 (不同剧, 虽 title 含「凡人修仙传」但 substring 不连续)
-      //   - 「凡人修仙传」2023 (年份不对)
-      final filteredResults = results
-          .where((r) => SearchResultRanker.resultMatchesQueryStrict(
-                r,
-                title,
-                widget.videoInfo.year,
-              ))
-          .toList();
+      List<SearchResult> filterCandidates(List<SearchResult> raw) {
+        // 1. 严格标题 + 严格年份匹配
+        var strict = raw
+            .where((r) =>
+                r.episodes.isNotEmpty &&
+                SearchResultRanker.resultMatchesQueryStrict(
+                  r,
+                  title,
+                  widget.videoInfo.year,
+                ))
+            .toList();
+        if (strict.isNotEmpty) return strict;
+
+        // 2. 若严格年份命中为 0，仅放宽年份限制（仍保持严格标题匹配，避免衍生剧混入）
+        if (widget.videoInfo.year.isNotEmpty &&
+            widget.videoInfo.year != 'unknown') {
+          strict = raw
+              .where((r) =>
+                  r.episodes.isNotEmpty &&
+                  SearchResultRanker.resultMatchesQueryStrict(r, title, ''))
+              .toList();
+        }
+        return strict;
+      }
+
+      var filteredResults = filterCandidates(results);
       DiaryService.add(
-          '[SourceFilter] 联合去重过滤: ${results.length} → ${filteredResults.length} '
-          '(过滤掉 ${results.length - filteredResults.length} 个不相关剧集, query="$title" year="${widget.videoInfo.year}")');
+          '[SourceFilter] 首轮过滤: ${results.length} → ${filteredResults.length} '
+          '(query="$title" year="${widget.videoInfo.year}" localDirect=$useLocalDirect)');
+
+      // 服务器模式下若 /api/search 返回空或 0 可播源（如后端未映射咕噜专线 / 超时 / 采集站限流），
+      // 自动回退到客户端直连多源并发搜索（携带 DownstreamService.resolveEffectiveApi 专线映射）
+      if (!useLocalDirect && filteredResults.isEmpty) {
+        DiaryService.add(
+            '[SourceFilter] 服务端 /api/search 无可播源，自动回退客户端直连多源搜索 (SearchService.searchSync)...');
+        final fallbackResults = await SearchService.searchSync(title);
+        if (!mounted) return;
+        if (fallbackResults.isNotEmpty) {
+          results = [...results, ...fallbackResults];
+          filteredResults = filterCandidates(results);
+          DiaryService.add(
+              '[SourceFilter] 客户端回退搜源命中: ${fallbackResults.length} → 过滤后可播: ${filteredResults.length}');
+        }
+      }
+
+      // 终极兜底：如果入口本身带有明确采集源 source + id（非 douban/bangumi），直接拉单源详情
+      if (filteredResults.isEmpty &&
+          widget.videoInfo.source.isNotEmpty &&
+          widget.videoInfo.id.isNotEmpty &&
+          widget.videoInfo.source != 'douban' &&
+          widget.videoInfo.source != 'bangumi') {
+        DiaryService.add(
+            '[SourceFilter] 兜底直拉入口源详情: source=${widget.videoInfo.source} id=${widget.videoInfo.id}');
+        final directDetail = await SearchService.getDetailSync(
+            widget.videoInfo.source, widget.videoInfo.id);
+        if (!mounted) return;
+        final playableDirect =
+            directDetail.where((r) => r.episodes.isNotEmpty).toList();
+        if (playableDirect.isNotEmpty) {
+          filteredResults = playableDirect;
+        }
+      }
 
       // 按 source 聚合: 同源保留集数最多的一条 (跟 web 一致)
-      // 注: fetchSourcesData 已按 title_year_source 去重, 同一 source 的多个
-      // 标题版本 (如 "凡人修仙传" + "凡人修仙传 新版") 也只留集数最多的
       final bySource = <String, SearchResult>{};
       for (final r in filteredResults) {
         final k = r.source;
@@ -3102,13 +3161,10 @@ class _PlayerScreenState extends State<PlayerScreen>
         }
       }
       DiaryService.add(
-          '[SourceFilter] /api/search 命中: ${results.length}, 按源聚合后: ${bySource.length}, '
+          '[SourceFilter] 聚合命中: ${results.length}, 按源聚合后: ${bySource.length}, '
           '全源数: ${resources.length}, 标题: "$title"');
 
-      // v2.5.82→: 只展示有真实结果的源, 过滤 0 集 (避免 UI 显示 "共0集" / "待测")
-      //   之前占位 "没命中的源也展示" 的逻辑导致 18 源全显示, 但 16 个是
-      //   0 集占位, 用户体验差. 现在按 bySource 顺序直接展示, 没命中的源
-      //   自然就不会出现, 跟 web 列表页行为一致.
+      // 只展示有真实结果的源, 过滤 0 集
       final merged = <SearchResult>[];
       for (final entry in bySource.entries) {
         if (entry.value.episodes.isEmpty) continue;
@@ -3122,17 +3178,19 @@ class _PlayerScreenState extends State<PlayerScreen>
         _sourcesLoading = false;
         if (merged.isEmpty) {
           _error = '没有源匹配 "$title"';
+        } else {
+          _error = null;
         }
       });
 
       // 选源优先级:
       // 1. 云记忆里有这个 video 的源 (resume.source)
       // 2. 入口传过来的 preferredSource
-      // 3. 第一个 (从 bySource 取, 不用占位)
-      if (bySource.isEmpty) return;
-      SearchResult toSelect = bySource.values.first;
+      // 3. 第一个有效可播源 (merged)
+      if (merged.isEmpty) return;
+      SearchResult toSelect = merged.first;
       if (resumeSourceKey.isNotEmpty) {
-        for (final r in bySource.values) {
+        for (final r in merged) {
           if (r.source == resumeSourceKey) {
             toSelect = r;
             break;
@@ -3140,7 +3198,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         }
       }
       if (widget.preferredSource != null && widget.preferredSource!.isNotEmpty) {
-        for (final r in bySource.values) {
+        for (final r in merged) {
           if (r.source == widget.preferredSource) {
             toSelect = r;
             break;

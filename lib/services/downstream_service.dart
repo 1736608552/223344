@@ -232,15 +232,11 @@ class DownstreamService {
         List<String> titles = [];
 
         if (item['vod_play_url'] != null) {
-          final vodPlayUrlArray =
-              (item['vod_play_url'] as String).split(r'$$$');
-
-          for (final url in vodPlayUrlArray) {
-            final parsed = HttpShared.parseVodPlayUrl(url);
-            if (parsed.length > episodes.length) {
-              episodes = parsed.map((e) => e.url).toList();
-              titles = parsed.map((e) => e.name).toList();
-            }
+          final parsed =
+              HttpShared.parseBestVodPlayUrl(item['vod_play_url'].toString());
+          if (parsed.isNotEmpty) {
+            episodes = parsed.map((e) => e.url).toList();
+            titles = parsed.map((e) => e.name).toList();
           }
         }
 

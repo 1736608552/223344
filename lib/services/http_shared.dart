@@ -119,11 +119,11 @@ class HttpShared {
   ///   改成 `startsWith('http')`, 跟 source_browser_service.dart:280,286 一致.
   ///
   /// 返回 (episodeName, episodeUrl) 列表. 多源 (`$$$` 分隔) 取集数最多的一组.
-  static List<({String name, String url})> parseVodPlayUrl(String playUrl) {
-    if (playUrl.isEmpty) return const [];
-    final firstSource = playUrl.split(r'$$$').first;
+  static List<({String name, String url})> _parseSingleVodPlayGroup(
+      String group) {
+    if (group.isEmpty) return const [];
     final episodes = <({String name, String url})>[];
-    for (final seg in firstSource.split('#')) {
+    for (final seg in group.split('#')) {
       final t = seg.trim();
       if (t.isEmpty) continue;
       final dollarIdx = t.indexOf(r'$');
@@ -140,6 +140,72 @@ class HttpShared {
       }
     }
     return episodes;
+  }
+
+  /// v2.7.74: 遍历 vod_play_url 的全部 $$$ 播放组并按可播性 + 画质加权优选。
+  ///   之前只取 first 或仅比 episodes.length，遇到「光速(gsyun$$$gsm3u8) /
+  ///   量子(liangzi$$$lzm3u8) / 红牛(hnyun$$$hnm3u8)」这类首组是网页分享链接
+  ///   (/share/ 或 /play/ 无 .m3u8)、次组才是真 .m3u8 且集数相同时，会误选
+  ///   不可播的网页链接。现在与 TV 端 DownstreamService.kt 保持 1:1 权重：
+  ///   优先原生 .m3u8 / .mp4 切片 + 4K/2K/1080P 高清加权，降权网页分享页。
+  static List<({String name, String url})> parseBestVodPlayUrl(String playUrl) {
+    if (playUrl.isEmpty) return const [];
+    final groups = playUrl.split(r'$$$');
+    List<({String name, String url})> best = const [];
+    int bestScore = -1 << 30;
+
+    for (final rawGroup in groups) {
+      final parsed = _parseSingleVodPlayGroup(rawGroup);
+      if (parsed.isEmpty) continue;
+
+      int score = parsed.length * 10;
+      final sampleUrl = parsed.first.url.toLowerCase();
+      final groupHead =
+          (rawGroup.length > 300 ? rawGroup.substring(0, 300) : rawGroup)
+              .toLowerCase();
+
+      final hasM3u8 =
+          sampleUrl.contains('.m3u8') || groupHead.contains('.m3u8');
+      final hasDirectVideo =
+          sampleUrl.contains('.mp4') || sampleUrl.contains('.flv');
+
+      if (hasM3u8) {
+        score += 200; // 强优先原生 m3u8 切片，避免误选 /share/ 或 /play/ 网页
+      } else if (hasDirectVideo) {
+        score += 120;
+      } else if (sampleUrl.contains('/share/') ||
+          (sampleUrl.contains('/play/') && !hasM3u8)) {
+        score -= 100;
+      }
+
+      if (groupHead.contains('4k') ||
+          groupHead.contains('2160') ||
+          groupHead.contains('原画') ||
+          groupHead.contains('蓝光') ||
+          groupHead.contains('uhd')) {
+        score += 500;
+      } else if (groupHead.contains('2k') || groupHead.contains('1440')) {
+        score += 200;
+      } else if (groupHead.contains('1080') ||
+          groupHead.contains('超清') ||
+          groupHead.contains('fhd')) {
+        score += 50;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = parsed;
+      }
+    }
+    return best;
+  }
+
+  static List<({String name, String url})> parseVodPlayUrl(String playUrl) {
+    if (playUrl.isEmpty) return const [];
+    if (playUrl.contains(r'$$$')) {
+      return parseBestVodPlayUrl(playUrl);
+    }
+    return _parseSingleVodPlayGroup(playUrl);
   }
 
   // -------- v2.4.6: 服务器模式服务端代理 helpers --------

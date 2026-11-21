@@ -349,17 +349,15 @@ object SearchService {
                 return@withContext
             }
             if (code < 200 || code >= 300) {
-                val msg = if (code == 404)
-                    "服务端不支持流式聚合搜索，请检查后端版本"
-                else
-                    "服务端搜索失败 ($code)"
-                _eventFlow.emit(SearchEvent.Error(msg))
-                _eventFlow.emit(SearchEvent.Complete)
-                _isSearching = false
+                Log.w(TAG, "服务端 SSE 返回 HTTP $code，自动回退本地多源并发搜索")
+                try { connection?.disconnect() } catch (_: Exception) {}
+                _serverConnection = null
+                localSearch(query)
                 return@withContext
             }
 
             Log.d(TAG, "服务端 SSE 已连接 code=$code url=$url")
+            var emittedCount = 0
             connection.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
                 var completedNormally = false
                 while (isActive) {
@@ -403,6 +401,7 @@ object SearchService {
                                     }
                                 }
                                 if (parsed.isNotEmpty()) {
+                                    emittedCount += parsed.size
                                     _eventFlow.emit(SearchEvent.Results(parsed))
                                 }
                             }
@@ -429,37 +428,40 @@ object SearchService {
                             )))
                         }
                         "complete" -> {
-                            _eventFlow.emit(SearchEvent.Progress(SearchProgress(
-                                totalSources = _totalSources,
-                                completedSources = _totalSources,
-                                currentSource = null,
-                                isComplete = true
-                            )))
-                            _eventFlow.emit(SearchEvent.Complete)
-                            _isSearching = false
                             completedNormally = true
-                            return@withContext
+                            break
                         }
                     }
                 }
-                if (!completedNormally) {
-                    // 流被外部关闭或自然 EOF，未收到 complete：补一个收尾
-                    _eventFlow.emit(SearchEvent.Progress(SearchProgress(
-                        totalSources = _totalSources,
-                        completedSources = _completedSources.get(),
-                        currentSource = null,
-                        isComplete = true
-                    )))
-                    _eventFlow.emit(SearchEvent.Complete)
-                    _isSearching = false
+                if (emittedCount == 0 && isActive) {
+                    Log.w(TAG, "服务端 SSE 命中 0 条结果，自动回退本地多源并发搜索 (含咕噜专线映射)")
+                    try { connection?.disconnect() } catch (_: Exception) {}
+                    _serverConnection = null
+                    localSearch(query)
+                    return@withContext
                 }
+                _eventFlow.emit(SearchEvent.Progress(SearchProgress(
+                    totalSources = _totalSources,
+                    completedSources = if (completedNormally) _totalSources else _completedSources.get(),
+                    currentSource = null,
+                    isComplete = true
+                )))
+                _eventFlow.emit(SearchEvent.Complete)
+                _isSearching = false
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            _eventFlow.emit(SearchEvent.Error("服务端搜索异常: ${e.message}"))
-            _eventFlow.emit(SearchEvent.Complete)
-            _isSearching = false
+            Log.w(TAG, "服务端 SSE 搜索异常 (${e.message})，自动回退本地多源并发搜索")
+            try { connection?.disconnect() } catch (_: Exception) {}
+            _serverConnection = null
+            if (isActive) {
+                localSearch(query)
+            } else {
+                _eventFlow.emit(SearchEvent.Error("服务端搜索异常: ${e.message}"))
+                _eventFlow.emit(SearchEvent.Complete)
+                _isSearching = false
+            }
         } finally {
             try { connection?.disconnect() } catch (_: Exception) {}
             _serverConnection = null

@@ -1665,13 +1665,11 @@ class _UserMenuState extends State<UserMenu> {
                 title: '豆瓣数据源',
                 currentValue: _doubanDataSource,
                 options: const [
+                  '豆瓣小程序直连（国内裸连推荐）',
                   '直连',
                   '豆瓣 CDN By CMLiussss（腾讯云）',
                   '豆瓣 CDN By CMLiussss（阿里云）',
                   'Cors Proxy By Zwei',
-                  'AllOrigins 公共代理',
-                  'CorsProxy.io 公共代理',
-                  'CodeTabs 公共代理',
                 ],
                 onChanged: (value) async {
                   await UserDataService.saveDoubanDataSource(value);

@@ -96,20 +96,30 @@ class DoubanService {
   }
 
   /// 初始化缓存服务
+  static const String _frodoApiKey = '0ac44ae016490db2204ce0a042db2916';
+
+  /// 自动故障转移节点列表（v2.7.74: 新增国内裸连友好的豆瓣小程序官方通道 frodo，
+  /// 并移除实测剥离 Referer 返 code:1284 的 allorigins、403 的 corsproxy.io 及超时的 codetabs）
   static const List<String> _allDoubanDataSourceKeys = [
+    'frodo',
     'direct',
     'cdn_tencent',
     'cdn_aliyun',
     'cors_proxy',
-    'cors_allorigins',
-    'cors_proxy_io',
-    'cors_codetabs',
   ];
 
   static String _wrapDoubanRexxarUrl(String sourceKey, String rexxarPathAndQuery) {
     final cleanPath = rexxarPathAndQuery.startsWith('/') ? rexxarPathAndQuery : '/$rexxarPathAndQuery';
     final originUrl = 'https://m.douban.com$cleanPath';
     switch (sourceKey) {
+      case 'frodo': {
+        // /rexxar/api/v2/... -> https://frodo.douban.com/api/v2/...&apiKey=...
+        final frodoPath = cleanPath.startsWith('/rexxar')
+            ? cleanPath.substring('/rexxar'.length)
+            : cleanPath;
+        final sep = frodoPath.contains('?') ? '&' : '?';
+        return 'https://frodo.douban.com$frodoPath${sep}apiKey=$_frodoApiKey';
+      }
       case 'cdn_tencent':
         return 'https://m.douban.cmliussss.net$cleanPath';
       case 'cdn_aliyun':
@@ -128,11 +138,26 @@ class DoubanService {
     }
   }
 
-  /// 多路豆瓣 CDN 自动故障转移请求（用户所选节点优先，单节点超时/非200/反爬HTML页自动顺延下一节点）
+  /// 校验豆瓣响应体为有效业务 JSON（排除反爬 HTML 及 200 状态但返回 invalid_request/code:1284 的错误 JSON）
+  static bool _isValidDoubanJson(String trimmed) {
+    if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return false;
+    if (trimmed.contains('"invalid_request"')) return false;
+    if (trimmed.contains('"code":1284') || trimmed.contains('"code": 1284')) {
+      return false;
+    }
+    final looksLikeError = RegExp(r'"code"\s*:\s*\d+').hasMatch(trimmed) &&
+        trimmed.contains('"msg"') &&
+        !trimmed.contains('"items"') &&
+        !trimmed.contains('"title"') &&
+        !trimmed.contains('"subjects"');
+    return !looksLikeError;
+  }
+
+  /// 多路豆瓣 CDN 自动故障转移请求（用户所选节点优先，国内裸连自动切换豆瓣小程序官方通道 frodo）
   static Future<http.Response> _fetchDoubanJsonWithFailover(
     String rexxarPathAndQuery,
     String primaryKey, {
-    Duration perNodeTimeout = const Duration(seconds: 10),
+    Duration perNodeTimeout = const Duration(seconds: 6),
   }) async {
     final queue = <String>[
       primaryKey,
@@ -142,11 +167,17 @@ class DoubanService {
     Object? lastErr;
     for (final node in queue) {
       final target = _wrapDoubanRexxarUrl(node, rexxarPathAndQuery);
-      final headers = <String, String>{
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Referer': 'https://movie.douban.com/',
-        'Accept': 'application/json, text/plain, */*',
-      };
+      final headers = node == 'frodo'
+          ? <String, String>{
+              'User-Agent': 'MicroMessenger/',
+              'Referer': 'https://servicewechat.com/wx2f9b06c1de1ccfca/91/page-frame.html',
+              'Accept': 'application/json',
+            }
+          : <String, String>{
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+              'Referer': 'https://movie.douban.com/',
+              'Accept': 'application/json, text/plain, */*',
+            };
       if (node == 'cors_proxy') {
         headers['Origin'] = _getUniqueOrigin();
       }
@@ -156,8 +187,7 @@ class DoubanService {
             .timeout(perNodeTimeout);
         lastResp = response;
         final trimmed = response.body.trimLeft();
-        if (response.statusCode == 200 &&
-            (trimmed.startsWith('{') || trimmed.startsWith('['))) {
+        if (response.statusCode == 200 && _isValidDoubanJson(trimmed)) {
           return response;
         }
       } catch (e) {
