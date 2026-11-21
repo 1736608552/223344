@@ -106,13 +106,13 @@ class DoubanService private constructor(private val context: Context) {
      */
     private fun isValidDoubanJson(trimmed: String): Boolean {
         if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) return false
-        if (trimmed.contains(""invalid_request"")) return false
-        if (trimmed.contains(""code":1284") || trimmed.contains(""code": 1284")) return false
-        val looksLikeError = Regex(""code"\s*:\s*\d+").containsMatchIn(trimmed) &&
-            trimmed.contains(""msg"") &&
-            !trimmed.contains(""items"") &&
-            !trimmed.contains(""title"") &&
-            !trimmed.contains(""subjects"")
+        if (trimmed.contains("\"invalid_request\"")) return false
+        if (trimmed.contains("\"code\":1284") || trimmed.contains("\"code\": 1284")) return false
+        val looksLikeError = Regex("\"code\"\\s*:\\s*\\d+").containsMatchIn(trimmed) &&
+            trimmed.contains("\"msg\"") &&
+            !trimmed.contains("\"items\"") &&
+            !trimmed.contains("\"title\"") &&
+            !trimmed.contains("\"subjects\"")
         return !looksLikeError
     }
 
