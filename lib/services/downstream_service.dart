@@ -27,6 +27,9 @@ class SearchPageResult {
 ///   .endsWith('.m3u8') 过滤, 跟 SourceBrowserService 配置分叉, 导致同一个源
 ///   「源浏览器能开但全局搜索搜不到」「点开视频没集数」.
 class DownstreamService {
+  /// 共享 Keep-Alive 连接池，避免每个采集源/分页重复新建 TLS 连接
+  static final http.Client _httpClient = http.Client();
+  static const Duration _searchPageTimeout = Duration(seconds: 7);
   /// 咕噜咕噜官方专线映射表 (对齐 Web 端 downstream.ts 与官方 GuluGuluTV 架构)
   /// 将代理解析接口（如 1ljx.com/?url=、jx.playerjy.com/?url=、jx.xmflv.com/?url= 等）
   /// 自动映射为对应高可用直连秒播切片 CMS 接口
@@ -95,13 +98,21 @@ class DownstreamService {
       final results = firstPageResult.results;
       final pageCountFromFirst = firstPageResult.pageCount;
 
-      const maxSearchPages = 5;
-
+      // v2.7.75: 首屏命中精准剧名时直接短路，不再多拉 2~5 页浪费网络时间；
+      // 最多补拉第 2 页，大幅加快搜源与详情页出源速度
+      final normQ = query.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '');
+      final hasExactHitOnPage1 = results.any((r) {
+        if (r.episodes.isEmpty) return false;
+        final t = r.title.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '');
+        return t == normQ || t.startsWith(normQ);
+      });
+      const maxSearchPages = 2;
       final pageCount = pageCountFromFirst;
-
-      final pagesToFetch = (pageCount - 1) < (maxSearchPages - 1)
-          ? pageCount - 1
-          : maxSearchPages - 1;
+      final pagesToFetch = hasExactHitOnPage1
+          ? 0
+          : ((pageCount - 1) < (maxSearchPages - 1)
+              ? pageCount - 1
+              : maxSearchPages - 1);
 
       if (pagesToFetch > 0) {
         final additionalPageFutures = <Future<List<SearchResult>>>[];
@@ -190,10 +201,10 @@ class DownstreamService {
     try {
       // v2.4.5: UA Chrome 122 → 147 (HttpShared.userAgent), timeout 8s → 15s
       //   (HttpShared.timeoutList, 跟 web list route 1:1, 解决中等速度源超时)
-      final response = await http.get(
+      final response = await _httpClient.get(
         Uri.parse(url),
         headers: HttpShared.jsonHeaders(),
-      ).timeout(HttpShared.timeoutList);
+      ).timeout(_searchPageTimeout);
 
       // 检查 403 状态码，缓存 forbidden
       if (response.statusCode == 403) {

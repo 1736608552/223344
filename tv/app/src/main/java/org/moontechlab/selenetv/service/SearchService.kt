@@ -45,9 +45,9 @@ sealed class SearchEvent {
  */
 object SearchService {
     private const val TAG = "SearchService"
-    private const val SEARCH_TIMEOUT_MS = 15000L
-    private const val SINGLE_SOURCE_TIMEOUT_MS = 13000L
-    private const val SSE_CONNECT_TIMEOUT_MS = 15000
+    private const val SEARCH_TIMEOUT_MS = 9000L
+    private const val SINGLE_SOURCE_TIMEOUT_MS = 7000L
+    private const val SSE_CONNECT_TIMEOUT_MS = 5000
 
     // 搜索运行在服务自有的 scope 上，stopSearch 才能真正持有并取消 Job
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -333,8 +333,8 @@ object SearchService {
             connection = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = SSE_CONNECT_TIMEOUT_MS
-                // SSE 长连接：读超时设为 0（无限），靠 stopSearch.disconnect() 终止
-                readTimeout = 0
+                // v2.7.75: SSE 读超时设为 6s，防止服务端卡死导致永不回退本地多源并发搜索
+                readTimeout = 6000
                 setRequestProperty("Accept", "text/event-stream")
                 setRequestProperty("Cache-Control", "no-cache")
                 setRequestProperty("Cookie", cookies)

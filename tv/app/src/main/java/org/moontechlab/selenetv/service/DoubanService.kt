@@ -1,8 +1,26 @@
 package org.moontechlab.selenetv.service
 
 import android.content.Context
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Request
+import okhttp3.Response
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.builtins.ListSerializer
@@ -45,8 +63,22 @@ class DoubanService private constructor(private val context: Context) {
         }
         
         private const val TIMEOUT_MS = 30000
-        private const val NODE_TIMEOUT_MS = 6000
+        private const val NODE_TIMEOUT_MS = 5000L
+        private const val HEDGE_DELAY_MS = 650L
+        private const val STICKY_TTL_MS = 15L * 60L * 1000L
         private const val FRODO_API_KEY = "0ac44ae016490db2204ce0a042db2916"
+    }
+
+    @Volatile private var stickyWinner: DoubanDataSourceKey? = null
+    @Volatile private var stickyWinnerAtMs: Long = 0L
+    @Volatile private var lastConfiguredPrimary: DoubanDataSourceKey? = null
+
+    private val raceHttpClient by lazy {
+        MediaHttp.httpClient.newBuilder()
+            .connectTimeout(NODE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .readTimeout(NODE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .callTimeout(NODE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .build()
     }
     
     private val cacheService by lazy { DoubanCacheService.getInstance(context) }
@@ -117,68 +149,165 @@ class DoubanService private constructor(private val context: Context) {
     }
 
     /**
-     * 构建多路豆瓣 CDN 自动故障转移队列（用户首选节点置顶，国内裸连自动切换豆瓣小程序官方通道 FRODO）
+     * 构建多路豆瓣 CDN 并发竞速队列（15 分钟粘性优胜节点优先，其次用户首选，其余并行对冲）
      */
     private fun buildFailoverQueue(primary: DoubanDataSourceKey): List<DoubanDataSourceKey> {
-        val all = listOf(
-            primary,
-            DoubanDataSourceKey.FRODO,
-            DoubanDataSourceKey.DIRECT,
-            DoubanDataSourceKey.CDN_TENCENT,
-            DoubanDataSourceKey.CDN_ALIYUN,
-            DoubanDataSourceKey.CORS_PROXY,
-        )
+        if (lastConfiguredPrimary != primary) {
+            lastConfiguredPrimary = primary
+            stickyWinner = null
+            stickyWinnerAtMs = 0L
+        }
+        val now = System.currentTimeMillis()
+        val sticky = stickyWinner?.takeIf { now - stickyWinnerAtMs < STICKY_TTL_MS }
+        val all = buildList {
+            if (sticky != null) add(sticky)
+            add(primary)
+            add(DoubanDataSourceKey.FRODO)
+            add(DoubanDataSourceKey.CDN_TENCENT)
+            add(DoubanDataSourceKey.CDN_ALIYUN)
+            add(DoubanDataSourceKey.DIRECT)
+            add(DoubanDataSourceKey.CORS_PROXY)
+        }
         return all.distinct()
     }
 
+    private fun headersForNode(node: DoubanDataSourceKey): Map<String, String> {
+        val headers = if (node == DoubanDataSourceKey.FRODO) {
+            mutableMapOf(
+                "User-Agent" to "MicroMessenger/",
+                "Referer" to "https://servicewechat.com/wx2f9b06c1de1ccfca/91/page-frame.html",
+                "Accept" to "application/json"
+            )
+        } else {
+            mutableMapOf(
+                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Referer" to "https://movie.douban.com/",
+                "Accept" to "application/json, text/plain, */*"
+            )
+        }
+        if (node == DoubanDataSourceKey.CORS_PROXY) {
+            headers["Origin"] = getUniqueOrigin()
+        }
+        return headers
+    }
+
     /**
-     * 多路豆瓣 CDN 自动故障转移 GET（单节点 6s 超时 + 自动识别反爬页/1284 错误 JSON 并切换下一通道）
+     * 基于 OkHttp 连接池的可取消 HTTP GET（竞速落败分支立即 cancel 释放连接）
+     */
+    private suspend fun okHttpGet(
+        url: String,
+        headers: Map<String, String>
+    ): Pair<Int, String> = suspendCancellableCoroutine { cont ->
+        val reqBuilder = Request.Builder().url(url).get()
+        headers.forEach { (k, v) -> reqBuilder.header(k, v) }
+        val call = raceHttpClient.newCall(reqBuilder.build())
+        cont.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (cont.isActive) cont.resumeWithException(e)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use { resp ->
+                    val code = resp.code
+                    val body = try {
+                        resp.body?.string().orEmpty()
+                    } catch (e: Exception) {
+                        if (cont.isActive) cont.resumeWithException(e)
+                        return
+                    }
+                    if (cont.isActive) cont.resume(code to body)
+                }
+            }
+        })
+    }
+
+    /**
+     * 多路豆瓣 CDN 并发竞速 + 粘性优胜节点 GET (v2.7.75)
+     * - 首节点优先发起；若 650ms 内未返回有效 JSON 或提前失败，立即并发启动全部备用通道
+     * - 首个返回有效业务 JSON 的通道立即胜出、写入粘性缓存并取消其余慢分支
      */
     private suspend fun httpGetWithFailover(
         rexxarPathAndQuery: String,
         primarySource: DoubanDataSourceKey,
-    ): Pair<Int, String> {
+    ): Pair<Int, String> = coroutineScope {
         val queue = buildFailoverQueue(primarySource)
-        var lastCode = -1
-        var lastBody = ""
-        var lastError: Exception? = null
-        for (node in queue) {
-            val url = wrapDoubanUrl(node, rexxarPathAndQuery)
-            val headers = if (node == DoubanDataSourceKey.FRODO) {
-                mutableMapOf(
-                    "User-Agent" to "MicroMessenger/",
-                    "Referer" to "https://servicewechat.com/wx2f9b06c1de1ccfca/91/page-frame.html",
-                    "Accept" to "application/json"
-                )
-            } else {
-                mutableMapOf(
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                    "Referer" to "https://movie.douban.com/",
-                    "Accept" to "application/json, text/plain, */*"
-                )
-            }
-            if (node == DoubanDataSourceKey.CORS_PROXY) {
-                headers["Origin"] = getUniqueOrigin()
-            }
-            try {
-                val (code, body) = httpGet(url, headers, NODE_TIMEOUT_MS)
-                lastCode = code
-                lastBody = body
-                val trimmed = body.trimStart()
-                val validJson = isValidDoubanJson(trimmed)
-                if (code == HttpURLConnection.HTTP_OK && validJson) {
-                    return code to body
+        val winner = CompletableDeferred<Pair<Int, String>>()
+        val jobs = mutableListOf<Job>()
+        val remaining = AtomicInteger(queue.size)
+        val backupsLaunched = AtomicBoolean(false)
+        val lastCode = AtomicInteger(-1)
+        val lastBody = AtomicReference("")
+        val lastError = AtomicReference<Exception?>(null)
+
+        fun launchSingle(node: DoubanDataSourceKey, onPrimaryFailed: (() -> Unit)? = null) {
+            val job = launch(Dispatchers.IO) {
+                try {
+                    val url = wrapDoubanUrl(node, rexxarPathAndQuery)
+                    val (code, body) = okHttpGet(url, headersForNode(node))
+                    lastCode.set(code)
+                    lastBody.set(body)
+                    val trimmed = body.trimStart()
+                    if (code == HttpURLConnection.HTTP_OK && isValidDoubanJson(trimmed)) {
+                        stickyWinner = node
+                        stickyWinnerAtMs = System.currentTimeMillis()
+                        winner.complete(code to body)
+                        return@launch
+                    }
+                    if (node == stickyWinner) stickyWinner = null
+                    android.util.Log.d("DoubanService", "豆瓣节点 $node 返回异常 (code=$code), 切换/竞速其他通道")
+                    onPrimaryFailed?.invoke()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastError.set(e)
+                    if (node == stickyWinner) stickyWinner = null
+                    android.util.Log.d("DoubanService", "豆瓣节点 $node 请求异常: ${e.message}")
+                    onPrimaryFailed?.invoke()
+                } finally {
+                    if (remaining.decrementAndGet() == 0 && !winner.isCompleted) {
+                        val finalCode = lastCode.get()
+                        if (finalCode > 0) {
+                            winner.complete(finalCode to lastBody.get())
+                        } else {
+                            winner.completeExceptionally(
+                                lastError.get() ?: RuntimeException("所有豆瓣数据源节点均不可用")
+                            )
+                        }
+                    }
                 }
-                android.util.Log.d("DoubanService", "豆瓣节点 $node 返回异常 (code=$code, validJson=$validJson), 自动切换下一节点")
-            } catch (e: Exception) {
-                lastError = e
-                android.util.Log.d("DoubanService", "豆瓣节点 $node 请求异常: ${e.message}, 自动切换下一节点")
+            }
+            synchronized(jobs) { jobs.add(job) }
+        }
+
+        fun launchBackups() {
+            if (!backupsLaunched.compareAndSet(false, true)) return
+            if (winner.isCompleted) return
+            for (i in 1 until queue.size) {
+                launchSingle(queue[i])
             }
         }
-        if (lastCode > 0) return lastCode to lastBody
-        throw (lastError ?: RuntimeException("所有豆瓣数据源节点均不可用"))
+
+        launchSingle(queue.first()) { launchBackups() }
+
+        val hedgeJob = if (queue.size > 1) {
+            launch(Dispatchers.IO) {
+                delay(HEDGE_DELAY_MS)
+                launchBackups()
+            }
+        } else {
+            backupsLaunched.set(true)
+            null
+        }
+
+        try {
+            winner.await()
+        } finally {
+            hedgeJob?.cancel()
+            synchronized(jobs) { jobs.forEach { it.cancel() } }
+        }
     }
-    
+
     /**
      * 执行 HTTP GET 请求
      */

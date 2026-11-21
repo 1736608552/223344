@@ -3066,29 +3066,21 @@ class _PlayerScreenState extends State<PlayerScreen>
       //   2) 当严格年份匹配命中 0 个有集数源时，自动放宽年份做一次严格标题二次匹配
       //      （防止豆瓣年份与采集站年份差 1 年导致整部剧误杀）。
       //   3) 若仍无结果且入口已携带具体 source + id，直拉 getDetailSync 兜底。
+      // v2.7.75: 流式秒出播放源 + 2.2s 对冲直连竞速
+      //   1) 不再傻等后端 /api/search 20s 或 Future.wait 10s：首个有效可播源一返回，
+      //      立刻刷新 UI + 选中 + 展示选集（通常 0.3~0.8s 即出源），其余源持续流式追加。
+      //   2) 服务器模式下同时挂载 2.2s 对冲定时器：若后端 2.2s 内未出可播源（或提前返回空），
+      //      立刻并发启动客户端流式直连多源搜索，彻底消灭「等源转圈 20~30 秒」。
       final isLocalMode = await UserDataService.getIsLocalMode();
       final isLocalSearch = await UserDataService.getLocalSearch();
       final useLocalDirect = isLocalMode || isLocalSearch;
 
-      List<SearchResult> results;
-      List<dynamic> resources;
-      if (useLocalDirect) {
-        final resultsFut = SearchService.searchSync(title);
-        final resourcesFut = SearchService.getActiveResources();
-        results = await resultsFut;
-        resources = await resourcesFut;
-        DiaryService.add(
-            '[SourceFilter] 本地/直连模式并发搜源命中: ${results.length}, 激活源数: ${resources.length}');
-      } else {
-        final resultsFut = ApiService.fetchSourcesData(title);
-        final resourcesFut = ApiService.getSearchResources();
-        results = await resultsFut;
-        resources = await resourcesFut;
-      }
-      if (!mounted) return;
+      final allRaw = <SearchResult>[];
+      final bySource = <String, SearchResult>{};
+      bool hasAutoSelected = false;
+      bool hasPreferredSelected = false;
 
       List<SearchResult> filterCandidates(List<SearchResult> raw) {
-        // 1. 严格标题 + 严格年份匹配
         var strict = raw
             .where((r) =>
                 r.episodes.isNotEmpty &&
@@ -3100,7 +3092,6 @@ class _PlayerScreenState extends State<PlayerScreen>
             .toList();
         if (strict.isNotEmpty) return strict;
 
-        // 2. 若严格年份命中为 0，仅放宽年份限制（仍保持严格标题匹配，避免衍生剧混入）
         if (widget.videoInfo.year.isNotEmpty &&
             widget.videoInfo.year != 'unknown') {
           strict = raw
@@ -3112,28 +3103,113 @@ class _PlayerScreenState extends State<PlayerScreen>
         return strict;
       }
 
-      var filteredResults = filterCandidates(results);
-      DiaryService.add(
-          '[SourceFilter] 首轮过滤: ${results.length} → ${filteredResults.length} '
-          '(query="$title" year="${widget.videoInfo.year}" localDirect=$useLocalDirect)');
+      void applyBatch(List<SearchResult> incoming) {
+        if (!mounted || incoming.isEmpty) return;
+        allRaw.addAll(incoming);
+        final filtered = filterCandidates(allRaw);
+        if (filtered.isEmpty) return;
 
-      // 服务器模式下若 /api/search 返回空或 0 可播源（如后端未映射咕噜专线 / 超时 / 采集站限流），
-      // 自动回退到客户端直连多源并发搜索（携带 DownstreamService.resolveEffectiveApi 专线映射）
-      if (!useLocalDirect && filteredResults.isEmpty) {
-        DiaryService.add(
-            '[SourceFilter] 服务端 /api/search 无可播源，自动回退客户端直连多源搜索 (SearchService.searchSync)...');
-        final fallbackResults = await SearchService.searchSync(title);
-        if (!mounted) return;
-        if (fallbackResults.isNotEmpty) {
-          results = [...results, ...fallbackResults];
-          filteredResults = filterCandidates(results);
+        bool changed = false;
+        for (final r in filtered) {
+          final k = r.source;
+          if (k.isEmpty || r.episodes.isEmpty) continue;
+          final prev = bySource[k];
+          if (prev == null || r.episodes.length > prev.episodes.length) {
+            bySource[k] = r;
+            changed = true;
+          }
+        }
+        if (!changed) return;
+
+        final mergedNow = bySource.values.toList();
+        setState(() {
+          _sourceResults = mergedNow;
+          _sourcesLoading = false;
+          _error = null;
+        });
+
+        // 优先选中 preferredSource > resumeSourceKey > 首个到达的高速源
+        final preferredKey = (widget.preferredSource != null &&
+                widget.preferredSource!.isNotEmpty)
+            ? widget.preferredSource!
+            : resumeSourceKey;
+        if (!hasAutoSelected) {
+          SearchResult toSelect = mergedNow.first;
+          if (preferredKey.isNotEmpty) {
+            for (final r in mergedNow) {
+              if (r.source == preferredKey) {
+                toSelect = r;
+                hasPreferredSelected = true;
+                break;
+              }
+            }
+          }
+          hasAutoSelected = true;
+          _selectSource(toSelect, episodeIndex: resumeIndex);
           DiaryService.add(
-              '[SourceFilter] 客户端回退搜源命中: ${fallbackResults.length} → 过滤后可播: ${filteredResults.length}');
+              '[SourceFilter] 首源秒出并自动选中: source="${toSelect.source}" eps=${toSelect.episodes.length}');
+        } else if (!hasPreferredSelected &&
+            preferredKey.isNotEmpty &&
+            !_isPlaying) {
+          for (final r in mergedNow) {
+            if (r.source == preferredKey) {
+              hasPreferredSelected = true;
+              _selectSource(r, episodeIndex: resumeIndex);
+              break;
+            }
+          }
         }
       }
 
+      if (useLocalDirect) {
+        await for (final batch in SearchService.searchStream(title)) {
+          if (!mounted) return;
+          applyBatch(batch);
+        }
+      } else {
+        bool localStreamStarted = false;
+        Future<void>? localStreamFut;
+
+        void ensureLocalStream() {
+          if (localStreamStarted || !mounted) return;
+          localStreamStarted = true;
+          DiaryService.add(
+              '[SourceFilter] 启动客户端流式直连多源并发对冲搜索 (SearchService.searchStream)...');
+          localStreamFut = () async {
+            await for (final batch in SearchService.searchStream(title)) {
+              if (!mounted) return;
+              applyBatch(batch);
+            }
+          }();
+        }
+
+        // 2.2s 对冲：服务端 /api/search 若偏慢，不等 20s，立刻并发客户端直连流式出源
+        final hedgeTimer = Timer(const Duration(milliseconds: 2200), () {
+          if (bySource.isEmpty && mounted) {
+            ensureLocalStream();
+          }
+        });
+
+        try {
+          final serverResults = await ApiService.fetchSourcesData(title)
+              .timeout(const Duration(seconds: 8), onTimeout: () => const []);
+          if (!mounted) return;
+          applyBatch(serverResults);
+        } finally {
+          hedgeTimer.cancel();
+        }
+
+        if (bySource.isEmpty) {
+          ensureLocalStream();
+        }
+        if (localStreamFut != null) {
+          await localStreamFut;
+        }
+      }
+      if (!mounted) return;
+
       // 终极兜底：如果入口本身带有明确采集源 source + id（非 douban/bangumi），直接拉单源详情
-      if (filteredResults.isEmpty &&
+      if (bySource.isEmpty &&
           widget.videoInfo.source.isNotEmpty &&
           widget.videoInfo.id.isNotEmpty &&
           widget.videoInfo.source != 'douban' &&
@@ -3143,35 +3219,12 @@ class _PlayerScreenState extends State<PlayerScreen>
         final directDetail = await SearchService.getDetailSync(
             widget.videoInfo.source, widget.videoInfo.id);
         if (!mounted) return;
-        final playableDirect =
-            directDetail.where((r) => r.episodes.isNotEmpty).toList();
-        if (playableDirect.isNotEmpty) {
-          filteredResults = playableDirect;
-        }
+        applyBatch(directDetail);
       }
 
-      // 按 source 聚合: 同源保留集数最多的一条 (跟 web 一致)
-      final bySource = <String, SearchResult>{};
-      for (final r in filteredResults) {
-        final k = r.source;
-        if (k.isEmpty) continue;
-        final prev = bySource[k];
-        if (prev == null || r.episodes.length > prev.episodes.length) {
-          bySource[k] = r;
-        }
-      }
+      final merged = bySource.values.toList();
       DiaryService.add(
-          '[SourceFilter] 聚合命中: ${results.length}, 按源聚合后: ${bySource.length}, '
-          '全源数: ${resources.length}, 标题: "$title"');
-
-      // 只展示有真实结果的源, 过滤 0 集
-      final merged = <SearchResult>[];
-      for (final entry in bySource.entries) {
-        if (entry.value.episodes.isEmpty) continue;
-        merged.add(entry.value);
-      }
-      DiaryService.add(
-          '[SourceFilter] 合并后展示源数: ${merged.length} (0 集过滤: ${bySource.length - merged.length})');
+          '[SourceFilter] 全部搜源完成: 原始命中=${allRaw.length}, 有效可播源=${merged.length}, 标题="$title"');
 
       setState(() {
         _sourceResults = merged;
@@ -3183,34 +3236,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         }
       });
 
-      // 选源优先级:
-      // 1. 云记忆里有这个 video 的源 (resume.source)
-      // 2. 入口传过来的 preferredSource
-      // 3. 第一个有效可播源 (merged)
       if (merged.isEmpty) return;
-      SearchResult toSelect = merged.first;
-      if (resumeSourceKey.isNotEmpty) {
-        for (final r in merged) {
-          if (r.source == resumeSourceKey) {
-            toSelect = r;
-            break;
-          }
-        }
-      }
-      if (widget.preferredSource != null && widget.preferredSource!.isNotEmpty) {
-        for (final r in merged) {
-          if (r.source == widget.preferredSource) {
-            toSelect = r;
-            break;
-          }
-        }
-      }
-      _selectSource(toSelect, episodeIndex: resumeIndex);
-      DiaryService.add(
-          '[History] _selectSource done: toSelect.source="${toSelect.source}" toSelect.id="${toSelect.id}" resumeIndex=$resumeIndex → _currentEpisodeIndex=$_currentEpisodeIndex');
-
-      // 进入详情页不自动播放,等用户点"播放"按钮
-      // (电视剧在第1集播完后会自动播第2集,可点暂停控制)
 
       // 启动后台测速,测完后自动切到最快源
       _testAllSourcesInBackground();

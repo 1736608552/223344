@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:luna_tv/models/search_result.dart';
 import 'package:luna_tv/models/search_resource.dart';
@@ -148,10 +149,10 @@ class SearchService {
         return [];
       }
 
-      // 并发调用所有资源的搜索，每个调用增加 20 秒超时
+      // 并发调用所有资源的搜索，单源 7 秒硬超时
       final searchFutures = resources.map((resource) {
         return DownstreamService.searchFromApi(resource, effectiveQuery)
-            .timeout(const Duration(seconds: 10))
+            .timeout(const Duration(seconds: 7))
             .catchError((error) {
           // 捕获错误，返回空列表
           return <SearchResult>[];
@@ -173,6 +174,48 @@ class SearchService {
     } catch (e) {
       return [];
     }
+  }
+
+
+  /// v2.7.75: 流式并发搜源 — 每个采集源一有结果立刻推送，绝不因 1 个慢源/死源卡住整页。
+  static Stream<List<SearchResult>> searchStream(
+    String query, {
+    Duration perSourceTimeout = const Duration(seconds: 7),
+  }) {
+    final controller = StreamController<List<SearchResult>>();
+    () async {
+      try {
+        final effectiveQuery = resolveSearchAlias(query);
+        final allResources = await _getSearchResourcesWithCache();
+        final resources = allResources
+            .where((r) => !r.disabled && r.api.trim().isNotEmpty)
+            .toList();
+        if (resources.isEmpty) {
+          await controller.close();
+          return;
+        }
+        await Future.wait(resources.map((resource) async {
+          try {
+            final res = await DownstreamService.searchFromApi(
+              resource,
+              effectiveQuery,
+            ).timeout(perSourceTimeout);
+            if (res.isNotEmpty && !controller.isClosed) {
+              controller.add(res);
+            }
+          } catch (_) {
+            // 单源失败/超时静默忽略，不阻塞其他高速源
+          }
+        }));
+      } catch (_) {
+        // ignore
+      } finally {
+        if (!controller.isClosed) {
+          await controller.close();
+        }
+      }
+    }();
+    return controller.stream;
   }
 
   /// 获取视频详情（本地直接调用下游API）

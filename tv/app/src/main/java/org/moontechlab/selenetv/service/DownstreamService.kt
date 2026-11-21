@@ -43,8 +43,8 @@ data class SearchPageResult(
  */
 object DownstreamService {
     private const val TAG = "DownstreamService"
-    private const val MAX_SEARCH_PAGES = 5
-    private const val REQUEST_TIMEOUT = 8000 // 8秒超时
+    private const val MAX_SEARCH_PAGES = 2
+    private const val REQUEST_TIMEOUT = 6000 // 6秒超时
     private const val DETAIL_TIMEOUT = 10000 // 详情请求 10 秒超时
     private const val UA =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -163,8 +163,19 @@ object DownstreamService {
             val results = firstPageResult.results.toMutableList()
             val pageCountFromFirst = firstPageResult.pageCount
 
-            // 计算需要获取的页数
-            val pagesToFetch = minOf(pageCountFromFirst - 1, MAX_SEARCH_PAGES - 1)
+            // v2.7.75: 第 1 页已命中精准剧名直接短路，避免冗余翻页拖慢详情页出源
+            val normQ = query.trim().lowercase().replace(Regex("\\s+"), "")
+            val hasExactHitOnPage1 = results.any { r ->
+                r.episodes.isNotEmpty() && run {
+                    val t = r.title.trim().lowercase().replace(Regex("\\s+"), "")
+                    t == normQ || t.startsWith(normQ)
+                }
+            }
+            val pagesToFetch = if (hasExactHitOnPage1) {
+                0
+            } else {
+                minOf(pageCountFromFirst - 1, MAX_SEARCH_PAGES - 1)
+            }
 
             // 并发获取其他页面
             if (pagesToFetch > 0) {

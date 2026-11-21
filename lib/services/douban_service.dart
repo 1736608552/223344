@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -98,13 +99,22 @@ class DoubanService {
   /// 初始化缓存服务
   static const String _frodoApiKey = '0ac44ae016490db2204ce0a042db2916';
 
-  /// 自动故障转移节点列表（v2.7.74: 新增国内裸连友好的豆瓣小程序官方通道 frodo，
-  /// 并移除实测剥离 Referer 返 code:1284 的 allorigins、403 的 corsproxy.io 及超时的 codetabs）
+  /// 持久化 HTTP Keep-Alive 连接池，避免每次豆瓣请求重新 TCP + TLS 握手
+  static final http.Client _httpClient = http.Client();
+
+  /// 粘性优胜节点缓存（15 分钟 TTL）：首轮竞速胜出的最快国内节点直接复用，后续请求 200ms 内返回
+  static String? _stickyWinnerKey;
+  static String? _lastConfiguredPrimary;
+  static DateTime? _stickyWinnerAt;
+  static const Duration _stickyTtl = Duration(minutes: 15);
+  static const Duration _hedgeDelay = Duration(milliseconds: 650);
+
+  /// 自动故障转移节点列表（国内裸连优先豆瓣小程序官方通道 frodo）
   static const List<String> _allDoubanDataSourceKeys = [
     'frodo',
-    'direct',
     'cdn_tencent',
     'cdn_aliyun',
+    'direct',
     'cors_proxy',
   ];
 
@@ -153,49 +163,137 @@ class DoubanService {
     return !looksLikeError;
   }
 
-  /// 多路豆瓣 CDN 自动故障转移请求（用户所选节点优先，国内裸连自动切换豆瓣小程序官方通道 frodo）
+  static Map<String, String> _headersForNode(String node) {
+    final headers = node == 'frodo'
+        ? <String, String>{
+            'User-Agent': 'MicroMessenger/',
+            'Referer': 'https://servicewechat.com/wx2f9b06c1de1ccfca/91/page-frame.html',
+            'Accept': 'application/json',
+          }
+        : <String, String>{
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Referer': 'https://movie.douban.com/',
+            'Accept': 'application/json, text/plain, */*',
+          };
+    if (node == 'cors_proxy') {
+      headers['Origin'] = _getUniqueOrigin();
+    }
+    return headers;
+  }
+
+  /// 多路豆瓣 CDN 并发竞速 + 粘性优胜节点请求 (v2.7.75)
+  /// - 优先用 15 分钟内已验证最快胜出的粘性节点直连，避免每次重复等死节点超时
+  /// - 若首节点 650ms 内未返回或失败，立即并发启动全部备用通道（frodo/腾讯云/阿里云/直连/代理），
+  ///   首个返回有效业务 JSON 的通道立刻胜出并更新粘性缓存，彻底消灭串行 6s×N 卡顿
   static Future<http.Response> _fetchDoubanJsonWithFailover(
     String rexxarPathAndQuery,
     String primaryKey, {
-    Duration perNodeTimeout = const Duration(seconds: 6),
+    Duration perNodeTimeout = const Duration(seconds: 5),
   }) async {
-    final queue = <String>[
-      primaryKey,
-      ..._allDoubanDataSourceKeys.where((k) => k != primaryKey),
-    ];
+    if (_lastConfiguredPrimary != primaryKey) {
+      _lastConfiguredPrimary = primaryKey;
+      _stickyWinnerKey = null;
+      _stickyWinnerAt = null;
+    }
+
+    final now = DateTime.now();
+    final sticky = (_stickyWinnerKey != null &&
+            _stickyWinnerAt != null &&
+            now.difference(_stickyWinnerAt!) < _stickyTtl)
+        ? _stickyWinnerKey
+        : null;
+
+    final seen = <String>{};
+    final queue = <String>[];
+    void addUnique(String? k) {
+      if (k != null && k.isNotEmpty && seen.add(k)) {
+        queue.add(k);
+      }
+    }
+
+    addUnique(sticky);
+    addUnique(primaryKey);
+    for (final k in _allDoubanDataSourceKeys) {
+      addUnique(k);
+    }
+
+    final completer = Completer<http.Response>();
     http.Response? lastResp;
     Object? lastErr;
-    for (final node in queue) {
-      final target = _wrapDoubanRexxarUrl(node, rexxarPathAndQuery);
-      final headers = node == 'frodo'
-          ? <String, String>{
-              'User-Agent': 'MicroMessenger/',
-              'Referer': 'https://servicewechat.com/wx2f9b06c1de1ccfca/91/page-frame.html',
-              'Accept': 'application/json',
-            }
-          : <String, String>{
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-              'Referer': 'https://movie.douban.com/',
-              'Accept': 'application/json, text/plain, */*',
-            };
-      if (node == 'cors_proxy') {
-        headers['Origin'] = _getUniqueOrigin();
+    int pending = 0;
+    bool backupLaunched = false;
+
+    void finishIfAllFailed() {
+      if (completer.isCompleted) return;
+      if (backupLaunched && pending == 0) {
+        if (lastResp != null) {
+          completer.complete(lastResp);
+        } else {
+          completer.completeError(lastErr ?? Exception('所有豆瓣数据源节点均不可用'));
+        }
       }
-      try {
-        final response = await http
-            .get(Uri.parse(target), headers: headers)
-            .timeout(perNodeTimeout);
+    }
+
+    void launchNode(String node) {
+      pending++;
+      final target = _wrapDoubanRexxarUrl(node, rexxarPathAndQuery);
+      final headers = _headersForNode(node);
+      _httpClient
+          .get(Uri.parse(target), headers: headers)
+          .timeout(perNodeTimeout)
+          .then((response) {
         lastResp = response;
         final trimmed = response.body.trimLeft();
         if (response.statusCode == 200 && _isValidDoubanJson(trimmed)) {
-          return response;
+          _stickyWinnerKey = node;
+          _stickyWinnerAt = DateTime.now();
+          if (!completer.isCompleted) {
+            completer.complete(response);
+          }
+        } else if (node == _stickyWinnerKey) {
+          _stickyWinnerKey = null;
         }
-      } catch (e) {
+      }).catchError((Object e) {
         lastErr = e;
-      }
+        if (node == _stickyWinnerKey) {
+          _stickyWinnerKey = null;
+        }
+      }).whenComplete(() {
+        pending--;
+        if (!completer.isCompleted && !backupLaunched) {
+          backupLaunched = true;
+          for (int i = 1; i < queue.length; i++) {
+            launchNode(queue[i]);
+          }
+        }
+        finishIfAllFailed();
+      });
     }
-    if (lastResp != null) return lastResp;
-    throw lastErr ?? Exception('所有豆瓣数据源节点均不可用');
+
+    // 1. 立即发首节点 (sticky 优胜节点或用户首选)
+    launchNode(queue.first);
+
+    // 2. 650ms 对冲定时器：若首节点偏慢，立即并发全路竞速
+    Timer? hedgeTimer;
+    if (queue.length > 1) {
+      hedgeTimer = Timer(_hedgeDelay, () {
+        if (!completer.isCompleted && !backupLaunched) {
+          backupLaunched = true;
+          for (int i = 1; i < queue.length; i++) {
+            launchNode(queue[i]);
+          }
+          finishIfAllFailed();
+        }
+      });
+    } else {
+      backupLaunched = true;
+    }
+
+    try {
+      return await completer.future;
+    } finally {
+      hedgeTimer?.cancel();
+    }
   }
 
   static Future<void> _initCache() async {
