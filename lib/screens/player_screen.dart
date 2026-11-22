@@ -3183,7 +3183,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           }();
         }
 
-        // v2.7.76: 对冲定时器 2.2s -> 14s，超时 8s -> 20s
+        // 对冲定时器 2.2s -> 14s，超时 8s -> 20s
         //   实测线上后端（Vercel）：
         //     热实例 /api/search 约 1.8s 返回 20~24 个源；
         //     冷实例要 8.5~10s（冷启动读 Redis 配置约 7s）。
