@@ -27,6 +27,7 @@ import 'package:flutter/foundation.dart' show VoidCallback;
 import 'package:video_player/video_player.dart';
 
 import 'package:luna_tv/services/diary_service.dart';
+import 'package:luna_tv/services/hls_quality_selector.dart';
 import 'package:luna_tv/services/player_backend.dart';
 
 class ExoPlayerBackend implements PlayerBackend {
@@ -182,15 +183,33 @@ class ExoPlayerBackend implements PlayerBackend {
           'Mozilla/5.0 (Linux; Android 14; 22081212C Build/UP1A.231005.007); AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.260 Mobile Safari/537.36 Quark/7.4.3.700';
     }
 
+    // v2.7.83: 「所有源默认最高分辨率播放」
+    //   若该地址是 HLS master playlist（多档 m3u8），先换写成最高档 variant 的
+    //   URL 再交给 ExoPlayer。video_player 不暴露 trackSelector，无法在
+    //   播放器内部强制选档，只能在 URL 层把「低档选项」直接去掉。
+    //   2.5s 预算，失败/超时原样返回，不影响起播。
+    final playUrl = await HlsQualitySelector.highest(url, headers: effectiveHeaders);
+
+    // 选档是一次网络请求，期间可能又有新的 open()（切集连点）把它顶掉，
+    // 这里先做一次 generation 检查，避免白建一个 controller 再销毁。
+    if (_disposed) {
+      throw StateError('ExoPlayerBackend disposed during quality select');
+    }
+    if (myGen != _openGeneration) {
+      DiaryService.add(
+          '[ExoPlayer] open(gen=$myGen) superseded during quality select, abandoning');
+      return;
+    }
+
     final c = VideoPlayerController.networkUrl(
-      Uri.parse(url),
+      Uri.parse(playUrl),
       httpHeaders: effectiveHeaders,
       videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
     );
     try {
       await c.initialize();
     } catch (e) {
-      DiaryService.add('[ExoPlayer] initialize($url) err: $e');
+      DiaryService.add('[ExoPlayer] initialize($playUrl) err: $e');
       try {
         await c.dispose();
       } catch (_) {}

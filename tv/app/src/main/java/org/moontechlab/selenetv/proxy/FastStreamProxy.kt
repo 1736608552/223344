@@ -172,15 +172,38 @@ object FastStreamProxy {
         var targetUrl = targetUrlRaw
         try {
             targetUrl = URLDecoder.decode(targetUrl, "UTF-8")
-            val m3u8Bytes = fetchBytes(targetUrl, 5000)
+            var m3u8Bytes = fetchBytes(targetUrl, 5000)
             if (m3u8Bytes == null || m3u8Bytes.isEmpty()) {
                 sendRedirect(os, targetUrl)
                 return
             }
 
-            val body = String(m3u8Bytes, StandardCharsets.UTF_8)
+            var body = String(m3u8Bytes, StandardCharsets.UTF_8)
+
+            // v2.7.83: 「所有源默认最高分辨率播放」
+            //   master playlist 多档时，原来是把所有 variant 都代理回去、交给
+            //   ExoPlayer 自己 ABR 选档 —— 起播必先选低码率、弱网继续降档，
+            //   用户看到的就是「有 1080P 却一直很糊」。
+            //   改成直接跟随最高档 variant，只把那一档的 media playlist 返回给
+            //   播放器：低档选项根本不存在，无从降档。最多跟两层，任何一步失败
+            //   都退回旧行为（多档全代理），不会更差。
+            var hops = 0
+            while (HlsBestVariant.isMaster(body) && hops < 2) {
+                val best = HlsBestVariant.best(body, targetUrl) ?: break
+                if (best == targetUrl) break
+                val variantBytes = fetchBytes(best, 5000)
+                if (variantBytes == null || variantBytes.isEmpty()) {
+                    Log.w(TAG, "最高档变体拉取失败，回落多档代理: ${best.take(90)}")
+                    break
+                }
+                targetUrl = best
+                body = String(variantBytes, StandardCharsets.UTF_8)
+                hops++
+                Log.i(TAG, "master→最高档变体[$hops]: ${best.take(110)}")
+            }
+
             val rawLines = body.split("\n")
-            val isMasterPlaylist = body.contains("#EXT-X-STREAM-INF")
+            val isMasterPlaylist = HlsBestVariant.isMaster(body)
 
             // 执行智能去广告清洗
             val cleanedLines = if (!isMasterPlaylist) {

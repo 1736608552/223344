@@ -42,6 +42,36 @@ class PlayerController(
 
     private val forceSoftwareDecode = java.util.concurrent.atomic.AtomicBoolean(decodeMode == AppDataService.DecodeMode.SOFTWARE)
 
+    /**
+     * v2.7.83: 「所有源默认最高分辨率播放」
+     *
+     * ExoPlayer 默认是自适应 ABR（DefaultTrackSelector 默认参数）：起播先选低码率，
+     * 网络抖一下就降档，用户看到的就是「源明明有 1080P/4K，画面一直是糊的」。
+     *
+     * 这里把选档策略改成「强制最高支持码率 + 不做多档自适应」：
+     *   - setForceHighestSupportedBitrate(true)：直接选最高码率档，不走起播降档；
+     *   - setMaxVideoSize(4096, 2304)：上限放到 4K，避免默认 1080P 上限把 4K 源砍掉；
+     *   - setAllowVideoNonSeamlessAdaptiveness(false)：关掉「切换要重新初始化解码器」
+     *     的那类跨档切换，减少无谓的档位来回跳；
+     *   - setAllowVideoMixedMimeTypeAdaptiveness(false)：H.264/HEVC 混合档位不再互相切换。
+     *
+     * 注：ABR 层之外还有一层保险 —— FastStreamProxy 会把 master playlist 直接
+     * 换写成最高档 variant（见 HlsBestVariant），低档选项根本不会送到播放器。
+     * 两层是串联关系：代理层管 HLS 多档，这里管非 HLS 的渐进式/单流选轨。
+     */
+    private val trackSelector =
+        androidx.media3.exoplayer.trackselection.DefaultTrackSelector(context).apply {
+            setParameters(
+                buildUponParameters()
+                    .setForceHighestSupportedBitrate(true)
+                    .setMaxVideoSize(4096, 2304)
+                    .setMaxVideoBitrate(Int.MAX_VALUE)
+                    .setAllowVideoMixedMimeTypeAdaptiveness(false)
+                    .setAllowVideoNonSeamlessAdaptiveness(false)
+                    .build()
+            )
+        }
+
     var onNeedMpvSoftwareFallback: (() -> Unit)? = null
     private var triggeredMpvFallbackForCurrentLoad: Boolean = false
 
@@ -57,6 +87,7 @@ class PlayerController(
 
     private val exo: ExoPlayer = ExoPlayer.Builder(context)
         .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+        .setTrackSelector(trackSelector)
         .setLoadControl(org.moontechlab.selenetv.util.DeviceMemoryManager.createExoLoadControl(context))
         .setRenderersFactory(object : DefaultRenderersFactory(context) {
             init {

@@ -6,6 +6,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import 'package:luna_tv/services/diary_service.dart';
+import 'package:luna_tv/services/hls_quality_selector.dart';
 import 'package:luna_tv/services/player_backend.dart';
 
 /// 短剧专属 MediaKit (libmpv/FFmpeg) 解密推流播放后端
@@ -215,6 +216,12 @@ class DuanjuMediaKitBackend implements PlayerBackend {
       _softDecForcedForCurrentMedia = false;
       _safeAdd(_completedCtl, false);
 
+      // v2.7.83: 「所有源默认最高分辨率播放」
+      //   与 ExoPlayer 侧同一策略：HLS master playlist 先换写成最高档 variant
+      //   URL。libmpv 本身的 hls-bitrate 默认是按带宽自动选，弱网会掉档；
+      //   URL 层直接锁死最高档最稳。2.5s 预算，失败原样返回。
+      final playUrl = await HlsQualitySelector.highest(url, headers: headers);
+
       // 关键解密注入：对齐 guoapp 底层解密参数 (向 demuxer-lavf-o 注入 decryption_key)
       if (_player.platform is dynamic) {
         final dynamic platform = _player.platform;
@@ -233,6 +240,11 @@ class DuanjuMediaKitBackend implements PlayerBackend {
           // 极速探测起播：缩短 lavf 分析时长与探测尺寸，大幅缩短首帧与起播等待 (完全对齐红果鉴)
           await platform.setProperty('demuxer-lavf-analyzeduration', '1000000');
           await platform.setProperty('demuxer-lavf-probesize', '1048576');
+          // v2.7.83: HLS 多档流固定选最高码率（双保险：URL 层已锁最高档，
+          // 这里防止 m3u8 存在 master 嵌套时 mpv 自己按带宽降档）。
+          try {
+            await platform.setProperty('hls-bitrate', 'max');
+          } catch (_) {}
           await platform.setProperty('force-seekable', 'yes');
           await platform.setProperty('hr-seek', 'default');
           final forceSoft = url.contains('softdec=1');
@@ -266,7 +278,7 @@ class DuanjuMediaKitBackend implements PlayerBackend {
 
       await _player.open(
         Media(
-          url,
+          playUrl,
           httpHeaders: headers,
           start: startAt,
         ),

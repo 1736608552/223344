@@ -120,6 +120,12 @@ class MpvPlayerController(
         mpv.setOptionString("audio-channels", "stereo")
         mpv.setOptionString("audio-pitch-correction", "yes")
 
+        // v2.7.83: 「所有源默认最高分辨率播放」
+        //   mpv 的 HLS 选档默认按测量带宽自动决定（--hls-bitrate=auto 的隐式行为），
+        //   弱网/起播阶段会先选低档。这里固定 max，配合 FastStreamProxy 已经把
+        //   master 换写成最高档 variant，双保险确保永远播最清晰那一路。
+        runCatching { mpv.setOptionString("hls-bitrate", "max") }
+
         mpv.init()
         mpv.observeProperty("time-pos", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE)
         mpv.observeProperty("duration", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE)

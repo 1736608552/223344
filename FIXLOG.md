@@ -1,5 +1,49 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.83 (2026-11-22)
+
+### 所有源默认最高分辨率播放（TV + 手机双端）
+
+#### 0. 根因：不是源只有低清，是播放器自己降档
+- ExoPlayer 的 `DefaultTrackSelector` 默认是自适应 ABR：起播先挑低码率，网络抖一下
+  就往下掉档，观感就是「源明明写着 1080P/4K，画面一直是糊的」；
+- 手机端更彻底：走 Flutter `video_player`，它**不暴露** trackSelector，Dart 侧连
+  `setMaxVideoSize` 都调不到；
+- 所以两端都补一层「URL 层选档」：**在交给播放器之前，把 HLS master playlist
+  换写成最高档 variant 的 URL**，低档选项根本不存在，播放器无从降档。
+
+#### 1. TV 端代理层选档（`proxy/HlsBestVariant.kt` 新增 + `proxy/FastStreamProxy.kt`）
+- 新增 `HlsBestVariant`：解析 `#EXT-X-STREAM-INF`，按 `RESOLUTION` 面积（宽×高）>
+  高度 > `BANDWIDTH` 排序取最高档；天然排除 `#EXT-X-I-FRAME-STREAM-INF`（只有关键帧）；
+- `FastStreamProxy.handleM3u8Request`：master 不再把全部变体都代理回去交给
+  ExoPlayer 自己选，而是直接跟随最高档 variant，最多跟两层；任何一步拉取失败
+  都退回旧的「多档全代理」，不会更差；
+- 顺带的好处：以前 master 路径不建切片表、不预热；现在跟到 media playlist 后
+  `mPlaylistSegments` + `triggerPreload` 正常生效，起播更快。
+
+#### 2. TV 端选轨兜底（`screen/player/PlayerController.kt`）
+- `DefaultTrackSelector` 参数改成 `setForceHighestSupportedBitrate(true)` +
+  `setMaxVideoSize(4096, 2304)` + 关闭混合 MIME / 非无缝自适应；
+- 覆盖不走本地代理的路径（配置了服务端 m3u8 代理、或非 HLS 单流）。
+
+#### 3. TV 端 libmpv 兜底（`screen/player/MpvPlayerController.kt`）
+- `hls-bitrate=max`（mpv 默认按测量带宽自动选档）。
+
+#### 4. 手机端新增选档服务（`services/hls_quality_selector.dart`）
+- `HlsQualitySelector.highest()`：拉 master → 选最高档 → 返回 variant 绝对地址；
+  最多跟两层，2.5s 总预算，失败/超时**原样返回原地址**（行为不变）；
+- 正向/负缓存各一份（128 条 LRU），同一地址不会每集都白等；
+- 只对「明确像 HLS」的地址探测（含 `m3u8` / `/hls/` / `live=1`），mp4/flv/mkv/ts
+  与本地回环地址一次网络都不发，不拖慢普通源起播。
+
+#### 5. 手机端接入（`services/exo_player_backend.dart`、`services/duanju_media_kit_backend.dart`）
+- ExoPlayer 后端：`open()` 里先选档再建 controller；选档期间若被新的 `open()`
+  顶掉（连点切集），先做一次 generation 检查直接认输，不白建 controller；
+- media_kit 后端：`open()` 里先选档，并补 `hls-bitrate=max` 双保险。
+
+> 已知代价：强制最高档在弱网下更容易起播后卡顿（这是「要清晰」的必然代价）。
+> 换源列表排序仍是「分辨率 50% + 速度 50%」，不会把一个 4K 但 300KB/s 的源排第一。
+
 ## v2.7.82 (2026-11-22)
 
 ### 修「搜索缓存把失败也锁 10 分钟」与「解析取不到就必然 3003」
