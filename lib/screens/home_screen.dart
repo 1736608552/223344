@@ -19,6 +19,7 @@ import 'package:luna_tv/models/play_record.dart';
 import 'package:luna_tv/models/video_info.dart';
 import 'package:luna_tv/utils/font_utils.dart';
 import 'package:luna_tv/services/page_cache_service.dart';
+import 'package:luna_tv/services/api_service.dart';
 import 'package:luna_tv/services/douban_service.dart';
 import 'package:luna_tv/services/bangumi_service.dart';
 import 'package:luna_tv/services/tmdb_service.dart';
@@ -62,6 +63,15 @@ class _HomeScreenState extends State<HomeScreen> {
     _refreshCacheOnHomeEnter();
     // 加载 Hero Banner 数据
     _loadBannerData();
+    // v2.7.76: 预热后端搜索函数
+    //   Vercel 冷启动要 7~10 秒（读 Redis 配置），若用户点海报时正好撞上冷启动，
+    //   /api/search 就会慢到超时，进而降级成手机直连 → 只剩少数源。
+    //   这里进首页时空跑一次并丢弃结果，把函数拉热；用户从进 App 到点海报
+    //   通常有十几秒，足够。注意必须打 /api/search 本身，热别的接口无效
+    //   （Next.js 在 Vercel 上每个 route 是独立函数）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ApiService.fetchSourcesData('warmup').ignore();
+    });
     // 启动检查更新（有更新则直接弹窗提醒）
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkStartupUpdate();
