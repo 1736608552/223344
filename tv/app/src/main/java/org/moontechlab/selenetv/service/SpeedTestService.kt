@@ -44,6 +44,7 @@ object SpeedTestService {
     private const val SEGMENT_BYTE_BUDGET = 512 * 1024 // 每分片最多采样字节数（512KB）
     private const val MAX_CONCURRENT_SOURCES = 6      // 源级并发上限
     private const val PER_SOURCE_TIMEOUT_MS = 8000L   // 单源协程超时
+    private const val RESOLVE_TIMEOUT_MS = 10000L     // 网页播放页解析超时（不计入测速预算）
     private const val CALL_TIMEOUT_MS = 8000L         // 单次 HTTP 调用硬上限
     private const val UA =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -79,7 +80,15 @@ object SpeedTestService {
             val key = "${source.source}+${source.id}"
             async(Dispatchers.IO) {
                 val result = sourceGate.withPermit {
-                    withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS) { probe(url) }
+                    // v2.7.81: 先把「网页播放页」解析成真实 m3u8，再测速。
+                    //   采集站里 /play/xxx、/share/xxx 这类地址返回 text/html，
+                    //   旧逻辑 getText 拿到 HTML → parseSegments 为空 → 判 FAILED，
+                    //   于是换源列表里一大片源显示「不可用 / 报错」。
+                    //   解析耗时不计入单源测速的 8s 预算，避免把慢源误判失败。
+                    val streamUrl = withTimeoutOrNull(RESOLVE_TIMEOUT_MS) {
+                        StreamUrlResolver.resolve(url).url
+                    } ?: url
+                    withTimeoutOrNull(PER_SOURCE_TIMEOUT_MS) { probe(streamUrl) }
                 } ?: SourceSpeed(state = SpeedTestState.FAILED)
                 onResult(key, result)
             }

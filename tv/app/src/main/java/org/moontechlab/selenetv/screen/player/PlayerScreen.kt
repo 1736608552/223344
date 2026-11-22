@@ -517,11 +517,22 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                 }
             }
 
+            // v2.7.81: 网页播放页 → 真实流地址 解析
+            //   采集站分集地址里有大量「网页播放页」（/play/xxx、/share/xxx），
+            //   返回 text/html。ExoPlayer 直接加载会报
+            //   ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED(3003) →「此源播放失败」。
+            //   手机端由 M3U8Service._resolveSharePage 兜住，TV 端此前缺这一层。
+            val resolvedStream = org.moontechlab.selenetv.service.StreamUrlResolver.resolve(raw)
+            org.moontechlab.selenetv.hongguo.HongguoDiagnostic.log(
+                "INFO", "player", "RESOLVE_STREAM",
+                "解析途径=${resolvedStream.via} url=${resolvedStream.url.take(90)}..."
+            )
+
             val proxy = org.moontechlab.selenetv.service.AppDataService.getM3u8ProxyUrl()
             val playUrl = if (proxy.isNotBlank()) {
-                PlayProgress.buildPlayUrl(raw, proxy)
+                PlayProgress.buildPlayUrl(resolvedStream.url, proxy)
             } else {
-                org.moontechlab.selenetv.proxy.FastStreamProxy.getProxyUrl(raw)
+                org.moontechlab.selenetv.proxy.FastStreamProxy.getProxyUrl(resolvedStream.url)
             }
             controller.load(playUrl, safeStartMs)
         }

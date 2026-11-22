@@ -1,5 +1,39 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.81 (2026-11-22)
+
+### 修 TV 端「好多源报错 / 此源播放失败」：补齐网页播放页 → 真实流地址 解析层
+
+#### 核心根因定位与修复说明
+1. **根因：采集站的分集地址大量是「网页播放页」，不是视频流（`StreamUrlResolver.kt` 新增）**：
+   - 线上 `/api/search` 实测 23 个源里，只有 4~5 个源给原生 `.m3u8` 直链，其余 18 个源给的是
+     网页播放页，例如 `https://v.gsuus.com/play/dwpnp18e`、`https://v.lfthirtytwo.com/share/...`、
+     `https://hn.bfvvs.com/play/av2m215a`，这些地址返回的都是 `text/html`；
+   - TV 端旧逻辑把这些地址原样交给 ExoPlayer，于是报
+     `ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED(3003)`，界面提示「此源播放失败，请尝试换源」；
+   - **手机端一直正常**，是因为手机端 `M3U8Service._resolveSharePage` 会先把 HTML 里的 m3u8 抓出来，
+     而 TV 端此前完全没有这一层。这就是「手机能播、TV 报错」的全部差别。
+2. **TV 端补齐解析层（`service/StreamUrlResolver.kt`）**：
+   - 1:1 移植手机端规则：`var main/url/src = "/xxx/index.m3u8"`、DPlayer 的 `url: 'https://...m3u8'`、
+     `<meta http-equiv="refresh" ...url=...m3u8>`、任意 `"https://...m3u8"`、任意 `"/path/index.m3u8"`，
+     兜底 `pageUrl + "/index.m3u8"`（不丢末段）；
+   - 每个候选都真实拉一次校验 `#EXTM3U`，避免把错误页当流地址；
+   - 带浏览器 UA + 同源 Referer；`.mp4/.flv` 等直链直接放行不做探测；解析结果缓存 64 条，
+     测速与开播共用，避免重复握手；解析失败时原样返回，行为不比旧版差。
+3. **开播链路接入（`PlayerScreen.kt`）**：分集地址先解析再走原代理链路，并在「日记」面板新增
+   `RESOLVE_STREAM` 日志，可直接看到 `解析途径=m3u8 / html-parsed / unresolved`。
+4. **换源列表不再一片「不可用」（`SpeedTestService.kt`）**：
+   - 旧测速直接拿分集地址当 m3u8 解析，网页播放页必然解析失败 → 全判 `FAILED`，
+     换源列表显示为不可用/报错；
+   - 现在先解析成真实 m3u8 再测速，解析耗时单独 `RESOLVE_TIMEOUT_MS=10s`，不占用单源测速的 8s 预算。
+5. **版本升级**：
+   - 版本更新至 `v2.7.81`（versionCode: `20881`），全平台构建产物自动分发至 `1736608552/LunaTV-Release`。
+
+#### 升级建议
+- TV 端务必升级；升级后网页播放页类型的源（约 18/23）可以正常播放，换源列表也会显示真实画质与速度。
+- 若个别源仍提示失败，先看「日记」里的 `RESOLVE_STREAM`：`unresolved` 表示该源播放页已 404，
+  属于源失效，直接换源即可（手机端同样播不了）。
+
 ## v2.7.80 (2026-11-22)
 
 ### 根治海报页/详情页「播放源只剩固定几个」+ TV 端默认直连源站导致搜源偏少
