@@ -31,6 +31,11 @@ object SearchCacheService {
     
     // 缓存配置
     private const val SEARCH_CACHE_TTL_MS = 10 * 60 * 1000L // 10分钟
+
+    // v2.7.82: 失败状态（超时 / 403）是临时性的，不该和成功结果一样缓存 10 分钟。
+    //   原来一次超时就把该源锁死 10 分钟，期间即使网络恢复、开了 VPN 也照样返回空，
+    //   表现为「怎么搜都搜不到，过一阵又突然好了」。失败只记 30 秒，用于抑制抖动。
+    private const val FAILURE_CACHE_TTL_MS = 30 * 1000L
     private const val CACHE_CLEANUP_INTERVAL_MS = 5 * 60 * 1000L // 5分钟清理一次
     private const val MAX_CACHE_SIZE = 1000 // 最大缓存条目数量
 
@@ -90,8 +95,9 @@ object SearchCacheService {
         }
 
         val key = makeSearchCacheKey(sourceKey, query, page)
+        val ttl = if (status == CachedPageStatus.OK) SEARCH_CACHE_TTL_MS else FAILURE_CACHE_TTL_MS
         searchCache[key] = CachedPageEntry(
-            expiresAt = now + SEARCH_CACHE_TTL_MS,
+            expiresAt = now + ttl,
             status = status,
             data = data,
             pageCount = pageCount
