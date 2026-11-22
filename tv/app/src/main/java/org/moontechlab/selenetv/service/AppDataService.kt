@@ -697,12 +697,24 @@ object AppDataService {
     suspend fun saveSearchOrigin(displayName: String) = withContext(Dispatchers.IO) {
         prefs.edit().putString(KEY_SEARCH_ORIGIN, SearchOrigin.fromDisplayName(displayName).key).apply()
     }
+    // 未显式选择过搜索发起方时的默认值。
+    //   已配置服务器地址 → 默认「服务端聚合搜索」；否则才回落到 TV 直连。
+    //   原因：直连源站在受限网络下只能连通极少数源（实测线上 24 个源仅 2 个可达，
+    //   其余被 403/连接阻断），表现为「每次都是固定的那几个源」。
+    //   服务端出口在海外，能连通全部源。
+    private fun defaultSearchOrigin(): SearchOrigin {
+        if (isLocalModeCache) return SearchOrigin.TV_DIRECT
+        val url = getServerUrlSync()
+        return if (!url.isNullOrBlank()) SearchOrigin.SERVER_AGGREGATED else SearchOrigin.TV_DIRECT
+    }
+
     suspend fun getSearchOriginDisplayName(): String = withContext(Dispatchers.IO) {
-        SearchOrigin.fromKey(prefs.getString(KEY_SEARCH_ORIGIN, SearchOrigin.TV_DIRECT.key) ?: SearchOrigin.TV_DIRECT.key).displayName
+        val saved = prefs.getString(KEY_SEARCH_ORIGIN, null)
+        (if (saved != null) SearchOrigin.fromKey(saved) else defaultSearchOrigin()).displayName
     }
     fun getSearchOriginSync(): SearchOrigin {
-        if (isLocalModeCache) return SearchOrigin.TV_DIRECT
-        return SearchOrigin.fromKey(prefs.getString(KEY_SEARCH_ORIGIN, SearchOrigin.TV_DIRECT.key) ?: SearchOrigin.TV_DIRECT.key)
+        val saved = prefs.getString(KEY_SEARCH_ORIGIN, null)
+        return if (saved != null) SearchOrigin.fromKey(saved) else defaultSearchOrigin()
     }
 
     // ==================== 应用更新偏好 ====================

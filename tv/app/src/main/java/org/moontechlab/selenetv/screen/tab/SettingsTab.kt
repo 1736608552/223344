@@ -476,7 +476,7 @@ fun SettingsTab(
                     SectionLabel("搜索")
                     SettingRow(
                         label = "搜索发起方",
-                        value = searchOrigin.ifEmpty { AppDataService.SearchOrigin.TV_DIRECT.displayName },
+                        value = searchOrigin.ifEmpty { AppDataService.getSearchOriginSync().displayName },
                         showDivider = false,
                         onClick = { showSearchOriginDialog = true },
                         modifier = Modifier.focusRequester(searchOriginFocusRequester),
