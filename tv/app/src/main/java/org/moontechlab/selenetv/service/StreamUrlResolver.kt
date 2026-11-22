@@ -116,14 +116,23 @@ object StreamUrlResolver {
 
         // 不是 m3u8 → 当成网页播放页，从 HTML 里挖真实地址
         val html = page.body
-        for (candidate in candidates(html, page.finalUrl)) {
-            if (candidate == rawUrl) continue
+        val guessed = candidates(html, page.finalUrl).filter { it != rawUrl }
+        for (candidate in guessed) {
             val checked = fetch(candidate, CANDIDATE_TIMEOUT_MS) ?: continue
             if (isM3u8Body(checked.body)) {
                 Log.i(TAG, "解析成功 ${rawUrl.take(70)} -> ${checked.finalUrl.take(100)}")
                 cachePut(rawUrl, checked.finalUrl)
                 return@withContext Resolved(checked.finalUrl, "html-parsed")
             }
+        }
+
+        // v2.7.82: 候选都没通过 #EXTM3U 校验时，仍回落到最可能的那个地址。
+        //   有些源对 UA / Referer 敏感，本机校验拿不到播放列表，但代理层
+        //   （FastStreamProxy 的白名单 UA 伪装 + 防盗链 Referer）能正常拉。
+        //   把整张 HTML 交给播放器必然 3003，不如让播放器直接试这个地址。
+        guessed.firstOrNull()?.let {
+            Log.w(TAG, "候选未通过校验，按首选地址试播: ${it.take(100)}")
+            return@withContext Resolved(it, "guessed")
         }
 
         Log.w(TAG, "解析失败，原样交给播放器: ${rawUrl.take(100)}")
