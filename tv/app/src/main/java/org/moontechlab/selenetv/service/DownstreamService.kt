@@ -8,7 +8,11 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
@@ -52,7 +56,7 @@ object DownstreamService {
     private const val TAG = "DownstreamService"
     private const val MAX_SEARCH_PAGES = 2
     private const val UA =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.7727.139 Safari/537.36"
 
     private val PUNCT_NORM_REGEX = Regex("""[\s\u3000:：·\-—_'"‘’“”()（）\[\]【】《》!！?？,，.。/\\~～]+""")
 
@@ -76,6 +80,21 @@ object DownstreamService {
             .connectTimeout(8, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
             .callTimeout(12, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .retryOnConnectionFailure(true)
+            .build()
+    }
+
+    /**
+     * 服务端聚合 HTTP JSON 搜索 (/api/search?q=...) 专用 OkHttpClient：
+     * 对齐手机端 ApiService.fetchSourcesData（20s 上限），复用全证书信任 SSL，避免国内宽带直连 CMS 被阻断仅出 4 个源。
+     */
+    private val serverSearchHttpClient: OkHttpClient by lazy {
+        MediaHttp.httpClient.newBuilder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(16, TimeUnit.SECONDS)
+            .callTimeout(18, TimeUnit.SECONDS)
             .followRedirects(true)
             .followSslRedirects(true)
             .retryOnConnectionFailure(true)
@@ -170,15 +189,23 @@ object DownstreamService {
     /**
      * 可即时取消的 OkHttp 异步请求（协程取消/超时瞬间关闭底层连接，绝不泄漏阻塞线程）
      */
-    private suspend fun executeCancellable(url: String, accept: String): HttpPayload =
+    private suspend fun executeCancellable(
+        url: String,
+        accept: String,
+        cookie: String? = null,
+        client: OkHttpClient = searchHttpClient
+    ): HttpPayload =
         suspendCancellableCoroutine { cont ->
-            val request = Request.Builder()
+            val reqBuilder = Request.Builder()
                 .url(url)
                 .get()
                 .header("User-Agent", UA)
                 .header("Accept", accept)
-                .build()
-            val call = searchHttpClient.newCall(request)
+                .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+            if (!cookie.isNullOrBlank()) {
+                reqBuilder.header("Cookie", cookie)
+            }
+            val call = client.newCall(reqBuilder.build())
             cont.invokeOnCancellation {
                 try { call.cancel() } catch (_: Throwable) {}
             }
@@ -633,6 +660,132 @@ object DownstreamService {
         } catch (e: Exception) {
             Log.e(TAG, "httpGet 失败: $url ${e.message}")
             null
+        }
+    }
+
+    /**
+     * 服务端鉴权失效标记异常（HTTP 401）
+     */
+    internal class ServerAuthExpiredException(message: String = "登录状态失效，请重新登录") : Exception(message)
+
+    private fun JsonObject.optString(key: String): String? {
+        val prim = this[key] as? JsonPrimitive ?: return null
+        if (prim is JsonNull) return null
+        return prim.contentOrNull
+    }
+
+    private fun JsonObject.optStringList(key: String): List<String> {
+        val arr = this[key] as? JsonArray ?: return emptyList()
+        return arr.mapNotNull { el ->
+            val prim = el as? JsonPrimitive ?: return@mapNotNull null
+            if (prim is JsonNull) null else prim.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+        }
+    }
+
+    /**
+     * 容错解析服务端 (/api/search 或 /api/search/ws) 返回的单条 SearchResult JSON。
+     * 彻底避免 kotlinx.serialization 默认解码遇到 episodes_titles=null / poster=null / douban_id="" / id=Int
+     * 时抛 SerializationException 静默丢弃大半播放源。
+     */
+    internal fun parseServerSearchResult(el: JsonElement): SearchResult? {
+        val obj = el as? JsonObject ?: return null
+        val episodes = obj.optStringList("episodes")
+        if (episodes.isEmpty()) return null
+
+        val typeName = obj.optString("type_name")
+        if (ContentFilterService.shouldFilter(typeName)) return null
+
+        val id = obj.optString("id")?.trim().orEmpty()
+        val rawTitle = obj.optString("title")?.trim().orEmpty()
+        val source = obj.optString("source")?.trim().orEmpty()
+        if (rawTitle.isEmpty() || source.isEmpty()) return null
+
+        val sourceName = obj.optString("source_name")?.trim()?.takeIf { it.isNotEmpty() } ?: source
+        val poster = obj.optString("poster")?.trim().orEmpty()
+        val episodesTitles = obj.optStringList("episodes_titles")
+        val rawYear = obj.optString("year")?.trim().orEmpty()
+        val year = if (rawYear.isNotEmpty()) {
+            Regex("\\d{4}").find(rawYear)?.value ?: rawYear
+        } else {
+            "unknown"
+        }
+        val doubanId = (obj["douban_id"] as? JsonPrimitive)
+            ?.takeIf { it !is JsonNull }
+            ?.let { prim -> prim.longOrNull ?: prim.contentOrNull?.trim()?.toLongOrNull() }
+            ?.takeIf { it > 0L }
+
+        return SearchResult(
+            id = id.ifEmpty { "${source}_${rawTitle.hashCode()}" },
+            title = rawTitle.replace(Regex("\\s+"), " "),
+            poster = poster,
+            episodes = episodes,
+            episodesTitles = episodesTitles,
+            source = source,
+            sourceName = sourceName,
+            classType = obj.optString("class"),
+            year = year,
+            desc = obj.optString("desc"),
+            typeName = typeName,
+            doubanId = doubanId
+        )
+    }
+
+    /**
+     * 调用服务端标准 HTTP JSON 聚合搜索接口 GET /api/search?q=...（与手机端 ApiService.fetchSourcesData 1:1 对齐）。
+     * 服务端运行在云服务器/VPS/NAS 网络环境，可畅通访问全部 20+ 采集站，彻底突破国内宽带 TV 直连被 DNS 污染/CF 拦截只剩 4 源的问题。
+     */
+    suspend fun searchServerHttpApi(
+        baseUrl: String,
+        cookies: String,
+        query: String
+    ): List<SearchResult> = withContext(Dispatchers.IO) {
+        val cleanBase = baseUrl.trim().trimEnd('/')
+        val cacheKey = "__server_http__::$cleanBase"
+        val cached = SearchCacheService.getCachedSearchPage(cacheKey, query, 1)
+        if (cached != null && cached.status == CachedPageStatus.OK && cached.data.isNotEmpty()) {
+            return@withContext cached.data
+        }
+
+        val url = "$cleanBase/api/search?q=${URLEncoder.encode(query, "UTF-8")}"
+        try {
+            val payload = executeCancellable(
+                url = url,
+                accept = "application/json",
+                cookie = cookies,
+                client = serverSearchHttpClient
+            )
+            if (payload.code == 401) {
+                throw ServerAuthExpiredException()
+            }
+            if (payload.code !in 200..299) {
+                Log.w(TAG, "服务端 /api/search 返回 HTTP ${payload.code}")
+                return@withContext emptyList()
+            }
+            val body = decodeResponseBody(payload.bytes, payload.contentType)
+            if (body.isBlank()) return@withContext emptyList()
+
+            val root = json.parseToJsonElement(body)
+            val arr: JsonArray = when (root) {
+                is JsonObject -> root["results"] as? JsonArray ?: return@withContext emptyList()
+                is JsonArray -> root
+                else -> return@withContext emptyList()
+            }
+            val parsed = arr.mapNotNull { el -> parseServerSearchResult(el) }
+            if (parsed.isNotEmpty()) {
+                SearchCacheService.setCachedSearchPage(
+                    cacheKey, query, 1,
+                    CachedPageStatus.OK, parsed, 1
+                )
+            }
+            Log.d(TAG, "服务端 /api/search 命中 ${parsed.size} 条有效可播源 (query=\"$query\")")
+            parsed
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: ServerAuthExpiredException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "服务端 /api/search 请求异常: ${e.message}")
+            emptyList()
         }
     }
 }

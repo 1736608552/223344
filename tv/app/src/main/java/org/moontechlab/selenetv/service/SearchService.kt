@@ -43,18 +43,24 @@ sealed class SearchEvent {
 /**
  * 流式搜索服务
  * 实现增量搜索结果推送
- * v2.7.77:
- *  - 放宽单源 12s / 全局 16s 上限（配合 OkHttp 连接池，快源仍 <1s 秒出，慢源不再被 7s/9s 一刀切误杀）
- *  - 服务端 SSE 模式增加 2.5s 对冲本地直连 + 源数偏少(<5)自动补齐本地直连，并过滤无剧集空源
- *  - 任何异常/空源路径必发 SearchEvent.Complete，杜绝详情页永久卡骨架屏
- *  - 新增 stopSearchAndWait()，彻底杜绝上一次搜索的残留 Complete 事件串台
+ * v2.7.78:
+ *  - 服务端模式下（含默认 TV_DIRECT），并发双通道竞速合并：
+ *    通道 A = 服务端标准 HTTP JSON /api/search?q=...（与手机端 1:1 对齐，突破国内宽带 TV 直连 DNS 污染/GFW/CF 阻断，出全 20+ 源）
+ *    通道 B = 客户端 OkHttp 长连接并发直连多源（快源 0.3~0.8s 秒出 + 咕噜专线映射 + 红果短剧）
+ *  - 服务端 SSE (/api/search/ws) 改用容错 JSON 解析器，并增加 1.8s /api/search HTTP JSON 对冲补齐，防止代理截断 SSE 或字段 null 导致丢源
+ *  - 服务端已返足量源 (>=8) 时给本地直连 4.5s 宽限期后干净收尾，避免被国内不可达死域拖满 16s
  */
 object SearchService {
     private const val TAG = "SearchService"
     private const val SEARCH_TIMEOUT_MS = 16000L
     private const val SINGLE_SOURCE_TIMEOUT_MS = 12000L
+    private const val SERVER_HTTP_TIMEOUT_MS = 16000L
+    private const val SERVER_RICH_SOURCE_THRESHOLD = 8
+    private const val LOCAL_GRACE_TOTAL_MS = 4500L
+    private const val LOCAL_GRACE_AFTER_SERVER_MS = 2000L
     private const val SSE_CONNECT_TIMEOUT_MS = 5000
     private const val SSE_READ_TIMEOUT_MS = 10000
+    private const val SSE_HTTP_HEDGE_DELAY_MS = 1800L
     private const val SSE_HEDGE_DELAY_MS = 2500L
     private const val SSE_MIN_SOURCES_BEFORE_SUPPLEMENT = 5
 
@@ -95,6 +101,16 @@ object SearchService {
     }
 
     /**
+     * 当前是否处于已登录服务端模式且具备调用 /api/search?q=... 的凭据
+     */
+    private fun canUseServerSearch(): Boolean {
+        if (AppDataService.isLocalModeSync()) return false
+        val baseUrl = AppDataService.getServerUrlSync()
+        val cookies = AppDataService.getCookiesSync()
+        return !baseUrl.isNullOrBlank() && !cookies.isNullOrBlank()
+    }
+
+    /**
      * 停止上一次搜索并等待其协程彻底结束（避免残留 Complete/Results 事件污染新页面）
      */
     suspend fun stopSearchAndWait() {
@@ -130,11 +146,18 @@ object SearchService {
         _sourceErrors.clear()
 
         val origin = AppDataService.getSearchOriginSync()
-        Log.d(TAG, "startSearch query=\"$trimmedQuery\" origin=${origin.key}")
+        val serverAvailable = canUseServerSearch()
+        Log.d(TAG, "startSearch query=\"$trimmedQuery\" origin=${origin.key} serverAvailable=$serverAvailable")
         _searchJob = serviceScope.launch {
             try {
                 when (origin) {
-                    AppDataService.SearchOrigin.TV_DIRECT -> localSearch(trimmedQuery, emitFinalComplete = true)
+                    AppDataService.SearchOrigin.TV_DIRECT -> {
+                        if (serverAvailable) {
+                            dualChannelDirectAndServerSearch(trimmedQuery)
+                        } else {
+                            localSearch(trimmedQuery, emitFinalComplete = true)
+                        }
+                    }
                     AppDataService.SearchOrigin.SERVER_AGGREGATED -> serverAggregatedSearch(trimmedQuery)
                 }
             } catch (e: CancellationException) {
@@ -149,6 +172,109 @@ object SearchService {
     }
 
     /**
+     * 服务端 HTTP JSON 聚合搜索通道（GET /api/search?q=...，与手机端 ApiService.fetchSourcesData 1:1 对齐）。
+     * 返回去重后的源数量；若鉴权失效返回 -1；其余失败返回 0。
+     */
+    private suspend fun fetchAndEmitServerHttpSearch(query: String): Int {
+        val baseUrl = AppDataService.getServerUrlSync()
+        val cookies = AppDataService.getCookiesSync()
+        if (baseUrl.isNullOrBlank() || cookies.isNullOrBlank()) return 0
+
+        return try {
+            val results = withTimeoutOrNull(SERVER_HTTP_TIMEOUT_MS) {
+                DownstreamService.searchServerHttpApi(baseUrl, cookies, query)
+            } ?: emptyList()
+
+            currentCoroutineContext().ensureActive()
+            if (results.isNotEmpty()) {
+                _eventFlow.emit(SearchEvent.Results(results))
+            }
+            val uniqueSources = results.mapNotNull { it.source.takeIf { s -> s.isNotBlank() } }.distinct().size
+            Log.d(TAG, "服务端 HTTP /api/search 完成: 条目=${results.size} 独立源=$uniqueSources")
+            uniqueSources
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: DownstreamService.ServerAuthExpiredException) {
+            Log.w(TAG, "服务端 HTTP /api/search 鉴权失效 (401)")
+            -1
+        } catch (e: Exception) {
+            Log.w(TAG, "服务端 HTTP /api/search 通道异常: ${e.message}")
+            0
+        }
+    }
+
+    /**
+     * 服务端模式默认双通道并发搜索：
+     *  - 通道 A：服务端 HTTP JSON /api/search?q=...（云端网络畅通，一次吐出全部 20+ 源）
+     *  - 通道 B：客户端直连多源并发（国内可达源/咕噜专线/红果短剧 0.3~0.8s 秒出）
+     * 任一通道结果立即流式推送到 UI 并由 DetailScreen/SearchTab 去重合并。
+     */
+    private suspend fun dualChannelDirectAndServerSearch(query: String) = coroutineScope {
+        val startMs = System.currentTimeMillis()
+        val serverTask = async(Dispatchers.IO) {
+            fetchAndEmitServerHttpSearch(query)
+        }
+        val localTask = async(Dispatchers.IO) {
+            try {
+                localSearch(query, emitFinalComplete = false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "双通道本地直连异常（不影响服务端结果）: ${e.message}")
+            }
+        }
+
+        val serverSourceCount = try {
+            serverTask.await()
+        } catch (e: CancellationException) {
+            localTask.cancel()
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "双通道服务端搜索异常: ${e.message}")
+            0
+        }
+
+        if (serverSourceCount >= SERVER_RICH_SOURCE_THRESHOLD) {
+            // 服务端已返回足量源（如 20+ 源）：给本地直连合理宽限期以收齐可达快源/咕噜专线/红果短剧，随后释放死域等待
+            val elapsed = System.currentTimeMillis() - startMs
+            val graceMs = maxOf(LOCAL_GRACE_TOTAL_MS - elapsed, LOCAL_GRACE_AFTER_SERVER_MS)
+            val finishedInGrace = withTimeoutOrNull(graceMs) {
+                localTask.await()
+                true
+            }
+            if (finishedInGrace == null) {
+                Log.d(TAG, "服务端已出 $serverSourceCount 源且本地宽限期(${graceMs}ms)结束，取消剩余慢/不可达直连源")
+                localTask.cancel()
+            }
+        } else {
+            // 服务端未返足量源或超时：完整等待本地多源直连跑完
+            try {
+                localTask.await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "等待本地直连结束异常: ${e.message}")
+            }
+        }
+
+        if (isActive) {
+            val total = _totalSources.coerceAtLeast(1)
+            _eventFlow.emit(
+                SearchEvent.Progress(
+                    SearchProgress(
+                        totalSources = total,
+                        completedSources = total,
+                        currentSource = null,
+                        isComplete = true
+                    )
+                )
+            )
+            _eventFlow.emit(SearchEvent.Complete)
+            _isSearching = false
+        }
+    }
+
+    /**
      * 本地搜索（并发搜索所有资源）
      */
     private suspend fun localSearch(query: String, emitFinalComplete: Boolean = true) = coroutineScope {
@@ -158,8 +284,8 @@ object SearchService {
             val resources = allResources.filter { !it.disabled }
 
             if (resources.isEmpty()) {
-                _eventFlow.emit(SearchEvent.Error("没有可用的搜索资源"))
                 if (emitFinalComplete) {
+                    _eventFlow.emit(SearchEvent.Error("没有可用的搜索资源"))
                     _eventFlow.emit(SearchEvent.Complete)
                     _isSearching = false
                 }
@@ -225,10 +351,12 @@ object SearchService {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            _eventFlow.emit(SearchEvent.Error("本地搜索异常: ${e.message}"))
             if (emitFinalComplete) {
+                _eventFlow.emit(SearchEvent.Error("本地搜索异常: ${e.message}"))
                 _eventFlow.emit(SearchEvent.Complete)
                 _isSearching = false
+            } else {
+                Log.w(TAG, "本地搜索通道异常: ${e.message}")
             }
         }
     }
@@ -240,8 +368,7 @@ object SearchService {
         try {
             val results = withTimeout(SINGLE_SOURCE_TIMEOUT_MS) {
                 DownstreamService.searchFromApi(resource, query)
-            }.filter { it.episodes.isNotEmpty() }
-
+            }
             currentCoroutineContext().ensureActive()
             val completed = _completedSources.incrementAndGet()
 
@@ -255,7 +382,7 @@ object SearchService {
                 SearchEvent.Progress(
                     SearchProgress(
                         totalSources = _totalSources,
-                        completedSources = completed,
+                        completedSources = completed.coerceAtMost(_totalSources.coerceAtLeast(completed)),
                         currentSource = resource.name,
                         isComplete = false
                     )
@@ -281,7 +408,7 @@ object SearchService {
             SearchEvent.Progress(
                 SearchProgress(
                     totalSources = _totalSources,
-                    completedSources = completed,
+                    completedSources = completed.coerceAtMost(_totalSources.coerceAtLeast(completed)),
                     currentSource = resource.name,
                     isComplete = false,
                     error = errorMessage
@@ -307,7 +434,7 @@ object SearchService {
                 SearchEvent.Progress(
                     SearchProgress(
                         totalSources = _totalSources,
-                        completedSources = completed,
+                        completedSources = completed.coerceAtMost(_totalSources.coerceAtLeast(completed)),
                         currentSource = "精品短剧",
                         isComplete = false
                     )
@@ -322,7 +449,7 @@ object SearchService {
                 SearchEvent.Progress(
                     SearchProgress(
                         totalSources = _totalSources,
-                        completedSources = completed,
+                        completedSources = completed.coerceAtMost(_totalSources.coerceAtLeast(completed)),
                         currentSource = "精品短剧",
                         isComplete = false
                     )
@@ -355,13 +482,27 @@ object SearchService {
     }
 
     /**
-     * 服务端聚合搜索（SSE 流式）+ 2.5s 本地直连对冲 + 低产自动补齐
+     * 服务端聚合搜索（SSE 流式）+ 1.8s 服务端 HTTP JSON (/api/search) 对冲 + 本地直连对冲补齐
      * 命中条件由调用方在 startSearch 中读 SearchOrigin 决定
      */
     private suspend fun serverAggregatedSearch(query: String) = coroutineScope {
         val localJobLock = Any()
         val localJobRef = AtomicReference<Deferred<Unit>?>(null)
+        val serverHttpJobLock = Any()
+        val serverHttpJobRef = AtomicReference<Deferred<Int>?>(null)
         val sseEmittedSources = ConcurrentHashMap.newKeySet<String>()
+
+        fun ensureServerHttpStarted() {
+            synchronized(serverHttpJobLock) {
+                if (serverHttpJobRef.get() == null) {
+                    serverHttpJobRef.set(
+                        async(Dispatchers.IO) {
+                            fetchAndEmitServerHttpSearch(query)
+                        }
+                    )
+                }
+            }
+        }
 
         fun ensureLocalStarted() {
             synchronized(localJobLock) {
@@ -375,7 +516,16 @@ object SearchService {
             }
         }
 
-        // 2.5s 对冲定时器：若服务端 SSE 2.5 秒内仍未吐出任何有效可播源，立刻并行启动客户端直连多源搜索
+        // 1.8s 服务端 HTTP JSON 对冲定时器：若代理/CF 缓冲 SSE 导致迟迟未出足量源，立刻并行拉取标准 /api/search?q=...
+        val httpHedgeJob = launch(Dispatchers.IO) {
+            delay(SSE_HTTP_HEDGE_DELAY_MS)
+            if (sseEmittedSources.size < SSE_MIN_SOURCES_BEFORE_SUPPLEMENT && isActive) {
+                Log.w(TAG, "服务端 SSE ${SSE_HTTP_HEDGE_DELAY_MS}ms 内仅出 ${sseEmittedSources.size} 源，并行启动 HTTP /api/search 对冲")
+                ensureServerHttpStarted()
+            }
+        }
+
+        // 2.5s 本地直连对冲定时器：若服务端 SSE 2.5 秒内仍未吐出任何有效可播源，立刻并行启动客户端直连多源搜索
         val hedgeJob = launch(Dispatchers.IO) {
             delay(SSE_HEDGE_DELAY_MS)
             if (sseEmittedSources.isEmpty() && isActive) {
@@ -414,7 +564,8 @@ object SearchService {
                     return@withContext
                 }
                 if (code < 200 || code >= 300) {
-                    Log.w(TAG, "服务端 SSE 返回 HTTP $code，自动回退本地多源并发搜索")
+                    Log.w(TAG, "服务端 SSE 返回 HTTP $code，自动回退 HTTP /api/search + 本地多源并发搜索")
+                    ensureServerHttpStarted()
                     ensureLocalStarted()
                     return@withContext
                 }
@@ -453,21 +604,9 @@ object SearchService {
                                 val sourceName = obj["sourceName"]?.jsonPrimitive?.contentOrNull
                                 val arr = obj["results"]?.jsonArray
                                 if (arr != null && arr.isNotEmpty()) {
+                                    // 使用容错解析器，杜绝 null 字段/空字符串 douban_id 导致静默丢源
                                     val parsed = arr.mapNotNull { el ->
-                                        try {
-                                            val decoded = json.decodeFromJsonElement(SearchResult.serializer(), el)
-                                            // 过滤无剧集空条目，同时把服务端返回的 doubanId=0 归一化为 null
-                                            if (decoded.episodes.isEmpty()) {
-                                                null
-                                            } else if (decoded.doubanId != null && decoded.doubanId <= 0L) {
-                                                decoded.copy(doubanId = null)
-                                            } else {
-                                                decoded
-                                            }
-                                        } catch (e: Exception) {
-                                            Log.w(TAG, "服务端搜索条目解析失败: ${e.message}")
-                                            null
-                                        }
+                                        DownstreamService.parseServerSearchResult(el)
                                     }
                                     if (parsed.isNotEmpty()) {
                                         parsed.forEach { if (it.source.isNotBlank()) sseEmittedSources.add(it.source) }
@@ -505,32 +644,59 @@ object SearchService {
                 }
             }
         } catch (e: CancellationException) {
+            httpHedgeJob.cancel()
             hedgeJob.cancel()
+            serverHttpJobRef.get()?.cancel()
             localJobRef.get()?.cancel()
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "服务端 SSE 搜索异常 (${e.message})，自动回退本地多源并发搜索")
+            Log.w(TAG, "服务端 SSE 搜索异常 (${e.message})，自动回退 HTTP /api/search + 本地多源并发搜索")
             if (!authExpired && isActive) {
+                ensureServerHttpStarted()
                 ensureLocalStarted()
             }
         } finally {
+            httpHedgeJob.cancel()
             hedgeJob.cancel()
             try { connection?.disconnect() } catch (_: Exception) {}
             _serverConnection = null
         }
 
-        // 若 SSE 非正常结束或仅返回很少源（<5，如服务端未映射咕噜专线或部分源失效），自动补齐本地多源直连搜索
+        // 若 SSE 非正常结束或仅返回很少源（<5），先补齐标准 HTTP /api/search，再补齐本地多源直连
         if (!authExpired && isActive && (!completedNormally || sseEmittedSources.size < SSE_MIN_SOURCES_BEFORE_SUPPLEMENT)) {
             Log.d(
                 TAG,
-                "服务端 SSE 结束 (normal=$completedNormally, sources=${sseEmittedSources.size})，自动启动本地直连补齐全部可用源"
+                "服务端 SSE 结束 (normal=$completedNormally, sources=${sseEmittedSources.size})，启动 HTTP /api/search 与本地直连补齐"
             )
+            ensureServerHttpStarted()
             ensureLocalStarted()
         }
 
-        // 等待对冲/补齐本地搜索完成，再统一发出唯一一次 Complete
+        // 等待对冲/补齐通道完成，再统一发出唯一一次 Complete
+        val serverHttpCount = try {
+            synchronized(serverHttpJobLock) { serverHttpJobRef.get() }?.await() ?: 0
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "服务端 HTTP 对冲异常: ${e.message}")
+            0
+        }
+
         try {
-            synchronized(localJobLock) { localJobRef.get() }?.await()
+            val localDeferred = synchronized(localJobLock) { localJobRef.get() }
+            if (localDeferred != null) {
+                if (sseEmittedSources.size + serverHttpCount >= SERVER_RICH_SOURCE_THRESHOLD) {
+                    val finished = withTimeoutOrNull(LOCAL_GRACE_AFTER_SERVER_MS) {
+                        localDeferred.await()
+                        true
+                    }
+                    if (finished == null) {
+                        localDeferred.cancel()
+                    }
+                } else {
+                    localDeferred.await()
+                }
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

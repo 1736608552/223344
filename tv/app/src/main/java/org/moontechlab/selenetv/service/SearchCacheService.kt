@@ -34,7 +34,7 @@ object SearchCacheService {
     private const val SEARCH_CACHE_TTL_MS = 10 * 60 * 1000L // 有效结果缓存 10 分钟
     private const val EMPTY_OK_TTL_MS = 30 * 1000L // 空结果仅缓存 30 秒，便于刷新重试
     private const val TIMEOUT_TTL_MS = 15 * 1000L // 超时仅短缓存 15 秒，绝不长封 10 分钟
-    private const val FORBIDDEN_TTL_MS = 60 * 1000L // 403 缓存 60 秒
+    private const val FORBIDDEN_TTL_MS = 15 * 1000L // 403/CF 瞬时拦截仅短缓存 15 秒
     private const val CACHE_CLEANUP_INTERVAL_MS = 5 * 60 * 1000L // 5 分钟清理一次
     private const val MAX_CACHE_SIZE = 1000 // 最大缓存条目数量
 
