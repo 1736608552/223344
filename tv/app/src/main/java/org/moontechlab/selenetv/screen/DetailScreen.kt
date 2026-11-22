@@ -122,11 +122,11 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
 
     BackHandler { onBack() }
 
-    // 入口候选接受规则：先用放宽年份的标题/豆瓣ID规则保留候选，避免采集站年份偏差在入口层被提前丢弃
-    fun acceptCandidate(result: SearchResult): Boolean = when (entry) {
-        is DetailEntry.Douban -> SourceFilter.matchesContentRelaxedYear(result, entry.doubanId, entry.title)
-        is DetailEntry.Bangumi -> SourceFilter.matchesByTitleOnly(result, entry.title)
-        is DetailEntry.History -> SourceFilter.matchesByTitleOnly(result, entry.title)
+    // 入口接受规则
+    fun accept(result: SearchResult): Boolean = when (entry) {
+        is DetailEntry.Douban -> SourceFilter.matchesContent(result, entry.doubanId, entry.title, entry.year)
+        is DetailEntry.Bangumi -> SourceFilter.matchesByTitleYear(result, entry.title, entry.year)
+        is DetailEntry.History -> SourceFilter.matchesByTitleYear(result, entry.title, entry.year)
         is DetailEntry.SearchAggregate -> false
     }
 
@@ -209,10 +209,7 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
                 state = state.copy(sourcesComplete = true)
             }
             else -> {
-                // 等待上一次搜索彻底结束再订阅事件流，防止残留的 Complete/Results 串台导致误判搜完 0 源
-                SearchService.stopSearchAndWait()
-                rawResults = emptyList()
-                state = state.copy(sourcesComplete = false, sourcesProgress = null)
+                SearchService.stopSearch()
                 val query = when (entry) {
                     is DetailEntry.History -> entry.searchTitle.ifBlank { entry.title }
                     else -> entry.title
@@ -231,8 +228,7 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
                             is SearchEvent.Results -> {
                                 val accepted = event.results
                                     .asSequence()
-                                    .filter { it.episodes.isNotEmpty() }
-                                    .filter { acceptCandidate(it) }
+                                    .filter { accept(it) }
                                     .filter { !ContentFilterService.shouldFilter(it.typeName) }
                                     .toList()
                                 if (accepted.isNotEmpty()) {
@@ -243,24 +239,21 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
                             is SearchEvent.Complete -> {
                                 // 播放记录/收藏夹（带 source+id）：标题搜索未命中该具体源时，
                                 // 用 source+id 精确补齐这一条加入结果集，保证保存的源始终可播。
+                                // 必须校验标题一致性，防止拉入完全无关的片源（如把扫黑风暴补齐到龙餐馆中）
                                 if (entry is DetailEntry.History &&
                                     rawResults.none { it.source == entry.source && it.id == entry.id }
                                 ) {
                                     val detail = DownstreamService.getDetailBySourceId(entry.source, entry.id)
                                     Log.d("DetailFallback", "补齐 source=${entry.source} id=${entry.id} -> ${detail?.let { "${it.title}(${it.episodes.size}集)" } ?: "null"}")
                                     if (detail != null && detail.episodes.isNotEmpty() &&
-                                        SourceFilter.matchesByTitleOnly(detail, entry.title)
+                                        SourceFilter.matchesByTitleYear(detail, entry.title, entry.year)
                                     ) {
                                         rawResults = SearchService.deduplicateResults(rawResults + detail)
                                     }
                                 }
                                 state = state.copy(sourcesComplete = true)
                             }
-                            is SearchEvent.Error -> {
-                                if (!SearchService.isSearching) {
-                                    state = state.copy(sourcesComplete = true)
-                                }
-                            }
+                            is SearchEvent.Error -> {}
                         }
                     }
             }
@@ -272,54 +265,26 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
     //    搜索结束仍未识别到组，则回退展示全部命中结果。
     //    必须严格过滤标题，杜绝与当前剧目无关的异质源混入（如扫黑风暴混入龙餐馆）
     LaunchedEffect(rawResults, state.sourcesComplete, entry) {
-        val playableRaw = rawResults.filter { it.episodes.isNotEmpty() }
         val displayed = when (entry) {
             is DetailEntry.History -> {
+                val group = DetailSourceResolver.historyGroupSources(rawResults, entry.source, entry.id)
+                    ?: if (state.sourcesComplete) rawResults else emptyList()
+                // 从播放记录/收藏夹进入：把入口对应的源(source+id)排到首位（稳定排序，其余顺序不变）
                 val entryKey = "${entry.source}+${entry.id}"
-                val strict = playableRaw.filter { SourceFilter.matchesByTitleYear(it, entry.title, entry.year) }
-                val chosen = if (strict.isNotEmpty() || !state.sourcesComplete) {
-                    strict
-                } else {
-                    playableRaw.filter { SourceFilter.matchesByTitleOnly(it, entry.title) }
-                }
-                // 把入口对应的源(source+id)排到首位，同时流式展示全部同名可用源（不再因年份/聚合键差异丢弃其余源）
-                chosen.sortedByDescending { sourceKey(it) == entryKey }
+                group.filter { SourceFilter.matchesByTitleYear(it, entry.title, entry.year) }
+                    .sortedByDescending { sourceKey(it) == entryKey }
             }
-            is DetailEntry.Douban -> {
-                val strict = playableRaw.filter { SourceFilter.matchesContent(it, entry.doubanId, entry.title, entry.year) }
-                if (strict.isNotEmpty() || !state.sourcesComplete) {
-                    strict
-                } else {
-                    // 严格年份命中 0 源时，放宽年份用标题+豆瓣ID兜底（对齐手机端 v2.7.74+ 逻辑）
-                    playableRaw.filter { SourceFilter.matchesContentRelaxedYear(it, entry.doubanId, entry.title) }
+            else -> rawResults.filter {
+                when (entry) {
+                    is DetailEntry.Douban -> SourceFilter.matchesContent(it, entry.doubanId, entry.title, entry.year)
+                    is DetailEntry.Bangumi -> SourceFilter.matchesByTitleYear(it, entry.title, entry.year)
+                    else -> true
                 }
-            }
-            is DetailEntry.Bangumi -> {
-                val strict = playableRaw.filter { SourceFilter.matchesByTitleYear(it, entry.title, entry.year) }
-                if (strict.isNotEmpty() || !state.sourcesComplete) {
-                    strict
-                } else {
-                    playableRaw.filter { SourceFilter.matchesByTitleOnly(it, entry.title) }
-                }
-            }
-            is DetailEntry.SearchAggregate -> playableRaw
-        }
-        // 同源优先保留集数最多的一条（History 入口对应源始终保留），避免同一源出现残缺条目
-        val historyEntryKey = (entry as? DetailEntry.History)?.let { "${it.source}+${it.id}" }
-        val bestBySource = LinkedHashMap<String, SearchResult>()
-        for (item in displayed.distinctBy { sourceKey(it) }) {
-            val prev = bestBySource[item.source]
-            if (prev == null) {
-                bestBySource[item.source] = item
-            } else if (historyEntryKey != null && sourceKey(item) == historyEntryKey) {
-                bestBySource[item.source] = item
-            } else if (historyEntryKey != null && sourceKey(prev) == historyEntryKey) {
-                // 保持历史入口源不被同源覆盖
-            } else if (item.episodes.size > prev.episodes.size) {
-                bestBySource[item.source] = item
             }
         }
-        state = state.copy(sources = bestBySource.values.toList())
+        // 统一按 source+id 去重：SearchAggregate 快照与 History 回退未经搜索流的去重，
+        // 同一源可能重复出现；distinctBy 幂等，对已去重的搜索结果无副作用。
+        state = state.copy(sources = displayed.distinctBy { sourceKey(it) })
     }
 
     // 3) 拉豆瓣详情（Douban 入口）
@@ -465,7 +430,7 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
                 .mapNotNull { src -> state.playRecords[sourceKey(src)]?.let { rec -> src to rec.saveTime } }
                 .maxByOrNull { it.second }
                 ?.first
-            val pick = historyPick ?: recordPick ?: state.sources.firstOrNull { it.episodes.isNotEmpty() } ?: state.sources.first()
+            val pick = historyPick ?: recordPick ?: state.sources.first()
             state = state.copy(selectedSourceKey = sourceKey(pick))
         }
     }

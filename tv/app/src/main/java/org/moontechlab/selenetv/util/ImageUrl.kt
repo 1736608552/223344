@@ -39,13 +39,8 @@ fun getImageUrlSync(originalUrl: String): String {
         originalUrl.contains("doubanio.com") -> when (AppDataService.getDoubanImageSourceKeySync()) {
             "server_proxy" -> serverProxyOrNull(originalUrl) ?: originalUrl
             "official_cdn" -> originalUrl.replace(DOUBAN_IMAGE_REGEX, "img3.doubanio.com")
-            "img1_cdn"     -> originalUrl.replace(DOUBAN_IMAGE_REGEX, "img1.doubanio.com")
-            "img2_cdn"     -> originalUrl.replace(DOUBAN_IMAGE_REGEX, "img2.doubanio.com")
-            "img9_cdn"     -> originalUrl.replace(DOUBAN_IMAGE_REGEX, "img9.doubanio.com")
             "cdn_tencent"  -> originalUrl.replace(DOUBAN_IMAGE_REGEX, "img.doubanio.cmliussss.net")
             "cdn_aliyun"   -> originalUrl.replace(DOUBAN_IMAGE_REGEX, "img.doubanio.cmliussss.com")
-            "wp_photon"    -> "https://i0.wp.com/" + originalUrl.removePrefix("https://").removePrefix("http://")
-            "weserv"       -> "https://images.weserv.nl/?url=" + URLEncoder.encode(originalUrl, "UTF-8")
             else           -> originalUrl
         }
         BANGUMI_IMAGE_HOSTS.any { originalUrl.contains(it) } -> when (AppDataService.getBangumiImageSourceKeySync()) {

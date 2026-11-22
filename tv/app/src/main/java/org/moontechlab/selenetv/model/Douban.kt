@@ -93,9 +93,6 @@ data class DoubanRating(
  * 数据源类型
  */
 enum class DoubanDataSourceKey {
-    @SerialName("frodo")
-    FRODO,
-
     @SerialName("direct")
     DIRECT,
     
@@ -106,16 +103,7 @@ enum class DoubanDataSourceKey {
     CDN_ALIYUN,
     
     @SerialName("cors_proxy")
-    CORS_PROXY,
-
-    @SerialName("cors_allorigins")
-    CORS_ALLORIGINS,
-
-    @SerialName("cors_proxy_io")
-    CORS_PROXY_IO,
-
-    @SerialName("cors_codetabs")
-    CORS_CODETABS
+    CORS_PROXY
 }
 
 /**
