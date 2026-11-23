@@ -5163,11 +5163,6 @@ class _PlayerScreenState extends State<PlayerScreen>
               ),
             ),
           ),
-          IconButton(
-            tooltip: '播放诊断与日记',
-            icon: const Icon(Icons.bug_report_outlined, color: Color(0xFF38BDF8)),
-            onPressed: _showPlaybackDiagnosticSheet,
-          ),
         ],
       ),
     );
@@ -5707,27 +5702,6 @@ class _PlayerScreenState extends State<PlayerScreen>
           Row(
             children: [
               _buildSectionTitle('选集', isDark),
-              const SizedBox(width: 8),
-              InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: _showPlaybackDiagnosticSheet,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF0284C7).withOpacity(0.18),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: const Color(0xFF38BDF8).withOpacity(0.5), width: 0.8),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.terminal_rounded, size: 12, color: Color(0xFF38BDF8)),
-                      SizedBox(width: 4),
-                      Text('日记', style: TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                ),
-              ),
               const Spacer(),
               // v2.0.51: 翻页指示器 (1/2) — 用户滑动 PageView 时实时更新
               if (source != null && source.episodes.isNotEmpty)
