@@ -1,5 +1,58 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.84 (2026-11-23)
+
+### TV 端：纵向翻行时白色焦点框不跟随滚动
+
+#### 现象
+首页往下翻一行，有时候页面滚上去了，白色选中框却留在原来的视觉位置；
+再按一下方向键才对得上。属于「有时出现」，不是每次都复现。
+
+#### 根因一：先启动滚动，再请求焦点，而那个滚动撤销不掉
+`HomeTab.kt` 的纵向导航原来是：
+
+```kotlin
+coroutineScope.launch { scrollState.animateScrollBy(340f) }  // ① 立刻开跑
+for (target in targets) { if (target.safeRequestFocus()) break }  // ② 同步聚焦
+```
+
+① 的 340 像素动画已经启动；② 聚焦成功后触发 `bringIntoView`，它按自己的规则判断
+「目标是否已在舒适区」，在这个时机经常算出 `0`（认为不用滚）——**但它无法取消 ①**，
+于是 340 仍然跑完：页面动了，焦点框没动。
+
+#### 根因二：翻行的目标对象会被 LazyRow 回收，回收后仍在盲滚
+纵向导航的 target 是「下一行第一张卡」的 `FocusRequester`
+（`RecommendSection.kt:189`，`if (index == 0)`）。`LazyRow` 只组合可视项，
+横向翻过几张后 index 0 已被回收，`requestFocus()` 抛 `IllegalStateException`，
+被 `safeRequestFocus()` 吞掉返回 false。此时旧代码照样盲滚 340：页面动了、焦点没动。
+这是「有时候」出现的真正来源——取决于你横向滚没滚过、下一行第一张卡还在不在。
+
+#### 根因三：阈值写的是像素，不是 dp
+`topThreshold = 68f`、`bottomThreshold = containerSize - 40f` 是像素常量。
+density=1.0 的盒子上约等于 68dp/40dp，density=1.5 上只剩 45dp/27dp，
+同一份代码在不同电视上舒适区边界不同，表现就是「有时滚、有时不滚」。
+
+#### 修复（只改 `tv/.../screen/tab/HomeTab.kt`）
+1. **删掉全部盲目滚动**：`animateScrollBy(340f)`、`animateScrollBy(-340f)`、
+   `if (scrollState.value <= 340) animateScrollTo(0)` 三处全删，同时移除
+   `androidx.compose.foundation.gestures.animateScrollBy` 导入。
+2. **纵向导航只做一件事**：尝试把焦点交给目标行。成功就由 `bringIntoView` 精确滚动；
+   目标已回收则返回 `false` 放行，让 Compose 的二维焦点搜索从当前焦点向下找水平位置
+   最近的卡片，再触发它自己的 `bringIntoView`。
+3. **阈值改为 dp**：`58dp`（与顶部 `Spacer(height = 58.dp)` 的 TabSwitcher 占位一致）
+   + 底部 `24dp` 余量，用 `LocalDensity` 换算，并作为 `remember(tvDensity)` 的 key，
+   换分辨率/密度时重算。
+
+#### 连带行为变化
+向上导航原本是「滚动值 ≤ 340 就直接回顶部」，现在只有聚焦全部失败时才回顶。
+从「热门电影」向上翻到「收藏」时，页面把收藏行滚到 58dp 位置，不再一路弹回 banner；
+再按一次向上才回到 banner 顶部（`navigateUpToBannerOrHeader` 里的 `animateScrollTo(0)` 保留）。
+
+#### 说明
+详情页 `DetailScreen.kt:555` 的 `noVerticalAutoScroll`（`calculateScrollDistance` 恒返回 0，
+配合两个哨兵 Box 做粗粒度跳顶/跳底）是刻意设计，用于保住 Apple TV 那种首屏巨幕，
+本次未动。它的已知副作用是播放源区超过一屏时滚不到底部，属布局问题，与本次焦点 bug 不同源。
+
 ## v2.7.83 (2026-11-22)
 
 ### 所有源默认最高分辨率播放（TV + 手机双端）

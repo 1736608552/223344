@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -484,11 +483,17 @@ fun HomeTab(
     val hotShowsFocusRequester = remember { FocusRequester() }
 
     // 智能平滑视口滚动规范：横向切卡片时视口稳如泰山，纵向换行时平滑将卡片带入最佳黄金浏览区
-    val tvBringIntoViewSpec = remember {
+    //
+    // 阈值必须与密度无关：旧实现写死 68f / 40f（像素），在 density=1 的 1080p 盒子上约等于
+    // 68dp/40dp，在 density=1.5 的设备上只剩 45dp/27dp —— 同一份代码在不同盒子上边界完全不同，
+    // 表现就是「有时滚、有时不滚」。这里改成 58dp（与顶部 TabSwitcher 占位一致）和 24dp 底部余量。
+    val tvDensity = androidx.compose.ui.platform.LocalDensity.current
+    val tvBringIntoViewSpec = remember(tvDensity) {
+        val topThreshold = with(tvDensity) { 58.dp.toPx() }
+        val bottomMargin = with(tvDensity) { 24.dp.toPx() }
         object : BringIntoViewSpec {
             override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
-                val topThreshold = 68f
-                val bottomThreshold = containerSize - 40f
+                val bottomThreshold = containerSize - bottomMargin
                 val itemTop = offset
                 val itemBottom = offset + size
 
@@ -549,37 +554,37 @@ fun HomeTab(
                 }
             }
 
-            // 纵向安全向下导航：先平滑滚动视口，再尝试链式聚焦，杜绝因组件在视口外抛异常导致锁死
-            val navigateDownWithScroll: (List<FocusRequester>) -> Boolean = { targets ->
-                coroutineScope.launch {
-                    scrollState.animateScrollBy(340f)
-                }
-                var handled = false
+            // 纵向导航统一入口：只负责「能否把焦点交给下一行」，滚动一律交给 bringIntoView。
+            //
+            // 这里踩过两个坑，都会表现为「白色选中框不跟着翻」：
+            //
+            // 坑 1：旧实现先 `launch { animateScrollBy(340f) }` 再 requestFocus。两套滚动会互相踩——
+            //   bringIntoView 按「目标是否已在舒适区」判定后往往返回 0（认为不用滚），但它无法取消
+            //   已经启动的 340 动画，于是页面滚了、焦点框却留在原来的视觉位置。
+            // 坑 2：target 用的是「下一行第一张卡」的 FocusRequester，而 LazyRow 只组合可视项。
+            //   用户横向翻过几张后 index 0 已被回收，requestFocus 抛 IllegalStateException，
+            //   safeRequestFocus 返回 false —— 此时如果还盲滚 340，就是「页面动了、焦点没动」。
+            //   这正是问题「有时候」出现的原因：取决于你有没有横向滚过、下一行第一张还在不在。
+            //
+            // 现在：目标有效就聚焦（由 bringIntoView 精确滚动）；目标已回收就返回 false 放行，
+            // 让 Compose 的二维焦点搜索从当前焦点向下找最近的卡片，再触发它自己的 bringIntoView。
+            fun moveFocusToRow(targets: List<FocusRequester>): Boolean {
                 for (target in targets) {
                     if (target.safeRequestFocus()) {
-                        handled = true
-                        break
+                        return true
                     }
                 }
-                handled
+                return false
             }
 
-            // 纵向安全向上导航：平滑回滚视口，并链式尝试聚焦上层组件
+            // 纵向安全向下导航：能聚焦就聚焦，不能则放行给系统焦点搜索
+            val navigateDownWithScroll: (List<FocusRequester>) -> Boolean = { targets ->
+                moveFocusToRow(targets)
+            }
+
+            // 纵向安全向上导航：同上；都无法聚焦时才回顶
             val navigateUpWithScroll: (List<FocusRequester>, (() -> Boolean)?) -> Boolean = { targets, fallbackToTop ->
-                coroutineScope.launch {
-                    if (scrollState.value <= 340) {
-                        scrollState.animateScrollTo(0)
-                    } else {
-                        scrollState.animateScrollBy(-340f)
-                    }
-                }
-                var handled = false
-                for (target in targets) {
-                    if (target.safeRequestFocus()) {
-                        handled = true
-                        break
-                    }
-                }
+                var handled = moveFocusToRow(targets)
                 if (!handled && fallbackToTop != null) {
                     handled = fallbackToTop()
                 }
