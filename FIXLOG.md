@@ -1,5 +1,40 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.97 (2026-11-26)
+
+### 短剧页头部的「日记」按钮去掉 + 红果短剧并进「全部搜索」
+
+两件事，都是界面层的：
+
+1. **短剧页右上角「日记」按钮删除**（用户要求）。诊断面板本身没删，改成**长按「短剧」大标题**打开，
+   排障时仍能取到「原生诊断报告 + Flutter 短剧日记 + Android 底层日志」，只是不再占头部一个永久按钮。
+2. **红果短剧搜进「全部搜索」**，跟 TV 端 `SearchService.searchShortDramaResource` 的做法对齐：
+   - 搜索页发关键词时，短剧检索跟 SSE 常规采集源**并发**跑（走 Android 原生内核 `DuanjuCoreBridge`，
+     15s 超时，失败/未授权一律当没有结果，不影响其它源）；
+   - 回来的结果 `source='hongguo'`、`sourceName='精品短剧'`，在聚合视图里**独立成卡**，不跟采集源同名剧合并；
+   - 卡片上破例显示源名标签「精品短剧」（聚合视图原本不显示源名，短剧卡单独放开），点进去
+     `player_screen` 命中 `hongguo` 直接走红果官方原画直出，不再回落到普通影视站搜源；
+   - 短剧结果**不受「精确搜索」过滤**影响 —— 红果搜索本身已做相关性召回（搜「总裁」回来的是
+     「总裁的替身新娘」这类扩写名），再按"剧名含关键词"卡一刀会把整批短剧滤光；
+   - 「搜索源详情」面板里补一行「精品短剧 N 条」，跟其它源一起能看出这条链路搜没搜到东西。
+
+### 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `lib/screens/short_drama_screen.dart` | 删头部「日记」按钮；标题改 `GestureDetector` 长按打开诊断面板 |
+| `lib/services/short_drama_search_source.dart` | **新增**：`ShortDrama` → `SearchResult` 映射（补 episodes/episodesTitles，定 source/sourceName） |
+| `lib/screens/search_screen.dart` | `_performSearch` 并发起短剧搜索；`progress` 完成时合并短剧计数；精确搜索放行短剧；源详情面板补短剧行 |
+| `lib/models/aggregated_search_result.dart` | 新增 `isShortDramaCard` / `isShortDramaSource` / `shortDramaKeySuffix` |
+| `lib/widgets/search_result_agg_grid.dart` | 短剧结果加 `#sd` 后缀独立成卡；卡片直接用原始结果的 `VideoInfo`（保留 source） |
+| `lib/widgets/video_card.dart` | 短剧卡在聚合视图破例显示源名标签，颜色用绿色区分 |
+| `lib/utils/image_url.dart` | 短剧图片处理覆盖 `hongguo` / `__shortdrama__`（原只认 `shortdrama`） |
+
+### 已知边界
+
+- 短剧源依赖 Android 原生内核；iOS / 桌面端搜不到短剧属于预期（那边没有 `DuanjuCoreBridge`）。
+- 短剧页原来的「搜索短剧」弹窗入口保留（只搜短剧、结果更聚焦），全局搜索是另一条入口。
+
 ## v2.7.96 (2026-11-26)
 
 ### TV 端一直没跟上手机端：电视上的 1080P 其实从来没拿到过

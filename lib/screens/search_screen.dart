@@ -11,6 +11,7 @@ import 'package:luna_tv/services/douban_service.dart';
 import 'package:luna_tv/services/user_data_service.dart';
 import 'package:luna_tv/services/theme_service.dart';
 import 'package:luna_tv/services/local_mode_storage_service.dart';
+import 'package:luna_tv/services/short_drama_search_source.dart';
 import 'package:luna_tv/models/search_result.dart';
 import 'package:luna_tv/models/video_info.dart';
 import 'package:luna_tv/widgets/video_menu_bottom_sheet.dart';
@@ -88,6 +89,12 @@ class _SearchScreenState extends State<SearchScreen> with TickerProviderStateMix
   Map<String, String> _sourceKeyToName = {};
   bool _showSourceDebug = false;
 
+  // v2.7.97: 红果「精品短剧」并入全部搜索 (对齐 TV 端 SearchService 的做法).
+  //   跟 SSE 的常规采集源并发跑, 拿到结果直接追加进 _searchResults,
+  //   sourceName 固定「精品短剧」. 计数单独记一份, 因为 SSE progress
+  //   完成时会整块覆盖 _sourceResultCounts, 不合并就会把这条刷掉.
+  int? _shortDramaCount;
+
   // 筛选/排序状态（保持不变）
   String _selectedSource = 'all';
   String _selectedYear = 'all';
@@ -121,9 +128,14 @@ class _SearchScreenState extends State<SearchScreen> with TickerProviderStateMix
     //   低分卡片 (10-20 分) 仍混在前面, 体感"搜索太随意了".
     //   精确搜索默认开, 跟 web 默认行为一致. 关掉 (_exactSearch=false)
     //   返回 v2.6.8 行为, 让用户能看到全部结果.
+    // v2.7.97: 短剧结果不参与精确搜索过滤 —— 红果搜索本身已经做过相关性
+    //   召回 (搜「总裁」回来的剧名常是「总裁的替身新娘」这类扩写名), 用
+    //   「剧名含关键词」再卡一刀会把整批短剧滤光, 用户会以为短剧没整合进来.
     if (_exactSearch) {
       results = results
-          .where((r) => SearchResultRanker.resultMatchesQuery(r, _searchQuery))
+          .where((r) =>
+              r.source == ShortDramaSearchSource.sourceKey ||
+              SearchResultRanker.resultMatchesQuery(r, _searchQuery))
           .toList();
     }
     // v2.6.7: 相关性排序, 跟 web 端 search-ranking.ts 1:1. 之前 SSE 拿到
@@ -232,9 +244,15 @@ class _SearchScreenState extends State<SearchScreen> with TickerProviderStateMix
       _isLoading = true;
       _searchProgress = null;
       _sourceResultCounts = {};
+      _shortDramaCount = null;
     });
 
     unawaited(_loadSourceKeyToName(gen));
+
+    // v2.7.97: 红果短剧跟 SSE 常规源并发搜, 谁先回来谁先出卡片.
+    //   这条链路走 Android 原生内核 (DuanjuCoreBridge), 不占后端 SSE 的
+    //   源进度, 所以不参与 _searchProgress 的 X/Y 计数.
+    unawaited(_searchShortDrama(query, gen));
 
     // v2.6.32: 先 startSearch — 内部快速取消旧连接 + 创建新流控制器 +
     //   发起 SSE 请求 (fire-and-forget). 返回后流控制器已就绪.
@@ -273,7 +291,11 @@ class _SearchScreenState extends State<SearchScreen> with TickerProviderStateMix
         _searchProgress = progress;
         if (progress.isComplete) {
           _isLoading = false;
-          _sourceResultCounts = _sseSearchService.sourceResultCounts;
+          _sourceResultCounts = {
+            ..._sseSearchService.sourceResultCounts,
+            if (_shortDramaCount != null)
+              ShortDramaSearchSource.sourceKey: _shortDramaCount!,
+          };
         }
       });
     });
@@ -284,6 +306,48 @@ class _SearchScreenState extends State<SearchScreen> with TickerProviderStateMix
         _searchError = error;
         _isLoading = false;
       });
+    });
+  }
+
+  /// v2.7.97: 红果精品短剧源 — 把短剧检索并进全部搜索结果流.
+  ///
+  /// 跟 TV 端 SearchService.searchShortDramaResource 一致的行为:
+  ///   - 只在本地/直连能力可用时出结果 (走 DuanjuCoreBridge 原生内核),
+  ///     内核未就绪/未授权时返回空列表, 不报错、不阻塞其它源;
+  ///   - 结果标记 sourceName「精品短剧」, source「hongguo」, 点击卡片时
+  ///     player_screen 直接走红果官方原画直出, 不回落普通采集源;
+  ///   - 15s 超时, 超时就当没短剧结果, 不影响主搜索.
+  Future<void> _searchShortDrama(String query, int gen) async {
+    if (query.trim().isEmpty) return;
+
+    List<SearchResult> results;
+    try {
+      results = await ShortDramaSearchSource.search(query).timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => const <SearchResult>[],
+      );
+    } catch (_) {
+      results = const <SearchResult>[];
+    }
+
+    // 用户已经发起新搜索 → 丢弃这批过期结果 (跟 SSE 的 generation guard 一致)
+    if (!mounted || gen != _searchGeneration) return;
+
+    setState(() {
+      _shortDramaCount = results.length;
+      _sourceResultCounts = {
+        ..._sourceResultCounts,
+        ShortDramaSearchSource.sourceKey: results.length,
+      };
+      if (results.isEmpty) return;
+
+      final seen = _searchResults
+          .where((r) => r.source == ShortDramaSearchSource.sourceKey)
+          .map((r) => r.id)
+          .toSet();
+      final fresh = results.where((r) => seen.add(r.id)).toList();
+      if (fresh.isEmpty) return;
+      _searchResults = [..._searchResults, ...fresh];
     });
   }
 
@@ -435,6 +499,12 @@ class _SearchScreenState extends State<SearchScreen> with TickerProviderStateMix
             e.value,
             _sourceResultCounts[e.key] ?? -1)) // -1 = app 没搜这个源
         .toList();
+    // v2.7.97: 红果短剧不在后端源列表里 (走原生内核直搜), 单独补一行,
+    //   否则用户在"搜索源详情"里看不到这条源到底搜出几条.
+    if (_shortDramaCount != null) {
+      entries.add(
+          MapEntry(ShortDramaSearchSource.sourceLabel, _shortDramaCount!));
+    }
     entries.sort((a, b) {
       // -1 (没搜) 排第一, 0 (搜了但没数据) 排第二, >0 排后面
       if (a.value == -1 && b.value != -1) return -1;

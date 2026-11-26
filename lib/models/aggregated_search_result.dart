@@ -128,6 +128,20 @@ class AggregatedSearchResult {
     return mostCommon;
   }
 
+  /// v2.7.97: 红果「精品短剧」独立卡片判定 —
+  ///   短剧结果来自红果官方库 (source='hongguo'), 不与普通采集源的同一部剧
+  ///   合并成一张卡: 一是避免聚合后 source 被改写成 'aggregated' 丢掉短剧直出
+  ///   能力, 二是集数/年份口径跟采集源不一致, 合并反而让用户点了播不出来.
+  bool get isShortDramaCard =>
+      originalResults.isNotEmpty &&
+      originalResults.every((r) => r.source == 'hongguo');
+
+  /// 聚合键里给短剧单独加的后缀, 让它永远独立成卡
+  static const String shortDramaKeySuffix = '#sd';
+
+  /// 是否短剧原始结果
+  static bool isShortDramaSource(String source) => source == 'hongguo';
+
   /// 转换为VideoInfo用于显示
   VideoInfo toVideoInfo() {
     return VideoInfo(

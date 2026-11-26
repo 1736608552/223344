@@ -51,6 +51,14 @@ String _upgradeDoubanCoverUrl(String url) {
       .replaceFirst('m_cover', 'l_cover');
 }
 
+/// 短剧来源标识（红果）— 搜索结果里同时用 'hongguo'（对齐 TV 端）和
+/// 历史遗留的 'shortdrama' / '__shortdrama__'，图片处理共用一套逻辑。
+bool _isShortDramaSource(String? source) {
+  return source == 'shortdrama' ||
+      source == 'hongguo' ||
+      source == '__shortdrama__';
+}
+
 /// 根据来源处理图片 URL（例如豆瓣域名替换）。
 /// - [originalUrl]: 原始图片地址
 /// - [source]: 数据来源（如 'douban'、'bangumi' 等）
@@ -90,7 +98,7 @@ String getImageUrlSync(
   if (source == 'tmdb' && originalUrl.isNotEmpty) {
     return UserDataService.buildTmdbImageUrl(originalUrl);
   }
-  if (source == 'shortdrama' && originalUrl.isNotEmpty) {
+  if (_isShortDramaSource(source) && originalUrl.isNotEmpty) {
     return UserDataService.buildShortDramaImageUrl(originalUrl);
   }
   return originalUrl;

@@ -582,12 +582,18 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                '短剧',
-                style: FontUtils.poppins(context,
-                  fontSize: 28,
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context).textTheme.titleLarge?.color,
+              // v2.7.97: 去掉右上角「日记」按钮 (用户要求, 页面头部只留搜索入口).
+              //   诊断/日记面板能力没删 — 改为长按标题触发, 排障时仍可取出
+              //   原生诊断报告 + Flutter 短剧日记 + Android 底层日志.
+              GestureDetector(
+                onLongPress: _showGlobalDiagnosticSheet,
+                child: Text(
+                  '短剧',
+                  style: FontUtils.poppins(context,
+                    fontSize: 28,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(context).textTheme.titleLarge?.color,
+                  ),
                 ),
               ),
               const SizedBox(height: 4),
@@ -608,43 +614,6 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              InkWell(
-                onTap: _showGlobalDiagnosticSheet,
-                borderRadius: BorderRadius.circular(20),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                  margin: const EdgeInsets.only(right: 8),
-                  decoration: BoxDecoration(
-                    color: themeService.isDarkMode
-                        ? Colors.white.withOpacity(0.08)
-                        : const Color(0xFFF3F4F6),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                      color: const Color(0xFF38BDF8).withOpacity(0.5),
-                      width: 1,
-                    ),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.terminal_rounded,
-                        size: 16,
-                        color: Color(0xFF38BDF8),
-                      ),
-                      SizedBox(width: 4),
-                      Text(
-                        '日记',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF38BDF8),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
               InkWell(
                 onTap: _openShortDramaSearch,
                 borderRadius: BorderRadius.circular(20),

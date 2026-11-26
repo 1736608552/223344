@@ -48,6 +48,13 @@ class _VideoCardState extends State<VideoCard> {
   bool _isLinkButtonHovered = false;
   bool _isSourceCountBadgeHovered = false;
 
+  /// v2.7.97: 红果精品短剧卡片 — 搜索结果里短剧以单源卡片出现, 需要破例
+  ///   展示源名标签「精品短剧」, 让用户一眼看出这条来自红果官方库.
+  bool get _isShortDramaCard =>
+      widget.videoInfo.source == 'hongguo' ||
+      widget.videoInfo.source == 'shortdrama' ||
+      widget.videoInfo.source == '__shortdrama__';
+
   @override
   Widget build(BuildContext context) {
     final bool isPC = DeviceUtils.isPC();
@@ -542,9 +549,12 @@ class _VideoCardState extends State<VideoCard> {
                           overflow: TextOverflow.ellipsis,
                         ),
                         // 豆瓣模式和Bangumi模式不显示来源信息
+                        // v2.7.97: 聚合视图里原本也不显示源名, 但红果短剧是
+                        //   独立成卡的单源结果, 用户必须看到「精品短剧」标记,
+                        //   所以短剧卡片在 agg 模式下破例显示源名标签.
                         if (widget.from != 'douban' &&
                             widget.from != 'bangumi' &&
-                            widget.from != 'agg' &&
+                            (widget.from != 'agg' || _isShortDramaCard) &&
                             widget.videoInfo.sourceName
                                 .trim()
                                 .isNotEmpty) ...[
@@ -575,7 +585,9 @@ class _VideoCardState extends State<VideoCard> {
                                 color: isPC && _isHovered
                                     ? Colors.green
                                     : (widget.from == 'agg'
-                                        ? const Color(0xFF9b59b6) // 聚合模式用紫色文字
+                                        ? (_isShortDramaCard
+                                            ? const Color(0xFF27ae60)
+                                            : const Color(0xFF9b59b6)) // 聚合模式用紫色文字
                                         : const Color(0xFF7f8c8d)), // 其他模式用灰色文字
                                
                               ),

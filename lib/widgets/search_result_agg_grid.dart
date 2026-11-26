@@ -77,11 +77,16 @@ class _SearchResultAggGridState extends State<SearchResultAggGrid>
     final newOrderedKeys = <String>[];
     
     for (final result in widget.results) {
-      final key = AggregatedSearchResult.generateKey(
+      final baseKey = AggregatedSearchResult.generateKey(
         result.title, 
         result.year, 
         result.episodes.length
       );
+      // v2.7.97: 红果短剧独立成卡 (不跟采集源同名剧合并), 见
+      //   AggregatedSearchResult.isShortDramaCard 的注释.
+      final key = AggregatedSearchResult.isShortDramaSource(result.source)
+          ? '$baseKey${AggregatedSearchResult.shortDramaKeySuffix}'
+          : baseKey;
       
       if (newAggregatedResults.containsKey(key)) {
         // 已存在，添加到现有聚合结果中
@@ -141,7 +146,12 @@ class _SearchResultAggGridState extends State<SearchResultAggGrid>
           itemBuilder: (context, index) {
             final key = _orderedKeys[index];
             final aggregatedResult = _aggregatedResults[key]!;
-            final videoInfo = aggregatedResult.toVideoInfo();
+            // v2.7.97: 短剧卡片直接用原始结果的 VideoInfo (source='hongguo'),
+            //   这样点进去 player_screen 走红果官方原画直出; 走 toVideoInfo()
+            //   会被改成 source='aggregated', 播放器认不出短剧.
+            final videoInfo = aggregatedResult.isShortDramaCard
+                ? aggregatedResult.originalResults.first.toVideoInfo()
+                : aggregatedResult.toVideoInfo();
             
             return AnimatedContainer(
               duration: const Duration(milliseconds: 300),
