@@ -263,7 +263,9 @@ object DeviceRegister {
      * 无论信封多正确都只回 HTTP 200 + 0 字节 —— 短剧 len=0 的根就在这里。
      *
      * 请求结构 1:1 对齐 upstream passport_device.go 的 registerDeviceProfile：
-     *  - query 走 `aid/app_name/version_*/channel/device_*/os_*/resolution/dpi/ac` + tt_data/ts/_rticket/package
+     *  - query 走 aid / app_name / version_code / version_name / manifest_version_code /
+     *    channel / device_type / device_brand / os_api / os_version / resolution / dpi / ac，
+     *    再补 tt_data / ts / _rticket / package
      *  - body = ttEncrypt(明文 JSON)，Content-Encoding 仍标 gzip（官方客户端行为）
      *  - X-Argus 只是 le32(unix) 的 base64；X-Gorgon 覆盖 query + body
      */

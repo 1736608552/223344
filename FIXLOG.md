@@ -1,5 +1,27 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.91 (2026-11-26)
+
+### 修 v2.7.90 的编译失败（KDoc 里写了 `*/`）
+
+v2.7.90 的 android 构建在 Kotlin 编译阶段失败：
+
+```
+e: DeviceRegister.kt:266:43 Syntax error: Expecting member declaration.
+```
+
+原因是 `nativeRegister` 的 KDoc 里为了说明注册 query 的字段，写了
+
+```
+* - query 走 `aid/app_name/version_*/channel/device_*/os_*/...`
+```
+
+其中 `version_*/` 的 `*/` 直接把块注释提前闭合，后面整段中文被当成代码解析。改成用 `/` 分隔的
+字段列表（`version_code / version_name / ...`）即可。
+
+功能代码与 v2.7.90 完全相同，仅为修编译：原生加密注册（tt-data + X-Gorgon/X-Argus）→
+失败落回明文注册、video_tab 走 23 字段 v5 签名、注册与播放共用同一组 cdid/openudid。
+
 ## v2.7.90 (2026-11-26)
 
 ### 短剧 len=0 的第二层根因：设备身份没有风控背书
