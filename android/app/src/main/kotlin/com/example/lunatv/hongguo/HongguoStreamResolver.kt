@@ -177,6 +177,75 @@ object HongguoStreamResolver {
     }
 
     /**
+     * v2.7.94: 官方 `video_detail` 接口优先取全剧分集 vid 列表。
+     *
+     * 为什么要抢在抓网页前面：通道 1 依赖第三方站 hongguoduanju.com 的 SSR HTML，
+     * 那个站随时可能改版/下线；而 `POST /novel/player/video_detail/v1/` 是官方接口，
+     * 一次请求就把整部剧的 `video_list` 全量下发（实测 71 集剧回 71 条，字段
+     * `vid` + `vid_index` 严格递增无缺口），并且带 `episode_cnt` 可用于完整性校验。
+     *
+     * 注意入参是**单数** `series_id`（19 位字符串）。曾经被误认为是 `series_ids`
+     * 或在 `multi_video_detail` 上找，那条路只会回 `100001 series_ids invalid`。
+     *
+     * 返回空列表时表示「本通道不可用或不完整」，由上层回落到 HTML / 重试通道。
+     */
+    private fun fetchVidsFromVideoDetail(cleanId: String): List<String> {
+        val profile = PlaybackDeviceSession.shared.profile(client)
+        val payload = """{"series_id":"$cleanId"}""".toByteArray()
+        val signed = signer.sign(
+            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/video_detail/v1/",
+            profile.values,
+            payload
+        )
+        val req = Request.Builder()
+            .url(signed.url)
+            .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+        for ((k, v) in signed.headers) {
+            req.header(k, v)
+        }
+        val resp = client.newCall(req.build()).execute()
+        val bodyStr = resp.body?.string() ?: return emptyList()
+        val json = JSONObject(bodyStr)
+        if (json.optInt("Code", json.optInt("code", -1)) != 0) return emptyList()
+        val videoData = json.optJSONObject("data")?.optJSONObject("video_data") ?: return emptyList()
+
+        val videoList = videoData.optJSONArray("video_list") ?: return emptyList()
+        val pairs = mutableListOf<Pair<Int, String>>()
+        for (i in 0 until videoList.length()) {
+            val item = videoList.optJSONObject(i) ?: continue
+            val vid = item.optString("vid").ifEmpty { item.optString("video_id") }
+            val idx = item.optInt("vid_index", i + 1)
+            if (vid.matches(Regex("[0-9]{1,32}"))) {
+                pairs.add(Pair(idx, vid))
+            }
+        }
+        if (pairs.isEmpty()) return emptyList()
+        pairs.sortBy { it.first }
+        val vids = pairs.map { it.second }.distinct()
+
+        // 完整性校验：只收全量列表。集数对不上（付费剧只下发免费集）就让上层回落到网页通道，
+        // 避免把「前 3 集」当成「全剧」缓存下来，造成后面的集永远取不到。
+        val expected = videoData.optInt("episode_cnt", 0)
+        if (expected > 0 && vids.size < expected) {
+            HongguoDiagnostic.log(
+                "WARN", "stream_resolver", "VIDEO_DETAIL_INCOMPLETE",
+                "video_detail 只回 ${vids.size}/${expected} 集，回落网页通道: $cleanId"
+            )
+            return emptyList()
+        }
+
+        if (!seriesIntroCache.containsKey(cleanId)) {
+            val intro = videoData.optString("series_intro").trim()
+            if (intro.isNotEmpty()) seriesIntroCache[cleanId] = intro
+        }
+        HongguoDiagnostic.log(
+            "INFO", "stream_resolver", "VIDEO_DETAIL_OK",
+            "video_detail 全量 ${vids.size} 集 (episode_cnt=$expected): $cleanId"
+        )
+        return vids
+    }
+
+    /**
      * 短剧全集分集 VID 列表拉取 (Web 官网 SSR 详情页优先保证全量 80~100+ 集 + 官方 App 签名兜底)
      */
     fun fetchEpisodeVids(seriesId: String): List<String> {
@@ -187,10 +256,25 @@ object HongguoStreamResolver {
 
         episodeVidsCache[cleanId]?.let { return it }
 
+        // 通道 0 (v2.7.94 新增，优先级最高): 官方 video_detail 接口。
+        //   不依赖第三方网页、一次请求拿全剧、带 episode_cnt 完整性校验。
+        try {
+            val apiVids = fetchVidsFromVideoDetail(cleanId)
+            if (apiVids.isNotEmpty()) {
+                episodeVidsCache[cleanId] = apiVids
+                return apiVids
+            }
+        } catch (e: Exception) {
+            HongguoDiagnostic.log(
+                "WARN", "stream_resolver", "VIDEO_DETAIL_FAIL",
+                "video_detail 通道失败，回落网页通道: ${e.message}"
+            )
+        }
+
         var lastErr: Exception? = null
 
-        // 通道 1 (首选最高优先级，彻底突破试看 3 集限制):
-        // 从官网 SSR 详情页 _ROUTER_DATA 提取全剧完整 vid_list (可一次性获取全部 80~100+ 集)
+        // 通道 1 (v2.7.94 起降为兜底): 从官网 SSR 详情页 _ROUTER_DATA 提取全剧 vid_list。
+        //   只有在官方 video_detail 不可用或集数不完整时才会走到这里（依赖第三方站，易受改版影响）。
         try {
             val webUrl = "https://hongguoduanju.com/detail?series_id=$cleanId"
             val webReq = Request.Builder()

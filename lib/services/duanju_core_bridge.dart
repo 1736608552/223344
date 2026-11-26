@@ -1298,6 +1298,38 @@ class DuanjuCoreBridge {
     return DuanjuCoreBridge.resetDeviceSessionStatic();
   }
 
+  /// 强制作废某一集的全部取流缓存（v2.7.94）。
+  ///
+  /// 用于播放器侧的「死链自愈」：直链有效期只有约 6 小时，链一旦被 CDN 拒，
+  /// 内核只会停在 buffering。此时调用本方法清掉该集的 plan / url / multiRes /
+  /// resolution 四套缓存（含 `$id-$ep`、`hongguo:$id-$ep` 两个别名 key 以及所有
+  /// `$id-$ep-$quality` 变体），下一次 [getPlaybackPlan] 就必然回源重新签名。
+  void invalidatePlaybackPlan(String dramaId, int episode) {
+    final cleanId = cleanSeriesId(dramaId);
+    if (cleanId.isEmpty || episode < 1) return;
+    final keys = <String>{
+      '$cleanId-$episode',
+      '$dramaId-$episode',
+      'hongguo:$cleanId-$episode',
+    };
+    for (final k in keys) {
+      _planCache.remove(k);
+      _playbackUrlCache.remove(k);
+      _playbackMultiResCache.remove(k);
+      _playbackResolutionCache.remove(k);
+    }
+    // 带清晰度后缀的变体（`$cleanId-$episode-<quality>`）用前缀扫，避免漏清
+    final prefix = '$cleanId-$episode-';
+    final altPrefix = 'hongguo:$cleanId-$episode-';
+    bool matches(String k) => k.startsWith(prefix) || k.startsWith(altPrefix);
+    _planCache.removeWhere((k, _) => matches(k));
+    _playbackUrlCache.removeWhere((k, _) => matches(k));
+    _playbackMultiResCache.removeWhere((k, _) => matches(k));
+    _playbackResolutionCache.removeWhere((k, _) => matches(k));
+    _pendingPlanRequests.remove('$cleanId-$episode');
+    DiaryService.add('[短剧] 已作废取流缓存: $cleanId-$episode');
+  }
+
   /// 获取单集短剧的完整播放计划（包含直链、CENC解密密钥与多分辨率映射 + In-Flight合并）
   Future<DuanjuPlaybackPlan?> getPlaybackPlan({
     required String dramaId,

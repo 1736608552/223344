@@ -257,6 +257,13 @@ class _PlayerScreenState extends State<PlayerScreen>
   List<SkipSegment> _smartSkipSegments = [];
   SkipSegment? _activeSmartSegment;
   Timer? _smartSkipCountdownTimer;
+
+  // v2.7.94: 短剧起播看门狗。红果直链只有 ~6h 有效期，本地代理/内核拿到过期链时
+  //   ExoPlayer 不抛异常、只是永远停在 buffering（position 恒为 0），用户看到的是
+  //   "一直转圈"。这里在 open() 之后盯 15 秒，仍无任何进度就判定死链，作废该集缓存、
+  //   重新签一次 video_model 换新链重开。每集只自愈一次，避免慢网下反复打断。
+  Timer? _startupWatchdogTimer;
+  String _selfHealedEpisodeKey = '';
   int _smartSkipCountdownSec = 5;
   bool _dismissedSmartSegmentThisEp = false;
   bool _hasAutoSkippedThisEp = false; // 本集是否已自动跳过
@@ -729,6 +736,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     unawaited(_disposeAndSave());
     _progressTimer?.cancel();
     _smartSkipCountdownTimer?.cancel();
+    _startupWatchdogTimer?.cancel();
     _nextSeasonTimer?.cancel();
     _positionPollTimer?.cancel(); // ★ v2.5.65
     _hideControlsTimer?.cancel();
@@ -4191,14 +4199,50 @@ class _PlayerScreenState extends State<PlayerScreen>
     return baseUrl.resolve(relative).toString();
   }
 
+  /// v2.7.94: 短剧起播看门狗。
+  ///
+  /// 红果直链是带 `expire_time` 的临时签名链接（实测约 6 小时）。链过期后 CDN 回 403，
+  /// 而 ExoPlayer / libmpv 在拿到 403 时往往既不抛异常也不置 error，只是永远停在
+  /// buffering、position 恒为 0 —— 用户看到的现象就是「一直转圈，能点但不动」。
+  ///
+  /// 这里在 open() 之后盯 15 秒：期间 position 一点没前进，且没有其它显式错误，
+  /// 就判定直链失效 → 作废该集三套缓存 → 重新签一次 video_model 换新链 → 重开。
+  /// 每集（每部剧每个 index）只自愈一次，避免弱网下把正常慢启动误判成死链后反复打断。
+  void _armStartupWatchdog(String dramaId, int index, bool isShortDrama) {
+    _startupWatchdogTimer?.cancel();
+    _startupWatchdogTimer = null;
+    if (!isShortDrama) return;
+    final key = '${DuanjuCoreBridge.cleanSeriesId(dramaId)}-$index';
+    _startupWatchdogTimer = Timer(const Duration(seconds: 15), () async {
+      if (!mounted || _isDisposing) return;
+      final posMs = _player?.position.inMilliseconds ?? _currentPosition.inMilliseconds;
+      if (posMs > 0) return; // 已经出画，链路正常
+      if (_error != null) return; // 已有显式错误提示，不再自作主张
+      if (_selfHealedEpisodeKey == key) {
+        DiaryService.add('[短剧] 第${index + 1}集换新链后 15s 仍无进度，停止自动重试');
+        return;
+      }
+      _selfHealedEpisodeKey = key;
+      DiaryService.add('[短剧] 第${index + 1}集 15s 无进度 → 判定直链失效，作废缓存重签');
+      DuanjuCoreBridge.instance.invalidatePlaybackPlan(dramaId, index + 1);
+      await _playEpisode(index, selfHeal: true);
+    });
+  }
+
   /// 播放指定集数
-  Future<void> _playEpisode(int index) async {
+  ///
+  /// [selfHeal] 由起播看门狗传入（v2.7.94）。为 true 表示这次重开是「换新链自愈」，
+  ///   此时不能清空 [_selfHealedEpisodeKey]，否则自愈会无限递归。
+  Future<void> _playEpisode(int index, {bool selfHeal = false}) async {
     final now = DateTime.now().millisecondsSinceEpoch;
     _isEpisodeSwitching = true;
     _autoPlayedThisEpisode = true;
     _lastEpisodeSwitchTimeMs = now;
     _smartSkipCountdownTimer?.cancel();
     _smartSkipCountdownTimer = null;
+    _startupWatchdogTimer?.cancel();
+    _startupWatchdogTimer = null;
+    if (!selfHeal) _selfHealedEpisodeKey = '';
     try {
       _player?.pause();
     } catch (_) {}
@@ -4571,6 +4615,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       }
       if (!mounted) return;
       setState(() => _isBuffering = false);
+      _armStartupWatchdog(dramaId, index, isShortDrama);
 
       // 新流成功起播，延迟 1.5 秒平滑解开切集防重入锁，确保旧流所有残余事件彻底耗尽
       Future.delayed(const Duration(milliseconds: 1500), () {
@@ -4617,6 +4662,16 @@ class _PlayerScreenState extends State<PlayerScreen>
         _isBuffering = false;
         _error = '播放失败: $e';
       });
+      // v2.7.94: open() 直接抛异常同样可能是死链（403 / 连接被 CDN 拒），
+      //   与看门狗同样处理：作废该集缓存 → 重签 video_model → 重开一次。
+      final healDramaId = source.id.isNotEmpty ? source.id : widget.videoInfo.id;
+      final healKey = '${DuanjuCoreBridge.cleanSeriesId(healDramaId)}-$index';
+      if (isShortDrama && _selfHealedEpisodeKey != healKey) {
+        _selfHealedEpisodeKey = healKey;
+        DiaryService.add('[短剧] 第${index + 1}集 open() 失败 ($e) → 作废旧链重签');
+        DuanjuCoreBridge.instance.invalidatePlaybackPlan(healDramaId, index + 1);
+        await _playEpisode(index, selfHeal: true);
+      }
     }
     // v2.5.34: 切集时刷弹幕 — 静默 fire-and-forget, 不阻塞播放
     unawaited(_reloadDanmakuForNewEpisode());

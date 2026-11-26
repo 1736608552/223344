@@ -1,5 +1,47 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.94 (2026-11-26)
+
+### 死链不再只能干等：起播看门狗 + 全集列表改走官方接口
+
+v2.7.93 让缓存会过期了，但漏了一个场景：**链在缓存里还没到期，实际已经被 CDN 拒**。
+红果直链只会被内核当成「网络慢」——ExoPlayer 拿到 403 既不抛异常也不置 error，只是永远
+停在 buffering、`position` 恒为 0。用户看到的就是「转圈转到天荒地老」，除了退出去重进毫无办法。
+
+这一版补上自愈，同时把「拿全剧分集列表」从抓第三方网页改成打官方接口。
+
+### 改了什么
+
+1. `player_screen` 新增 `_armStartupWatchdog()`：短剧起播后盯 15 秒，`position` 一点没动
+   且无其它显式错误 → 判定直链失效 → `invalidatePlaybackPlan()` 作废该集缓存 →
+   重新签 `video_model` 换新链 → 重开。**每集只自愈一次**（`_selfHealedEpisodeKey`），
+   避免弱网/慢启动被误判成死链后反复打断。
+2. `open()` 抛异常的 catch 分支同样走一次自愈（403 / 连接被 CDN 拒）。
+3. `DuanjuCoreBridge.invalidatePlaybackPlan(dramaId, episode)` 新增公开方法：一次清掉
+   该集 `plan / url / multiRes / resolution` 四套缓存，含 `$id-$ep`、`hongguo:$id-$ep`
+   两个别名 key 以及所有 `$id-$ep-$quality` 前缀变体，并丢弃 in-flight 请求。
+4. `fetchEpisodeVids()` 新增**通道 0**：`POST /novel/player/video_detail/v1/` +
+   `{"series_id":"<19位字符串>"}`。一次请求拿全剧 `video_list`（实测 71 集剧回 71 条，
+   `vid_index` 1..71 严格递增无缺口），带 `episode_cnt` 做完整性校验 ——
+   只有 `vids.size >= episode_cnt` 才采信，否则回落到原来的 SSR 网页通道，
+   避免把付费剧的「前 3 集」当成全剧缓存住。
+
+### 顺带结了一个悬案
+
+之前一直在 `multi_video_detail` 上试 `series_ids`，试了 `[str]`、`[int64]`、`"csv"`、
+`[{series_id}]` 等十来种形态，全部回 `100001 series_ids invalid`。真相是**根本没有
+`series_ids` 这个入参**：整剧信息的接口是 `video_detail`，参数是**单数** `series_id`。
+
+```
+POST /novel/player/video_detail/v1/     {"series_id":"7704577081954274328"}
+→ code 0, 57,372 B
+→ data.video_data.video_list[71]: { vid, vid_index, duration, title, cover, disable_play }
+   data.video_data.episode_cnt: 71
+```
+
+`multi_video_detail/dynamic_data/v1/` 唯一认 `series_id` 的路径也会回 `101000 服务异常`，
+其余所有组合固定 `100001`。这条接口对我们没用，别再花时间。
+
 ## v2.7.93 (2026-11-26)
 
 ### 「过两天就播不了」：直链其实只有 6 小时，而缓存没有保质期
