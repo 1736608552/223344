@@ -50,12 +50,17 @@ object DeviceRegister {
      */
     fun registerSingleRegistered(
         http: OkHttpClient,
+        cdidValue: String = "",
+        openudidValue: String = "",
+        clientudidValue: String = "",
         now: Long = System.currentTimeMillis(),
     ): Registered? {
         val reqId = UUID.randomUUID().toString()
-        val openudid = VendorConstants.openUdid.ifBlank { UUID.randomUUID().toString().replace("-", "").take(16) }
-        val clientudid = VendorConstants.clientUdid.ifBlank { UUID.randomUUID().toString() }
-        val cdid = VendorConstants.cdid.ifBlank { UUID.randomUUID().toString() }
+        val openudid = openudidValue.ifBlank {
+            VendorConstants.openUdid.ifBlank { UUID.randomUUID().toString().replace("-", "").take(16) }
+        }
+        val clientudid = clientudidValue.ifBlank { VendorConstants.clientUdid.ifBlank { UUID.randomUUID().toString() } }
+        val cdid = cdidValue.ifBlank { VendorConstants.cdid.ifBlank { UUID.randomUUID().toString() } }
 
         val queryMap = linkedMapOf(
             "aid" to "8662",
@@ -262,12 +267,22 @@ object DeviceRegister {
      *  - body = ttEncrypt(明文 JSON)，Content-Encoding 仍标 gzip（官方客户端行为）
      *  - X-Argus 只是 le32(unix) 的 base64；X-Gorgon 覆盖 query + body
      */
-    fun nativeRegister(http: OkHttpClient, now: Long = System.currentTimeMillis()): Registered? {
+    fun nativeRegister(
+        http: OkHttpClient,
+        cdidValue: String = "",
+        openudidValue: String = "",
+        clientudidValue: String = "",
+        now: Long = System.currentTimeMillis(),
+    ): Registered? {
         val stamp = now
         val ts = (now / 1000).toInt()
-        val cdid = VendorConstants.cdid.ifBlank { UUID.randomUUID().toString() }
-        val openudid = VendorConstants.openUdid.ifBlank { UUID.randomUUID().toString().replace("-", "").take(16) }
-        val clientudid = VendorConstants.clientUdid.ifBlank { UUID.randomUUID().toString() }
+        // cdid / openudid / clientudid 必须与本次播放画像用的是同一组：上游 passportDevice
+        // 就是一个对象同时喂注册请求和 playbackQuery，混用会导致 did 与 cdid 不配对。
+        val cdid = cdidValue.ifBlank { VendorConstants.cdid.ifBlank { UUID.randomUUID().toString() } }
+        val openudid = openudidValue.ifBlank {
+            VendorConstants.openUdid.ifBlank { UUID.randomUUID().toString().replace("-", "").take(16) }
+        }
+        val clientudid = clientudidValue.ifBlank { VendorConstants.clientUdid.ifBlank { UUID.randomUUID().toString() } }
 
         val json = JSONObject().apply {
             put("magic_tag", "ss_app_log")
@@ -351,6 +366,7 @@ object DeviceRegister {
             "resolution" to "2772*1280",
             "dpi" to "520",
             "ac" to "wifi",
+            "openudid" to openudid,
             "package" to "com.phoenix.read",
             "tt_data" to "a",
             "ts" to ts.toString(),

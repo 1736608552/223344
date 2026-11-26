@@ -124,14 +124,15 @@ class PlaybackDeviceSession {
 
         // 1. 首选：官方原生加密注册（tt-data 体 + X-Gorgon/X-Argus）。
         //    明文 JSON 注册拿到的 did 没有风控签名背书，播放接口一律 200 空包。
-        DeviceRegister.nativeRegister(http)?.let {
+        //    三个设备标识必须和下面播放画像里用的是同一组，否则 did 与 cdid 不配对。
+        DeviceRegister.nativeRegister(http, cdid, openudid, clientudid)?.let {
             registeredDevice = it
             isOfficial = true
         }
 
         // 2. 备用：明文 JSON 注册（原生通道被风控拒绝时的兜底）
         if (registeredDevice == null) {
-            DeviceRegister.registerSingleRegistered(http)?.let {
+            DeviceRegister.registerSingleRegistered(http, cdid, openudid, clientudid)?.let {
                 registeredDevice = it
                 isOfficial = true
             }

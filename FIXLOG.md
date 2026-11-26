@@ -29,6 +29,8 @@ v2.7.89 把 v5 信封对齐到上游（proof marker 738 + manifest_version_code 
    本地持久化身份/虚拟身份。
 3. `executeVideoTab()` 改为带 `signPlaybackV5VideoTab`（23 字段签名 query）+ 恢复通道 UA +
    `Accept-Language` 的正式请求，并丢弃无正文请求不该有的 `X-SS-STUB`。
+4. 注册与播放共用同一组 `cdid` / `openudid` / `clientudid`：上一版注册用本地持久化的旧 cdid、
+   播放画像却用新生成的 cdid，同一个 `did` 配两个 `cdid`，服务端同样按「画像不一致」处理。
 
 > 若原生注册被风控拒绝（`DEVICE_REGISTER_NATIVE_FAIL`），会自动落回明文注册，
 > 行为与 v2.7.89 一致，不会比上一版更差。
