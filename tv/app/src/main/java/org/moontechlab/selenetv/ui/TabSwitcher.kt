@@ -128,15 +128,14 @@ fun TabSwitcher(
         }
     }
     
-    // v2.8.2（仅车机包）：避让屏幕顶部那条系统栏。
+    // v2.8.3（仅车机包）：真正的全屏由 MainActivity.applyCarImmersiveMode() 在窗口层完成
+    // （edge-to-edge + 收起系统栏），这里不再做任何固定下移。
     //
-    // 车机上屏幕最上方几乎都常驻一条系统状态/导航栏（多数不属于本应用窗口）。
-    // tab 栏原来贴在 top=16dp，正好压在这条栏下面 —— 手指点上去事件先被系统接走，
-    // 表现就是「只有顶部 tab 点不动，其他位置都正常」。
-    // 这里按真实状态栏高度下移；若是车机自己画的悬浮窗、拿不到 inset，则用 48dp 兜底。
-    // TV 包 carTopInset 恒为 0，布局与旧版完全一致。
+    // 收起来之后 WindowInsets.statusBars 归零 → 标签栏就在原本的 16dp 位置，内容铺满整屏。
+    // 只有系统栏属于车机自己的悬浮窗、压根收不掉时 inset 才非零，那时才按真实高度避让
+    // （物理遮挡，不是布局退让）。TV 包 carTopInset 恒为 0，与旧版逐像素一致。
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    val carTopInset = if (org.moontechlab.selenetv.BuildConfig.CAR_TOUCH) maxOf(statusTop, 48.dp) else 0.dp
+    val carTopInset = if (org.moontechlab.selenetv.BuildConfig.CAR_TOUCH) statusTop else 0.dp
 
     Box(
         modifier = modifier

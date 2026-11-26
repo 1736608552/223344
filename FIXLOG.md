@@ -1,5 +1,38 @@
 # LunaTV-Mobile 修复日记
 
+## v2.8.3 (2026-11-26)
+
+### 车机版改为真·全屏：收起系统栏，不再把界面往下推
+
+**1. 为什么推翻 v2.8.2 的做法**
+
+v2.8.2 是「按状态栏高度把 tab 栏往下推」，本质是绕开遮挡：屏幕最上方永远空出一条，
+界面不是铺满的，车机上看着就是没全屏。要求是**全屏显示**，那就得在窗口层把系统栏收起来，
+而不是让布局退让。
+
+**2. 改法（只对车机包生效，TV 包 0 变化）**
+
+`MainActivity.kt` 新增 `applyCarImmersiveMode()` / `hideCarSystemBars()`：
+
+```kotlin
+if (!BuildConfig.CAR_TOUCH) return          // TV 包直接空转
+WindowCompat.setDecorFitsSystemWindows(window, false)   // 内容铺到状态栏/导航栏区域
+layoutInDisplayCutoutMode = SHORT_EDGES                 // 刘海/挖孔区也绘制，不留黑边
+WindowInsetsControllerCompat(window, window.decorView).apply {
+    hide(WindowInsetsCompat.Type.systemBars())          // 收起状态栏 + 导航栏
+    systemBarsBehavior = BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE  // 边缘滑动只临时唤出
+}
+```
+
+- `onResume()` 与 `onWindowFocusChanged(true)` 各再收一次 —— 系统栏在切前后台、
+  关闭弹窗、下拉手势后会自己冒出来，不重新收就会出现「一会儿全屏一会儿不全屏」。
+- 系统栏收起后 `WindowInsets.statusBars` 归零，`ui/TabSwitcher.kt` 里的
+  `maxOf(statusTop, 48.dp)` 硬兜底随之删除，改为只用真实 inset：
+  全屏成功即 0，tab 栏回到原本的 16dp，内容铺满整屏。
+- 只有车机把状态栏做成**独立悬浮窗**、根本收不起来时 inset 才非零，那时才按真实高度避让
+  （物理遮挡，不是布局退让）。
+- 遥控器通路完全没动：焦点、方向键、OK 键、返回键分发逻辑与 v2.8.0 之前一致。
+
 ## v2.8.2 (2026-11-26)
 
 ### 车机版：顶部 tab 点不动 —— 是屏幕最上方的系统栏把触摸吃掉了

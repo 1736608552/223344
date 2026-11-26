@@ -1,14 +1,19 @@
 package org.moontechlab.selenetv
 
 import android.annotation.SuppressLint
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.KeyEvent
+import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
@@ -45,6 +50,9 @@ class MainActivity : ComponentActivity() {
         // 在 super.onCreate 之前调整 density
         adjustDensity()
         super.onCreate(savedInstanceState)
+
+        // 车机包：真·全屏（内容铺到屏幕物理边界、系统栏收起）。TV 包 CAR_TOUCH=false，整体空转。
+        applyCarImmersiveMode()
 
         // 车机触摸：按系统能力先判一次是否触摸设备（只决定「是否绘制触摸专用按钮」，
         // 不影响任何按键/焦点逻辑；纯电视上恒为 false，界面与旧版一致）。
@@ -98,6 +106,53 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 车机包专用：真·全屏显示。
+     *
+     * 之前 v2.8.2 是把顶部标签栏按状态栏高度往下推 —— 那是绕开遮挡，屏幕最上面永远空出一条，
+     * 车机上要的是内容铺满整块屏。这里改在窗口层处理：
+     *  1) `setDecorFitsSystemWindows(false)`：内容延伸到状态栏/导航栏区域（edge-to-edge）；
+     *  2) 收起 systemBars（状态栏、导航栏），并设为「边缘滑动临时唤出」，屏幕完全交给应用；
+     *  3) 刘海/挖孔区域允许绘制，避免车机异形屏留黑边。
+     *
+     * 系统栏收起后 `WindowInsets.statusBars` 归零，顶部标签栏自然回到原本的 16dp 位置，
+     * 不需要任何下移。只有车机的状态栏是独立悬浮窗口、压根收不起来时 inset 才非零，
+     * 那时才按真实高度避让（此时属于物理遮挡，不是布局退让）。
+     *
+     * 只对车机包生效：TV 包 [BuildConfig.CAR_TOUCH] = false，本方法立刻返回，
+     * 窗口标志、insets、焦点行为与旧版完全一致。
+     */
+    private fun applyCarImmersiveMode() {
+        if (!BuildConfig.CAR_TOUCH) return
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+        hideCarSystemBars()
+    }
+
+    /**
+     * 收起系统栏。系统栏会在切前后台、下拉手势、弹窗关闭后自己冒出来，所以每次拿到焦点都再收一次。
+     * TV 包空转（CAR_TOUCH=false），不碰任何窗口状态。
+     */
+    private fun hideCarSystemBars() {
+        if (!BuildConfig.CAR_TOUCH) return
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            // 边缘滑动只做「临时唤出」，几秒后自动收回，不改变布局尺寸
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // 回到前台/关闭弹窗后系统栏可能复原，这里重新收起一次（仅车机包）
+        if (hasFocus) hideCarSystemBars()
+    }
+
     // 车机触摸态探测：只观察一根手指的按下、置一个标志位，然后把事件原样交给 super。
     // 不改分发、不消费、不拦截——遥控器走的是 dispatchKeyEvent，与本方法毫无交集。
     override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
@@ -130,6 +185,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // 车机包：睡眠唤醒/切回前台后重新收起系统栏（TV 包空转）
+        hideCarSystemBars()
         activityScope.launch(Dispatchers.IO) {
             org.moontechlab.selenetv.server.RemoteControlServer.ensureRunning()
             // 电视睡眠唤醒保活：清空断线残留的僵尸 Socket 连接并静默校验预热短剧官方授权凭证
