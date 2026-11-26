@@ -3934,7 +3934,7 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     final remainMs = dur.inMilliseconds - _currentPosition.inMilliseconds;
     // 关键双轨阈值：
-    // 如果是最后一集完结，长剧正片早已结束进入滚动片尾，1500ms 兜底自然呼出推荐海报；
+    // 如果是最后一集完结，长剧正片早已结束进入滚动片尾，1500ms 兜底让播放器自然走完片尾；
     // 如果是中间集数，严格收紧为 200ms~300ms，绝不提前掐断剧情
     final endThresholdMs = isLastEpisode ? (isShortDrama ? 300 : 1500) : (isShortDrama ? 200 : 300);
     if (remainMs > endThresholdMs && _currentPosition < dur) return;
@@ -3942,7 +3942,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   /// 切到下一集: 只有在「还有下一集」时才自动播放
-  /// 最后一集或电影播完触发下一季/推荐连播弹窗
+  /// 最后一集或电影播完 → [_handleLastEpisodeCompletion]，停在片尾（不再弹推荐海报）
   void _autoPlayNextEpisode({bool fromCompletedStream = false}) {
     final now = DateTime.now().millisecondsSinceEpoch;
     if (_isEpisodeSwitching || _isTransitioningEpisode || _autoPlayedThisEpisode) return;
@@ -3984,6 +3984,39 @@ class _PlayerScreenState extends State<PlayerScreen>
     _isTransitioningEpisode = true;
     _lastEpisodeSwitchTimeMs = now;
     _playEpisode(nextIndex);
+  }
+
+  /// 本季最后一集 / 单集电影播完。
+  ///
+  /// v2.7.98: 原先这里会弹「下一季 / 推荐」居中海报大卡片并 5 秒倒计时自动跳播，
+  ///   用户要求去掉该浮层，所以现在只做两件事：确认真的播到片尾，然后停在片尾。
+  ///   保留方法本身是因为三条触发路径（position 兜底 / completedStream / 手动下一集）
+  ///   都要先过「是否真的到头」这道守卫，删掉调用点会让长剧片尾被提前掐断。
+  void _handleLastEpisodeCompletion({bool fromCompletedStream = false}) {
+    if (_autoPlayedThisEpisode) return;
+
+    final isShortDrama = _selectedSource?.source == 'hongguo' ||
+        _selectedSource?.source == 'shortdrama' ||
+        widget.videoInfo.source == 'hongguo' ||
+        widget.videoInfo.source == 'shortdrama';
+
+    final dur = _currentDuration;
+    // 来自 completedStream 说明解码已物理完成，直接放行；否则按阈值守卫，避免早判
+    if (!fromCompletedStream) {
+      if (dur <= Duration.zero) return;
+      if (!isShortDrama && dur < const Duration(seconds: 30)) return;
+      // 短剧最后 300ms、传统影视最后 1500ms（留出滚动片尾）
+      final lastGuardMs = isShortDrama ? 300 : 1500;
+      if (_currentPosition < dur - Duration(milliseconds: lastGuardMs)) return;
+    }
+
+    _autoPlayedThisEpisode = true; // 上锁, 防止 position / completed 双触发重复 seek
+    if (dur > Duration.zero) {
+      try {
+        _player?.seek(dur);
+      } catch (_) {}
+    }
+    debugPrint('[PlayerScreen] 全剧播完, 停在片尾 (不再弹推荐海报)');
   }
 
   /// v2.0.33: 手动「下一集」— 用户主动点播控上的 skip_next 按钮.

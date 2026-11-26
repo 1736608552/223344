@@ -32,6 +32,8 @@ v2.7.97 只删了「日记」，留了「搜索短剧」。现在两个按钮都
 - 手机端：删掉 `_buildNextSeasonCenterOverlay` / `_triggerNextSeasonOverlay` / `_playNextSeasonNow` /
   `_dismissNextSeasonOverlay` / `_checkAndPreloadNextSeason` 与相关状态、键盘分支、UI 调用
   （约 420 行）。最后一集播完就停在片尾，不再预拉下一季、不再 5 秒倒计时自动跳播；
+  **保留 `_handleLastEpisodeCompletion` 当作「是否真到片尾」的守卫**（短剧最后 300ms / 长剧
+  片尾最后 1500ms），只做上锁 + seek 到片尾，否则长剧滚动片尾会被提前掐断；
 - TV 端：删掉 `NextSeasonCenterOverlay.kt`（314 行）与 `NextSeasonService.kt` 两个文件、`PlayerScreen`
   里的状态/预拉取/BackHandler/浮层渲染。`onPlayCompleted()` 现在只有「有下一集就 goNext」；
 - 普通连播（播完自动下一集、选集面板的「下一集」卡片、`UpNextCard`）**没动**。
