@@ -1,5 +1,37 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.92 (2026-11-26)
+
+### 短剧取流一直 200 空包：接口路径本身就是错的
+
+从官方红果 7.4.5.32（156 MB APK，`com.phoenix.read`）的 dex 里取到明文字符串后，发现播放接口是：
+
+```
+POST /novel/player/video_model/v1/
+```
+
+而上游参考实现（以及我们照抄的四个通道）打的是 `/novel/player/multi_video_model/player/v1`
+——这条路径在官方包里**根本不存在**，网关对它一律返回 `200` + `content-length: 0`，不报错、不解释。
+这就是连续几个版本「签名全对、信封全对、注册也成功，但五个通道全是 len=0」的真正原因。
+
+用同一套 v5 信封打正确路径，立刻拿到 `code: 0` 和完整的 `video_model`：
+
+- `video_list[0].main_url` → 火山 CDN 的明 MP4（`ftyp isom`，206 分段可取）
+- 720×1280 / H.264+bytevc1 / 25fps / 5.1 MB / 有效期 2 天
+- 全程**不需要登录**，`X-Argus` / `X-Ladon` / SDI token 都不需要
+
+### 改了什么
+
+1. `executeSingleVideoModel` 换成正确路径 `/novel/player/video_model/v1/`，body 改为
+   `{"video_id": "...", "video_id_type": 0, ...}`（必须带 `video_id`，否则回
+   `100001 video_id invalid`）并整包 gzip。
+2. 签名从 `signPlayback`（老式 `X-Argus` / `X-Gorgon` 信封）换成 v5 信封
+   `signPlaybackV5Keys`（`X-Khronos` / `X-Helios` / `X-Medusa` / `X-SS-STUB`），query 顺序对齐官方
+   31 个设备字段 + `video_id`。
+3. 删掉 `X-Vc-Bdturing-Sdk-Version` / `X-Tt-Request-Tag` / `X-Reading-Request` / `Lc` /
+   `Passport-Sdk-Version` 这几个伪造头。空手塞伪造风控值会被网关判为异常客户端，反而比干净请求更容易吃空包。
+4. `video_model` 提到通道第一位，其余四个保留作兜底。
+
 ## v2.7.91 (2026-11-26)
 
 ### 修 v2.7.90 的编译失败（KDoc 里写了 `*/`）

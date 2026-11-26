@@ -99,6 +99,16 @@ object HongguoStreamResolver {
     const val PROVIDER_MULTI_VIDEO_MODEL = "multi_video_model"
     const val PROVIDER_SINGLE_VIDEO_MODEL = "video_model"
 
+    /** video_model 接口的 v5 query 顺序，对齐官方 7.4.5.32（31 个设备字段 + video_id）。 */
+    private val SINGLE_MODEL_V5_KEYS = listOf(
+        "device_platform", "os", "ssmix", "_rticket", "cdid", "channel", "aid", "app_name",
+        "version_code", "version_name", "manifest_version_code", "update_version_code",
+        "resolution", "dpi", "device_type", "device_brand", "language", "os_api", "os_version",
+        "ac", "host_abi", "dragon_device_type", "pv_player", "compliance_status",
+        "need_personal_recommend", "player_so_load", "is_android_pad_screen", "rom_version",
+        "device_id", "iid", "klink_egdi", "video_id", "video_id_type"
+    )
+
     private data class SourceMemoryEntry(val provider: String, val timestamp: Long)
     private val seriesSourceMemory = java.util.concurrent.ConcurrentHashMap<String, SourceMemoryEntry>()
     private val resolveLock = java.util.concurrent.locks.ReentrantLock(true)
@@ -950,7 +960,13 @@ object HongguoStreamResolver {
      * 专属 Xiaomi 73932 配置与单集专用载荷，提供最纯粹的 1080P/720P 原画流解析
      */
     private fun executeSingleVideoModel(vid: String, profile: PlaybackDeviceSession.Profile): JSONObject? {
-        val payload = """{"video_id":"$vid","biz_param":{"video_id_type":0,"need_all_video_definition":true,"video_platform":3}}""".toByteArray()
+        // v2.7.92: 官方 7.4.5.32 dex 里明文是 `POST /novel/player/video_model/v1/`，body 必须带
+        // video_id 且整包 gzip；旧实现用的 signPlayback（老式 X-Argus/X-Gorgon 信封）在这条接口上
+        // 只会拿到 200 空包，换成 v5 信封（X-Khronos/X-Helios/X-Medusa/X-SS-STUB）后即正常返回模型。
+        val rawPayload = """{"video_id":"$vid","video_id_type":0,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"video_platform":1024,"dr_scene":"player"}""".toByteArray()
+        val payload = java.io.ByteArrayOutputStream().also { out ->
+            java.util.zip.GZIPOutputStream(out).use { it.write(rawPayload) }
+        }.toByteArray()
         val cdid = profile.values["cdid"] ?: VendorConstants.cdid
         val deviceId = profile.values["device_id"] ?: ""
         val installId = profile.values["iid"] ?: profile.values["install_id"] ?: ""
@@ -985,33 +1001,35 @@ object HongguoStreamResolver {
             "need_personal_recommend" to "1",
             "player_so_load" to "1",
             "is_android_pad_screen" to "0",
-            "openudid" to openudid
+            "openudid" to openudid,
+            "rom_version" to (profile.values["rom_version"] ?: "V417IR+release-keys"),
+            "klink_egdi" to (profile.values["klink_egdi"] ?: ""),
+            "video_id" to vid,
+            "video_id_type" to "0",
+            "device_level" to "4",
+            "need_all_video_definition" to "1",
+            "need_mp4_align" to "0",
+            "use_os_player" to "0",
+            "video_platform" to "1024"
         )
 
-        val ep = "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/video_model/v1/"
+        val ep = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/video_model/v1/"
         try {
-            val signed = signer.signPlayback(ep, singleParams, payload)
-            val stamp = System.currentTimeMillis()
-            val nonce = (Math.random() * 10000000).toLong()
-
+            val signed = signer.signPlaybackV5Keys(ep, singleParams, payload, SINGLE_MODEL_V5_KEYS)
             val reqBuilder = Request.Builder()
                 .url(signed.url)
                 .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
 
             for ((k, v) in signed.headers) {
-                if (!k.equals("x-medusa", ignoreCase = true)) {
-                    reqBuilder.header(k, v)
-                }
+                reqBuilder.header(k, v)
             }
-            reqBuilder.header("User-Agent", VendorConstants.VIDEO_UA)
-            reqBuilder.header("Content-Type", "application/json; charset=UTF-8")
-            reqBuilder.header("Accept", "application/json; charset=utf-8,application/x-protobuf")
-            reqBuilder.header("Passport-Sdk-Version", "50561")
-            reqBuilder.header("X-Vc-Bdturing-Sdk-Version", "3.7.2.cn")
-            reqBuilder.header("X-Tt-Request-Tag", "t=0;n=0")
+            // 只带 v5 信封真正需要的头。上一版额外塞了 X-Vc-Bdturing-Sdk-Version /
+            // X-Tt-Request-Tag / X-Reading-Request / Lc 这些伪造值，网关识别为异常客户端后
+            // 直接回 200 空包，反而不如干净请求。
+            reqBuilder.header("User-Agent", VendorConstants.MOBILE_V5_UA)
+            reqBuilder.header("Accept", "application/json")
+            reqBuilder.header("Content-Encoding", "gzip")
             reqBuilder.header("X-SS-DP", "8662")
-            reqBuilder.header("Lc", "101")
-            reqBuilder.header("X-Reading-Request", "$stamp-$nonce")
             val cookie = if (profile.cookie.isNotBlank()) {
                 profile.cookie
             } else {
@@ -1334,11 +1352,15 @@ object HongguoStreamResolver {
             throw IllegalArgumentException("Invalid vid: $vid")
         }
 
+        // v2.7.92: video_model 提到第一位 —— 它是唯一一条路径与签名都对得上的通道
+        // （/novel/player/video_model/v1/ + v5 信封），实测可直接返回 video_list.main_url。
+        // 其余通道保留作兜底：multi_video_model/player/v1 在官方 7.4.5.32 里已不存在，
+        // 打它只会拿 200 空包。
         val allProviders = listOf(
+            PROVIDER_SINGLE_VIDEO_MODEL,
             PROVIDER_MOBILE_V5,
             PROVIDER_SINGLE_REGISTERED,
             PROVIDER_MULTI_VIDEO_MODEL,
-            PROVIDER_SINGLE_VIDEO_MODEL,
             PROVIDER_VIDEO_TAB,
         )
         val preferred = getPreferredProvider(seriesId)
