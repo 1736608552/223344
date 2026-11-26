@@ -519,6 +519,7 @@ object HongguoStreamResolver {
                 "app_name" to "novelread",
                 "version_code" to VendorConstants.mobileV5VersionCode,
                 "version_name" to VendorConstants.mobileV5VersionName,
+                "manifest_version_code" to VendorConstants.mobileV5VersionCode,
                 "channel" to VendorConstants.mobileV5Channel,
                 "device_platform" to "android",
                 "device_type" to VendorConstants.mobileV5DeviceType,
@@ -529,63 +530,68 @@ object HongguoStreamResolver {
                 "device_id" to deviceId,
             )
 
-            try {
-                val signed = signer.signPlaybackV5(ep, v5Params, gzipPayload)
-                val reqBuilder = Request.Builder()
-                    .url(signed.url)
-                    .post(gzipPayload.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                for ((k, v) in signed.headers) {
-                    reqBuilder.header(k, v)
-                }
-                reqBuilder.header("User-Agent", VendorConstants.mobileV5Ua)
-                reqBuilder.header("Accept", "application/json")
-                reqBuilder.header("Content-Type", "application/json; charset=utf-8")
-                reqBuilder.header("Content-Encoding", "gzip")
+            var sawEmpty200 = false
+            for (endpoint in listOf(ep, VendorConstants.ALTERNATE_V5_ENDPOINT).distinct()) {
+                try {
+                    val signed = signer.signPlaybackV5(endpoint, v5Params, gzipPayload)
+                    val reqBuilder = Request.Builder()
+                        .url(signed.url)
+                        .post(gzipPayload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    for ((k, v) in signed.headers) {
+                        reqBuilder.header(k, v)
+                    }
+                    reqBuilder.header("User-Agent", VendorConstants.mobileV5Ua)
+                    reqBuilder.header("Accept", "application/json")
+                    reqBuilder.header("Content-Type", "application/json; charset=utf-8")
+                    reqBuilder.header("Content-Encoding", "gzip")
 
-                val resp = client.newCall(reqBuilder.build()).execute()
-                val statusCode = resp.code
-                val body = resp.body?.string().orEmpty()
-                HongguoDiagnostic.log(
-                    if (statusCode == 200 && body.isNotBlank()) "INFO" else "WARN",
-                    "stream_resolver",
-                    "MOBILE_V5_RESP",
-                    "mobile_v5 响应: code=$statusCode len=${body.length} preview=${body.take(80)}"
-                )
-                if (resp.isSuccessful && body.isNotBlank()) {
-                    val root = JSONObject(body)
-                    val code = root.optInt("Code", root.optInt("code", -1))
-                    if (code == 0) {
-                        val data = root.optJSONObject("data")
-                        val entries = data?.optJSONObject("1004") ?: data
-                        val entry = entries?.optJSONObject(vid)
-                        val vm = entry?.opt("video_model")
-                        val model = when (vm) {
-                            is JSONObject -> vm
-                            is String -> {
-                                val trimmed = vm.trim()
-                                if (trimmed.startsWith("{")) {
-                                    runCatching { JSONObject(trimmed) }.getOrNull()
-                                } else {
-                                    runCatching { JSONObject(String(decode64(trimmed), Charsets.UTF_8)) }.getOrNull()
+                    val resp = client.newCall(reqBuilder.build()).execute()
+                    val statusCode = resp.code
+                    val body = resp.body?.string().orEmpty()
+                    HongguoDiagnostic.log(
+                        if (statusCode == 200 && body.isNotBlank()) "INFO" else "WARN",
+                        "stream_resolver",
+                        "MOBILE_V5_RESP",
+                        "mobile_v5 响应: ep=${endpoint.substringAfter("://").substringBefore("/")} code=$statusCode len=${body.length} preview=${body.take(80)}"
+                    )
+                    if (resp.isSuccessful && body.isNotBlank()) {
+                        val root = JSONObject(body)
+                        val code = root.optInt("Code", root.optInt("code", -1))
+                        if (code == 0) {
+                            val data = root.optJSONObject("data")
+                            val entries = data?.optJSONObject("1004") ?: data
+                            val entry = entries?.optJSONObject(vid)
+                            val vm = entry?.opt("video_model")
+                            val model = when (vm) {
+                                is JSONObject -> vm
+                                is String -> {
+                                    val trimmed = vm.trim()
+                                    if (trimmed.startsWith("{")) {
+                                        runCatching { JSONObject(trimmed) }.getOrNull()
+                                    } else {
+                                        runCatching { JSONObject(String(decode64(trimmed), Charsets.UTF_8)) }.getOrNull()
+                                    }
                                 }
+                                else -> null
                             }
-                            else -> null
+                            if (model != null) return model
                         }
-                        if (model != null) return model
                     }
-                }
-                if (attempt == 0 && statusCode == 200 && body.isBlank()) {
-                    val rotated = PlaybackDeviceSession.shared.rotate(client, failedDeviceId = deviceId)
-                    if (rotated.values["device_id"] != deviceId) {
-                        currentProfile = rotated
-                        continue
+                    if (statusCode == 200 && body.isBlank()) {
+                        sawEmpty200 = true
                     }
+                } catch (e: Exception) {
+                    android.util.Log.w("HongguoStreamResolver", "mobile_v5 异常: ${e.message}")
                 }
-                break
-            } catch (e: Exception) {
-                android.util.Log.w("HongguoStreamResolver", "mobile_v5 异常: ${e.message}")
-                break
             }
+            if (attempt == 0 && sawEmpty200) {
+                val rotated = PlaybackDeviceSession.shared.rotate(client, failedDeviceId = deviceId)
+                if (rotated.values["device_id"] != deviceId) {
+                    currentProfile = rotated
+                    continue
+                }
+            }
+            break
         }
         return null
     }
