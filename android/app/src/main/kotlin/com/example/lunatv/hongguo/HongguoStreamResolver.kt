@@ -732,7 +732,7 @@ object HongguoStreamResolver {
             "from_video_id" to "",
         )
         return try {
-            val tabUrl = "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/"
+            val tabUrl = "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/video_model/v1/"
             val signed = signer.signPlaybackV5VideoTab(tabUrl, tabParams)
             val reqBuilder = Request.Builder().url(signed.url).get()
             for ((k, v) in signed.headers) {
@@ -757,22 +757,9 @@ object HongguoStreamResolver {
                 val root = JSONObject(body)
                 val code = root.optInt("Code", root.optInt("code", -1))
                 if (code == 0) {
-                    val data = root.optJSONObject("data")
-                    val entries = data?.optJSONObject("1004") ?: data
-                    val entry = entries?.optJSONObject(vid)
-                    val vm = entry?.opt("video_model")
-                    when (vm) {
-                        is JSONObject -> vm
-                        is String -> {
-                            val trimmed = vm.trim()
-                            if (trimmed.startsWith("{")) {
-                                runCatching { JSONObject(trimmed) }.getOrNull()
-                            } else {
-                                runCatching { JSONObject(String(decode64(trimmed), Charsets.UTF_8)) }.getOrNull()
-                            }
-                        }
-                        else -> null
-                    }
+                    val model = videoModelFromTabRoot(root, vid)
+                    if (model != null) attachTabExpireAt(root, model)
+                    model
                 } else {
                     null
                 }
@@ -923,8 +910,10 @@ object HongguoStreamResolver {
             "from_video_id" to ""
         )
 
+        // v2.7.95: 路径必须是 video_tab/video_model/ —— 打 multi_video_model 这条
+        // 服务端固定回 200 + 空 body（POST 与 GET 两种形态都试过，全空）。
         val signed = signer.signPlaybackV5VideoTab(
-            "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/",
+            "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/video_model/v1/",
             queryParams
         )
         val reqBuilder = Request.Builder()
@@ -953,18 +942,9 @@ object HongguoStreamResolver {
             val code = root.optInt("Code", root.optInt("code", 0))
             if (code != 0) return null
 
-            val data = root.optJSONObject("data") ?: return null
-            val rows = data.optJSONObject("video_model_data") ?: data
-            val row = rows.optJSONObject(vid)
-                ?: rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull { it.has("video_model") }
-                ?: return null
-
-            val vm = row.opt("video_model")
-            return when (vm) {
-                is JSONObject -> vm
-                is String -> try { JSONObject(vm) } catch (_: Exception) { null }
-                else -> null
-            }
+            val model = videoModelFromTabRoot(root, vid) ?: return null
+            attachTabExpireAt(root, model)
+            return model
         } catch (e: Exception) {
             android.util.Log.w("HongguoStreamResolver", "video_tab 请求异常: ${e.message}")
             return null
@@ -972,9 +952,60 @@ object HongguoStreamResolver {
     }
 
     /**
+     * 从 video_tab 响应里取 video_model。
+     *
+     * 实测响应形态（2026-11-26 17:20，官方 7.4.5.32 参数）：
+     * ```
+     * {"code":0,"message":"SUCCESS","data":{
+     *    "video_model":"{\"status\":10,...,\"video_list\":[...5 档...]}",
+     *    "authorization":"...","video_width":1080,"video_height":1920,"expire_time":1795706390}}
+     * ```
+     * `data.video_model` 直接是**字符串**，不在 `data[vid]` 也不在 `data["1004"][vid]` 里。
+     * 旧实现按 `data.video_model_data[vid].video_model` 取，永远拿到 null —— 这是
+     * video_tab 通道即便路径对了也「解析失败」的原因。map 形态保留作兼容。
+     */
+    private fun videoModelFromTabRoot(root: JSONObject, vid: String): JSONObject? {
+        val data = root.optJSONObject("data") ?: return null
+        asVideoModelJson(data.opt("video_model"))?.let { return it }
+        val containers = listOfNotNull(data.optJSONObject("video_model_data"), data.optJSONObject("1004"), data)
+        for (c in containers) {
+            val row = c.optJSONObject(vid) ?: continue
+            asVideoModelJson(row.opt("video_model"))?.let { return it }
+        }
+        return null
+    }
+
+    private fun asVideoModelJson(v: Any?): JSONObject? = when (v) {
+        is JSONObject -> v
+        is String -> {
+            val t = v.trim()
+            if (t.startsWith("{")) {
+                runCatching { JSONObject(t) }.getOrNull()
+            } else {
+                runCatching { JSONObject(String(decode64(t), Charsets.UTF_8)) }.getOrNull()
+            }
+        }
+        else -> null
+    }
+
+    /** video_tab 把过期时间放在 `data.expire_time`（video_model 里没有），透传给 TTL 判断用。 */
+    private fun attachTabExpireAt(root: JSONObject, model: JSONObject) {
+        val exp = root.optJSONObject("data")?.optLong("expire_time", 0L) ?: 0L
+        if (exp > 0) {
+            runCatching { model.put("__expire_at", exp) }
+        }
+    }
+
+    /**
      * Provider 2 (双域名高可用轮询 POST 接口):
      * 请求 multi_video_model 端点，全套企业级六签名头加持
+     *
+     * v2.7.95 起**不再参与调度**：2026-11-26 17:19 复测，`multi_video_model` 的
+     * POST /novel/player/multi_video_model/v1/、POST .../player/v1/、
+     * GET /reading/bookapi/video_tab/multi_video_model/v1/ 三种形态全部 200 + 空 body，
+     * 而对同一 vid 打 video_model / video_tab 都正常。保留代码仅供对照排查，勿再加入序列。
      */
+    @Suppress("unused")
     private fun executeMultiVideoModel(vid: String, profile: PlaybackDeviceSession.Profile): JSONObject? {
         val payload = """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"dr_scene":"preload","mixed_video_id_map":{"1004":["$vid"]}}""".toByteArray()
         val candidateEndpoints = listOf(
@@ -1448,16 +1479,16 @@ object HongguoStreamResolver {
             throw IllegalArgumentException("Invalid vid: $vid")
         }
 
-        // v2.7.92: video_model 提到第一位 —— 它是唯一一条路径与签名都对得上的通道
-        // （/novel/player/video_model/v1/ + v5 信封），实测可直接返回 video_list.main_url。
-        // 其余通道保留作兜底：multi_video_model/player/v1 在官方 7.4.5.32 里已不存在，
-        // 打它只会拿 200 空包。
+        // v2.7.95: video_tab 提到第一位。实测（2026-11-26 17:20）：
+        //   video_tab/video_model GET → 5 档 360/480/540/720/1080P，且不需 POST body / gzip
+        //   video_model POST          → 只有 1 档 720P（即使 need_all_video_definition=true）
+        // 因此旧顺序下画质切换的 multiMap 里永远只有一档，1080P 实际拿不到。
+        // multi_video_model 已从序列中移除：POST 与 GET(tab) 两种形态实测都固定返回 200 空包。
         val allProviders = listOf(
+            PROVIDER_VIDEO_TAB,
             PROVIDER_SINGLE_VIDEO_MODEL,
             PROVIDER_MOBILE_V5,
             PROVIDER_SINGLE_REGISTERED,
-            PROVIDER_MULTI_VIDEO_MODEL,
-            PROVIDER_VIDEO_TAB,
         )
         val preferred = getPreferredProvider(seriesId)
         val providers = if (preferred != null && allProviders.contains(preferred)) {
@@ -1530,7 +1561,7 @@ object HongguoStreamResolver {
         val oldDevId = identity.values["device_id"] ?: ""
         val rotated = PlaybackDeviceSession.shared.rotate(client, failedDeviceId = oldDevId)
         if (rotated.values["device_id"] != oldDevId) {
-            for (provider in listOf(PROVIDER_MOBILE_V5, PROVIDER_SINGLE_REGISTERED, PROVIDER_MULTI_VIDEO_MODEL, PROVIDER_SINGLE_VIDEO_MODEL)) {
+            for (provider in listOf(PROVIDER_VIDEO_TAB, PROVIDER_SINGLE_VIDEO_MODEL, PROVIDER_MOBILE_V5, PROVIDER_SINGLE_REGISTERED)) {
                 val result = tryExecuteProvider(provider, rotated)
                 if (result != null) {
                     recordSourceSuccess(seriesId, provider)

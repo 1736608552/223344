@@ -1,5 +1,55 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.95 (2026-11-26)
+
+### 1080P 一直是摆设：video_tab 通道的路径与解析同时是错的
+
+清仓库待办时顺手把 `video_tab` 那条从未成功过的通道重新打了一遍，发现两个独立错误叠在一起：
+
+1. **路径错**：客户端打的是 `/reading/bookapi/video_tab/multi_video_model/v1/`。
+   这条服务端固定回 `200` + 空 body（POST 与 GET 两种形态都一样）。
+   能出数据的是 `/reading/bookapi/video_tab/video_model/v1/`。
+2. **解析错**：就算路径对了也拿不到模型。真实响应是
+
+   ```json
+   {"code":0,"data":{"video_model":"{...JSON 字符串...}","expire_time":1795706390}}
+   ```
+
+   `data.video_model` **直接挂在 data 下**，而旧代码按 `data[vid].video_model` /
+   `data["1004"][vid].video_model` 取，永远 null，被记成「解析失败」。
+
+### 顺带发现：唯一能拿到 1080P 的是 video_tab
+
+同一 vid、同一身份、同一时刻对比：
+
+| 通道 | 形态 | 返回档位 |
+|---|---|---|
+| `video_tab/video_model` | GET，query 签名，无需 body/gzip | **5 档：360 / 480 / 540 / 720 / 1080P** |
+| `video_model/v1/` | POST，body 需 gzip | **1 档：720P**（即使 `need_all_video_definition=true`） |
+
+也就是说：旧版把 `video_model` 当首选、把 `video_tab` 排最后且永远解析失败，结果
+**画质切换列表里永远只有一档，1080P 实际上拿不到**。
+
+### 改了什么
+
+- `executeVideoTab` / `recoverVideoTabV5` 路径改为 `video_tab/video_model/v1/`
+- 新增 `videoModelFromTabRoot()` 统一解析：先按实测形态取 `data.video_model`
+  （字符串或对象），再回落 map 形态（`data[vid]` / `data["1004"][vid]`）与 base64
+- 新增 `attachTabExpireAt()`：video_tab 的 `data.expire_time` 不在 video_model 内部，
+  补写 `__expire_at` 让 v2.7.93 的 TTL 判断对这条通道也生效
+- 通道顺序改为 `video_tab → video_model → mobile_v5 → single_registered`
+- `multi_video_model` 移出调度序列（三种形态实测全空包），代码保留加 `@Suppress`
+
+### 实测取证
+
+```bash
+python3 harness/probe_todo.py     # 三条待办接口一次性验完
+```
+
+- `video_tab` GET：`code 0`、22,408 B、5 档、1080×1920/8,664,024 B
+- 1080P 直链：`Range` → `206 video/mp4`，`ftyp isom`，`moov` 145,286 B
+- 流仍是 CENC：`stsd` = `encv`+`enca`，带 `sinf/tenc/senc/saio/saiz`（解密链路不变）
+
 ## v2.7.94 (2026-11-26)
 
 ### 死链不再只能干等：起播看门狗 + 全集列表改走官方接口
