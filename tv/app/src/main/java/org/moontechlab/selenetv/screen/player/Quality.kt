@@ -114,7 +114,8 @@ fun qualityOptionsFromResolved(resolved: Map<String, Any?>?): List<QualityOption
                 url = url,
                 keyBytes = keyBytes,
                 needsSoft = softMap[label]?.toBoolean() == true,
-                qualityPx = label.removeSuffix("P").toIntOrNull() ?: 0,
+                qualityPx = Regex("^(\\d{3,4})P").find(label)?.groupValues?.get(1)?.toIntOrNull()
+                    ?: label.removeSuffix("P").toIntOrNull() ?: 0,
             )
         }
         .sortedByDescending { it.qualityPx }
