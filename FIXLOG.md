@@ -1,5 +1,83 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.98 (2026-11-26)
+
+### 四件事：短剧搜索彻底并入全局、TV 加清晰度、播完推荐海报删掉、热更新删掉
+
+**1. 短剧页头部彻底清空（「日记」+「搜索短剧」都去掉）**
+
+v2.7.97 只删了「日记」，留了「搜索短剧」。现在两个按钮都不在了：
+
+- 短剧检索能力已经在全局搜索里（红果源标「精品短剧」），页内再放一个「只搜短剧」的弹窗就是重复入口；
+- 诊断/日记面板没有丢 —— 仍然**长按「短剧」大标题**唤出（原生诊断报告 + Flutter 短剧日记 + Android 日志）；
+- 随之删掉 `_ShortDramaSearchModal` 整个类（约 290 行）和 3 个失效导入（`cached_network_image` /
+  `luna_cache_manager` / `short_drama_service`），顺手去掉重复的 `theme_service` 导入。
+
+**2. TV 端加「清晰度」选择（播控同款胶囊 + 弹层）**
+
+红果 `video_tab` 一次解析就把 360P~1080P 五档直链和各自 CENC 密钥一起带回来（`multiMap` / `keys` /
+`softDecMap`），之前 TV 端只取 `maxQuality=1080` 那一档，其它档白拿。现在：
+
+- 控制条出现「1080P / 720P / 480P …」胶囊（只在多档源出现，普通采集源没有档位就不显示），
+  位置在「画面比例」和「倍速」之间，左右焦点链已重连；
+- 弹层样式 1:1 复用画面比例/倍速那套（独立 Popup window，焦点落当前档，OK 即切、BACK 关闭）；
+- 切档**不重新签名请求**：直接拿缓存的档位直链 + 密钥重新 load，保持当前播放位置，加密档仍走
+  本地回环代理 `HongguoLocalServer.getPlayUrl`；
+- 选过的档位记进 `preferredQualityPx`，下一集 resolve 时按它当上限，换集不会跳回 1080P；
+- 新文件 `screen/player/Quality.kt`：`QualityOption` / `QualityPill` / `QualityPopup` /
+  `qualityOptionsFromResolved()`。
+
+**3. 两端「播完弹下一季/推荐海报」整体删除**
+
+- 手机端：删掉 `_buildNextSeasonCenterOverlay` / `_triggerNextSeasonOverlay` / `_playNextSeasonNow` /
+  `_dismissNextSeasonOverlay` / `_checkAndPreloadNextSeason` 与相关状态、键盘分支、UI 调用
+  （约 420 行）。最后一集播完就停在片尾，不再预拉下一季、不再 5 秒倒计时自动跳播；
+- TV 端：删掉 `NextSeasonCenterOverlay.kt`（314 行）与 `NextSeasonService.kt` 两个文件、`PlayerScreen`
+  里的状态/预拉取/BackHandler/浮层渲染。`onPlayCompleted()` 现在只有「有下一集就 goNext」；
+- 普通连播（播完自动下一集、选集面板的「下一集」卡片、`UpNextCard`）**没动**。
+
+**4. 两端「免重装热更新」整体删除**
+
+热更新原来是从 GitHub（jsdelivr / ghproxy / raw）拉一份 JSON 清单，覆盖 endpoint / UA / versionCode /
+V5 magic+key+sbox，意图是「不装新版 APK 也能跟上上游协议变更」。删掉的理由：
+
+- 通道依赖的 GitHub 域名在国内电视上基本连不上，等于每次兜底都白等一轮超时（取流失败时才触发，
+  正好是用户最急的时候）；
+- 真拉到新版参数时，老 APK 的签名/解密逻辑没跟着变，反而会把能用的通道改成不能用；
+- 协议参数现在稳定在 v5 23 字段，发版跟着改常量就够了。
+
+删掉的东西：
+
+| 位置 | 删除内容 |
+|---|---|
+| 两端 `VendorConstants.kt` | `BUILTIN_APP_VERSION_CODE` / `KEY_HOT_*` / `loadSavedHotConfig()` / `isHexLen()` / `applyHotConfigJson()` / `syncHotConfig()` / `lastHotSyncTimeMs` / `hotSyncSource` / `init{}` 调用 |
+| 两端 `HongguoStreamResolver.kt` | `syncHotConfigAndResetDevice()` 改名为 `resetDeviceSession()`（只驱逐连接池 + 换发设备身份，不再热更）；末尾「四大通道都空 → 热更再重试」兜底块 |
+| TV `PlayerPanel.kt` | 诊断卡片点击改为 `resetDeviceSession()`，文案「热更内核」→「重置设备身份」 |
+| 手机 `MainActivity.kt` | `resetDeviceIdentity` 通道内部调用改名 |
+| 手机 UI | 诊断面板与播放错误页的「热更内核/解封」按钮 → 「重置设备身份」，提示文案去掉内核版本号 |
+
+### 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `lib/screens/short_drama_screen.dart` | 删「搜索短剧」按钮 + 弹窗类 + 失效导入；`_buildHeader` 去掉 `themeService` 参数 |
+| `lib/screens/player_screen.dart` | 删播完推荐浮层整套（状态/预拉/键盘/UI/方法），删 `next_season_service` 导入 |
+| `tv/.../screen/player/Quality.kt` | **新增**：清晰度胶囊 + 弹层 + 档位解析 |
+| `tv/.../screen/player/PlayerScreen.kt` | 档位状态、解析时收集 `multiMap`、`switchQuality()`、控制条插入胶囊、焦点链/自动隐藏/BACK 条件 |
+| `tv/.../screen/player/NextSeasonCenterOverlay.kt` | **删除** |
+| `tv/.../service/NextSeasonService.kt` | **删除** |
+| 两端 `hongguo/VendorConstants.kt` | 删热更新引擎 |
+| 两端 `hongguo/HongguoStreamResolver.kt` | `syncHotConfigAndResetDevice` → `resetDeviceSession`；删热更兜底 |
+| `android/.../MainActivity.kt` | 通道内部调用改名 |
+| `lib/services/duanju_core_bridge.dart` | 注释/日记文案去掉「热更内核」 |
+
+### 已知边界
+
+- TV 清晰度胶囊只在短剧/红果多档源出现；普通采集源只有一条流，不显示；
+- 某剧若连 1080P 都是 `bytevc2`(VVC) 编码，档位列表会比预期少（上游就过滤了 VVC 档，不是 bug）；
+- 切档是重新 load，进度会从当前位置续上，但会有一次起播缓冲（正常现象）；
+- 热更新删掉后，红果若改协议必须发版，不能靠线上清单救场（这是有意的取舍）。
+
 ## v2.7.97 (2026-11-26)
 
 ### 短剧页头部的「日记」按钮去掉 + 红果短剧并进「全部搜索」

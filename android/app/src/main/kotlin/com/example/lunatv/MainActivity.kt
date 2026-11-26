@@ -171,7 +171,7 @@ class MainActivity : FlutterActivity() {
                 "resetDeviceIdentity" -> {
                     Thread {
                         try {
-                            val map = org.moontechlab.lunatv.hongguo.HongguoStreamResolver.syncHotConfigAndResetDevice()
+                            val map = org.moontechlab.lunatv.hongguo.HongguoStreamResolver.resetDeviceSession()
                             runOnUiThread { result.success(map) }
                         } catch (e: Exception) {
                             runOnUiThread { result.error("RESET_ERROR", e.message, null) }

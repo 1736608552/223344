@@ -1905,7 +1905,8 @@ class DuanjuCoreBridge {
     String newCookie = '';
     String kernelVer = '7.4.3.32 (74332)';
 
-    // 1. Android 原生层优先执行免重装热更上游内核参数 + 连接池驱逐 + log.snssdk.com 全新设备注册
+    // 1. Android 原生层优先执行「连接池驱逐 + log.snssdk.com 全新设备注册」
+    //    (v2.7.98 起原生层不再热更内核参数，协议参数只随 APK 版本走)
     if (Platform.isAndroid) {
       try {
         const channel = MethodChannel('com.example.lunatv/hongguo_resolver');
@@ -1918,7 +1919,7 @@ class DuanjuCoreBridge {
           if (kv.isNotEmpty) kernelVer = kv;
         }
       } catch (e) {
-        DiaryService.add('[短剧] 原生热更内核与换发设备号异常: $e');
+        DiaryService.add('[短剧] 原生换发设备号异常: $e');
       }
     }
 

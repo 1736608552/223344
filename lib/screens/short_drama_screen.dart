@@ -9,19 +9,17 @@ import 'package:luna_tv/screens/player_screen.dart';
 import 'package:luna_tv/services/duanju_core_bridge.dart';
 import 'package:luna_tv/services/diary_service.dart';
 // v2.5.3: 列表/分类/图片走 ShortDramaDirectService (直连 3 源, 不依赖
-//   serverUrl). 播放解析仍走 ShortDramaService.parseEpisode (serverUrl
-//   后端代理, 含反爬/防盗链/CDN 缓存).
-import 'package:cached_network_image/cached_network_image.dart';
+//   serverUrl). 播放解析走播放页的红果直连通道.
+// v2.7.98: 短剧站内搜索弹窗已删除 (统一进全局搜索), 顺手清掉随之失效的
+//   cached_network_image / luna_cache_manager / short_drama_service 导入
+//   和重复的 theme_service 导入.
 import 'package:luna_tv/services/user_data_service.dart';
-import 'package:luna_tv/services/luna_cache_manager.dart';
 import 'package:luna_tv/services/short_drama_direct_service.dart';
-import 'package:luna_tv/services/short_drama_service.dart';
 import 'package:luna_tv/services/theme_service.dart';
 import 'package:luna_tv/widgets/short_drama_card.dart';
 import 'package:luna_tv/widgets/pulsing_dots_indicator.dart';
 import 'package:luna_tv/widgets/favorites_grid.dart';
 import 'package:luna_tv/services/page_cache_service.dart';
-import 'package:luna_tv/services/theme_service.dart';
 import 'package:luna_tv/widgets/capsule_tab_switcher.dart';
 import 'package:luna_tv/utils/font_utils.dart';
 import 'package:luna_tv/utils/device_utils.dart';
@@ -531,7 +529,7 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
             slivers: [
               // 顶部标题
               SliverToBoxAdapter(
-                child: _buildHeader(themeService),
+                child: _buildHeader(),
               ),
               // 筛选区（与电视剧页风格一致：白底圆角容器，双行标签）
               SliverToBoxAdapter(
@@ -571,89 +569,43 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     );
   }
 
-  /// 构建顶部标题（带专属短剧搜索入口）
-  Widget _buildHeader(ThemeService themeService) {
+  /// 构建顶部标题
+  ///
+  /// v2.7.98: 头部不再挂「日记」「搜索短剧」两个按钮 —— 用户要求短剧搜索
+  ///   统一并进全局搜索 (红果源在那边标「精品短剧」), 页内独立搜索弹窗是
+  ///   重复入口, 一并去掉. 诊断/日记面板没删, 长按标题仍可唤出.
+  Widget _buildHeader() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 20, 16, 8),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        crossAxisAlignment: CrossAxisAlignment.center,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // v2.7.97: 去掉右上角「日记」按钮 (用户要求, 页面头部只留搜索入口).
-              //   诊断/日记面板能力没删 — 改为长按标题触发, 排障时仍可取出
-              //   原生诊断报告 + Flutter 短剧日记 + Android 底层日志.
-              GestureDetector(
-                onLongPress: _showGlobalDiagnosticSheet,
-                child: Text(
-                  '短剧',
-                  style: FontUtils.poppins(context,
-                    fontSize: 28,
-                    fontWeight: FontWeight.w600,
-                    color: Theme.of(context).textTheme.titleLarge?.color,
-                  ),
-                ),
+          // v2.7.97: 去掉右上角「日记」按钮 (用户要求, 页面头部只留搜索入口).
+          //   诊断/日记面板能力没删 — 改为长按标题触发, 排障时仍可取出
+          //   原生诊断报告 + Flutter 短剧日记 + Android 底层日志.
+          GestureDetector(
+            onLongPress: _showGlobalDiagnosticSheet,
+            child: Text(
+              '短剧',
+              style: FontUtils.poppins(context,
+                fontSize: 28,
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).textTheme.titleLarge?.color,
               ),
-              const SizedBox(height: 4),
-              SizedBox(
-                height: 20, // 固定高度确保一致性
-                child: Text(
-                  '精彩短剧，一刷到底',
-                  style: FontUtils.poppins(context,
-                    fontSize: 14,
-                    color: Theme.of(context).textTheme.bodySmall?.color,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
+            ),
           ),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              InkWell(
-                onTap: _openShortDramaSearch,
-                borderRadius: BorderRadius.circular(20),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: themeService.isDarkMode
-                        ? Colors.white.withOpacity(0.08)
-                        : const Color(0xFFF3F4F6),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                      color: themeService.isDarkMode
-                          ? Colors.white.withOpacity(0.12)
-                          : const Color(0xFFE5E7EB),
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(
-                        Icons.search_rounded,
-                        size: 18,
-                        color: Color(0xFF22C55E),
-                      ),
-                      SizedBox(width: 6),
-                      Text(
-                        '搜索短剧',
-                        style: FontUtils.poppins(context,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                          color: themeService.isDarkMode
-                              ? Colors.white70
-                              : const Color(0xFF4B5563),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+          const SizedBox(height: 4),
+          SizedBox(
+            height: 20, // 固定高度确保一致性
+            child: Text(
+              '精彩短剧，一刷到底',
+              style: FontUtils.poppins(context,
+                fontSize: 14,
+                color: Theme.of(context).textTheme.bodySmall?.color,
               ),
-            ],
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
         ],
       ),
@@ -852,23 +804,22 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
                           ),
                         ),
                         icon: const Icon(Icons.refresh_rounded, size: 16),
-                        label: const Text('热更内核/解封', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                        label: const Text('重置设备身份', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                         onPressed: () async {
                           Navigator.pop(ctx);
                           if (!mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
-                              content: Text('正在免重装同步最新红果官方内核并换发全新设备 ID...'),
+                              content: Text('正在换发全新红果设备 ID...'),
                               duration: Duration(seconds: 2),
                             ),
                           );
                           final fresh = await DuanjuCoreBridge.instance.resetDeviceSession();
                           final newId = fresh['deviceId']?.toString() ?? '';
-                          final kVer = fresh['kernelVersion']?.toString() ?? '7.4.3.32';
                           if (!mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
-                              content: Text('已同步红果内核 v$kVer 并换发设备ID: $newId！'),
+                              content: Text('已换发新设备ID: $newId！'),
                               backgroundColor: const Color(0xFF16A34A),
                             ),
                           );
@@ -904,16 +855,6 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
           ),
         );
       },
-    );
-  }
-
-  /// 弹出专属短剧全网搜索弹窗
-  void _openShortDramaSearch() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => _ShortDramaSearchModal(onDramaTap: _onDramaTap),
     );
   }
 
@@ -1175,294 +1116,5 @@ class _ShortDramaScreenState extends State<ShortDramaScreen> {
     }
 
     return const SizedBox(height: 50);
-  }
-}
-
-/// 专属短剧独立搜索面板
-class _ShortDramaSearchModal extends StatefulWidget {
-  final void Function(ShortDrama drama) onDramaTap;
-
-  const _ShortDramaSearchModal({required this.onDramaTap});
-
-  @override
-  State<_ShortDramaSearchModal> createState() => _ShortDramaSearchModalState();
-}
-
-class _ShortDramaSearchModalState extends State<_ShortDramaSearchModal> {
-  final TextEditingController _controller = TextEditingController();
-  final FocusNode _focusNode = FocusNode();
-  final List<ShortDrama> _searchResults = [];
-  bool _isSearching = false;
-  String? _searchError;
-  bool _hasSearched = false;
-
-  static const List<String> _hotKeywords = [
-    '文盲修仙',
-    '东北话事人',
-    '我的婆婆',
-    '天神殿',
-    '凡人百世书',
-    '重生富翁',
-    '萌宝',
-    '逆袭',
-  ];
-
-  @override
-  void initState() {
-    super.initState();
-    Future.delayed(const Duration(milliseconds: 150), () {
-      if (mounted) _focusNode.requestFocus();
-    });
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  Future<void> _performSearch(String query) async {
-    final cleanQ = query.trim();
-    if (cleanQ.isEmpty) return;
-
-    setState(() {
-      _isSearching = true;
-      _searchError = null;
-      _hasSearched = true;
-      _searchResults.clear();
-    });
-
-    try {
-      final results = await ShortDramaDirectService.searchDramas(cleanQ);
-      if (mounted) {
-        setState(() {
-          _searchResults.addAll(results);
-          _isSearching = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _searchError = '搜索异常: $e';
-          _isSearching = false;
-        });
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final themeService = Provider.of<ThemeService>(context);
-    final isDark = themeService.isDarkMode;
-    final bgColor = isDark ? const Color(0xFF1E1E24) : Colors.white;
-
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.88,
-      decoration: BoxDecoration(
-        color: bgColor,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      child: Column(
-        children: [
-          // 顶部小横条
-          const SizedBox(height: 10),
-          Container(
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-              color: isDark ? Colors.white24 : Colors.grey[300],
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-          const SizedBox(height: 12),
-
-          // 搜索栏
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Container(
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: isDark ? Colors.white.withOpacity(0.08) : const Color(0xFFF3F4F6),
-                      borderRadius: BorderRadius.circular(21),
-                      border: Border.all(
-                        color: isDark ? Colors.white12 : const Color(0xFFE5E7EB),
-                      ),
-                    ),
-                    child: TextField(
-                      controller: _controller,
-                      focusNode: _focusNode,
-                      style: FontUtils.poppins(context,
-                        fontSize: 14,
-                        color: isDark ? Colors.white : Colors.black87,
-                      ),
-                      textInputAction: TextInputAction.search,
-                      onSubmitted: _performSearch,
-                      decoration: InputDecoration(
-                        hintText: '搜索全网热门短剧...',
-                        hintStyle: FontUtils.poppins(context,
-                          fontSize: 14,
-                          color: isDark ? Colors.white38 : Colors.grey[500],
-                        ),
-                        prefixIcon: const Icon(
-                          Icons.search_rounded,
-                          size: 20,
-                          color: Color(0xFF22C55E),
-                        ),
-                        suffixIcon: _controller.text.isNotEmpty
-                            ? IconButton(
-                                icon: const Icon(Icons.clear, size: 18),
-                                onPressed: () {
-                                  _controller.clear();
-                                  setState(() {});
-                                },
-                              )
-                            : null,
-                        border: InputBorder.none,
-                        contentPadding: const EdgeInsets.symmetric(vertical: 10),
-                      ),
-                      onChanged: (v) => setState(() {}),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                TextButton(
-                  onPressed: () => _performSearch(_controller.text),
-                  style: TextButton.styleFrom(
-                    foregroundColor: const Color(0xFF22C55E),
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                  ),
-                  child: const Text('搜索', style: TextStyle(fontWeight: FontWeight.w600)),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 10),
-
-          // 热词标签
-          if (!_hasSearched) ...[
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  '热门短剧推荐',
-                  style: FontUtils.poppins(context,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? Colors.white70 : Colors.black54,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: _hotKeywords.map((kw) {
-                  return ActionChip(
-                    label: Text(kw, style: const TextStyle(fontSize: 12)),
-                    backgroundColor: isDark ? Colors.white.withOpacity(0.06) : const Color(0xFFF3F4F6),
-                    onPressed: () {
-                      _controller.text = kw;
-                      _performSearch(kw);
-                    },
-                  );
-                }).toList(),
-              ),
-            ),
-          ],
-
-          // 搜索中或结果列表
-          Expanded(
-            child: _isSearching
-                ? const Center(child: PulsingDotsIndicator())
-                : _searchError != null
-                    ? Center(child: Text(_searchError!, style: const TextStyle(color: Colors.redAccent)))
-                    : _hasSearched && _searchResults.isEmpty
-                        ? Center(
-                            child: Text(
-                              '未找到相关短剧，换个关键词试试',
-                              style: TextStyle(color: isDark ? Colors.white38 : Colors.grey),
-                            ),
-                          )
-                        : ListView.separated(
-                            padding: const EdgeInsets.all(16),
-                            itemCount: _searchResults.length,
-                            separatorBuilder: (_, __) => const Divider(height: 16),
-                            itemBuilder: (context, index) {
-                              final d = _searchResults[index];
-                              return ListTile(
-                                contentPadding: EdgeInsets.zero,
-                                leading: ClipRRect(
-                                  borderRadius: BorderRadius.circular(6),
-                                  child: CachedNetworkImage(
-                                    imageUrl: UserDataService.buildShortDramaImageUrl(d.cover),
-                                    cacheManager: LunaCacheManager.instance,
-                                    width: 48,
-                                    height: 64,
-                                    fit: BoxFit.cover,
-                                    placeholder: (context, url) => Container(
-                                      width: 48,
-                                      height: 64,
-                                      color: isDark ? Colors.white12 : Colors.grey[200],
-                                    ),
-                                    errorWidget: (context, url, error) => Container(
-                                      width: 48,
-                                      height: 64,
-                                      color: isDark ? Colors.white12 : Colors.grey[200],
-                                      child: const Icon(Icons.movie, size: 24),
-                                    ),
-                                  ),
-                                ),
-                                title: Text(
-                                  d.name,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontWeight: FontWeight.w600),
-                                ),
-                                subtitle: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      '共 ${d.episodeCount} 集 · 官方原画',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        color: const Color(0xFF22C55E),
-                                        fontWeight: FontWeight.w500,
-                                      ),
-                                    ),
-                                    if (d.description.isNotEmpty) ...[
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        d.description,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          color: isDark ? Colors.white54 : Colors.black45,
-                                        ),
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                                trailing: const Icon(Icons.play_circle_fill_rounded, color: Color(0xFF22C55E), size: 30),
-                                onTap: () {
-                                  Navigator.pop(context);
-                                  widget.onDramaTap(d);
-                                },
-                              );
-                            },
-                          ),
-          ),
-        ],
-      ),
-    );
   }
 }

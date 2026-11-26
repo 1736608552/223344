@@ -63,7 +63,6 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:luna_tv/models/skip_segment.dart';
 import 'package:luna_tv/services/skip_segment_service.dart';
-import 'package:luna_tv/services/next_season_service.dart';
 import 'package:luna_tv/utils/device_utils.dart';
 import 'package:luna_tv/utils/window_utils.dart';
 
@@ -380,13 +379,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _hideMouseCursor = false;
   Timer? _mouseHideTimer;
 
-  // 下一季/推荐自动连播状态 (类似 YouTube / Netflix 居中海报弹窗与5秒自动播放)
-  NextSeasonCandidate? _nextSeasonCandidate;
-  bool _isPreloadingNextSeason = false;
-  bool _showNextSeasonOverlay = false;
-  bool _nextSeasonDismissedThisEp = false;
-  int _nextSeasonCountdownSec = 5;
-  Timer? _nextSeasonTimer;
+  // v2.7.98: 删掉「播完弹出下一季/推荐海报」整套状态（用户要求去掉该浮层）。
+  //   最后一集播完就停在片尾，不再预拉下一季候选、不再 5 秒倒计时自动跳播。
 
   // 防连跳状态锁与时间戳 (彻底根治播放第一集跳转第二集时连跳两集)
   bool _isEpisodeSwitching = false;
@@ -737,7 +731,6 @@ class _PlayerScreenState extends State<PlayerScreen>
     _progressTimer?.cancel();
     _smartSkipCountdownTimer?.cancel();
     _startupWatchdogTimer?.cancel();
-    _nextSeasonTimer?.cancel();
     _positionPollTimer?.cancel(); // ★ v2.5.65
     _hideControlsTimer?.cancel();
     _seekHintTimer?.cancel();
@@ -1062,19 +1055,11 @@ class _PlayerScreenState extends State<PlayerScreen>
         }());
       } else {
         _isTransitioningEpisode = false;
-        if (_nextSeasonCandidate != null && !_nextSeasonDismissedThisEp) {
-          _triggerNextSeasonOverlay();
-        } else {
-          _checkAndPreloadNextSeason().then((_) {
-            if (_nextSeasonCandidate != null && mounted && !_nextSeasonDismissedThisEp) {
-              _triggerNextSeasonOverlay();
-            } else {
-              final dur = _currentDuration.inSeconds;
-              if (dur > 0) {
-                _player?.seek(Duration(seconds: dur));
-              }
-            }
-          });
+        // v2.7.98: 最后一集播完不再弹「下一季 / 推荐」海报浮层（用户要求去掉）。
+        //   直接停在片尾，既不预拉下一季候选，也不做 5 秒倒计时自动跳播。
+        final dur = _currentDuration.inSeconds;
+        if (dur > 0) {
+          _player?.seek(Duration(seconds: dur));
         }
       }
     } else {
@@ -4526,15 +4511,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
     // v2.6.92: 加载当前集的智能跳过片段 (TheIntroDB + TMDB 代理)
     _loadSmartSkipSegmentsForCurrentEpisode();
-    // 若当前播放的是本季最后一集或单集电影，静默预拉取下一季/推荐候选信息
-    final isLastOrMovie = source.episodes.isEmpty || index >= source.episodes.length - 1;
-    if (isLastOrMovie) {
-      _nextSeasonDismissedThisEp = false;
-      _checkAndPreloadNextSeason();
-    } else {
-      _nextSeasonCandidate = null;
-      _nextSeasonDismissedThisEp = false;
-    }
+    // v2.7.98: 播完推荐浮层已删除，这里不再预拉下一季/推荐候选。
     // 切集后立即重置并保存新集初始进度 (index=新集), 确保用户哪怕刚切完就退出也能记住新集
     _lastSavedKey = null;
     unawaited(_saveCurrentProgress(force: true));
@@ -4782,20 +4759,6 @@ class _PlayerScreenState extends State<PlayerScreen>
           autofocus: true,
           onKeyEvent: (node, event) {
             if (event is KeyDownEvent) {
-              if (_showNextSeasonOverlay) {
-                if (event.logicalKey == LogicalKeyboardKey.select ||
-                    event.logicalKey == LogicalKeyboardKey.enter ||
-                    event.logicalKey == LogicalKeyboardKey.space) {
-                  _playNextSeasonNow();
-                  return KeyEventResult.handled;
-                }
-                if (event.logicalKey == LogicalKeyboardKey.escape ||
-                    event.logicalKey == LogicalKeyboardKey.backspace ||
-                    event.logicalKey == LogicalKeyboardKey.goBack) {
-                  _dismissNextSeasonOverlay();
-                  return KeyEventResult.handled;
-                }
-              }
               if (event.logicalKey == LogicalKeyboardKey.escape && _isFullscreen) {
                 _onExitFullscreen();
                 return KeyEventResult.handled;
@@ -7072,23 +7035,22 @@ class _PlayerScreenState extends State<PlayerScreen>
                               ),
                             ),
                             icon: const Icon(Icons.refresh_rounded, size: 16),
-                            label: const Text('热更内核/解封', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                            label: const Text('重置设备身份', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                             onPressed: () async {
                               Navigator.pop(ctx);
                               if (!mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                  content: Text('正在免重装同步最新红果官方内核并换发全新设备 ID...'),
+                                  content: Text('正在换发全新红果设备 ID...'),
                                   duration: Duration(seconds: 2),
                                 ),
                               );
                               final fresh = await DuanjuCoreBridge.instance.resetDeviceSession();
                               final newId = fresh['deviceId']?.toString() ?? '';
-                              final kVer = fresh['kernelVersion']?.toString() ?? '7.4.3.32';
                               if (!mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
-                                  content: Text('已同步红果内核 v$kVer (did:$newId)，正在重新起播...'),
+                                  content: Text('已换发新设备ID: $newId，正在重新起播...'),
                                   backgroundColor: const Color(0xFF16A34A),
                                 ),
                               );
@@ -8114,8 +8076,6 @@ class _PlayerScreenState extends State<PlayerScreen>
                 MediaQuery.of(context).padding.bottom,
             child: _buildSmartSkipCapsule(),
           ),
-        // v2.6.113: 下一季居中卡片自动连播浮层 (类似 YouTube / Netflix 风格)
-        if (_showNextSeasonOverlay) _buildNextSeasonCenterOverlay(),
         // 播放异常/解析受阻居中诊断卡片 (全屏居中显示，包含一键复制日记大按钮)
         if (_error != null && !_isPlaying)
           Positioned.fill(
@@ -8292,443 +8252,6 @@ class _PlayerScreenState extends State<PlayerScreen>
       ),
     );
   }
-
-  // ===========================================================================
-  // v2.6.113: 下一季自动连播居中弹层与 5 秒倒计时逻辑 (类似 YouTube / Netflix 风格)
-  // ===========================================================================
-
-  /// 最后一集起播后，静默预拉取下一季候选剧集数据
-  Future<void> _checkAndPreloadNextSeason() async {
-    if (_isPreloadingNextSeason || _nextSeasonCandidate != null) return;
-    _isPreloadingNextSeason = true;
-    try {
-      final cand = await NextSeasonService.findNextSeason(
-        currentVideoInfo: widget.videoInfo,
-        currentSource: _selectedSource?.source,
-      );
-      if (cand != null && mounted) {
-        setState(() {
-          _nextSeasonCandidate = cand;
-        });
-        if (cand.poster.isNotEmpty) {
-          try {
-            precacheImage(CachedNetworkImageProvider(cand.poster), context);
-          } catch (_) {}
-        }
-        debugPrint('[PlayerScreen] 成功预拉取到连播/推荐信息: ${cand.title}, 共${cand.totalEpisodes}集');
-      }
-    } catch (e) {
-      debugPrint('[PlayerScreen] 预拉取连播/推荐异常: $e');
-    } finally {
-      _isPreloadingNextSeason = false;
-    }
-  }
-
-  /// 最后一集或电影播放结束/片尾时触发判定
-  void _handleLastEpisodeCompletion({bool fromCompletedStream = false}) {
-    if (_autoPlayedThisEpisode) return;
-    if (_showNextSeasonOverlay) return;
-    if (_nextSeasonDismissedThisEp) return;
-
-    final isShortDrama = _selectedSource?.source == 'hongguo' ||
-        _selectedSource?.source == 'shortdrama' ||
-        widget.videoInfo.source == 'hongguo' ||
-        widget.videoInfo.source == 'shortdrama';
-
-    final dur = _currentDuration;
-    // 若来自 completedStream，说明播放器底层已物理完成解码，直接放行触发连播弹窗
-    if (!fromCompletedStream) {
-      if (dur <= Duration.zero) return;
-      if (!isShortDrama && dur < const Duration(seconds: 30)) return;
-      // 电影/全剧完结：短剧最后 300ms，传统影视最后 1500ms 自然呼出
-      final lastGuardMs = isShortDrama ? 300 : 1500;
-      if (_currentPosition < dur - Duration(milliseconds: lastGuardMs)) {
-        return;
-      }
-    }
-
-    if (_nextSeasonCandidate != null) {
-      _autoPlayedThisEpisode = true;
-      _triggerNextSeasonOverlay();
-    } else {
-      _checkAndPreloadNextSeason().then((_) {
-        // 关键防御：无论异步检索是否命中，立刻调用保底构造器，确保 100% 弹出海报大卡片
-        _nextSeasonCandidate ??= NextSeasonService.buildFallbackCompletionCandidate(
-          currentVideoInfo: widget.videoInfo,
-          currentSource: _selectedSource?.source,
-          sourceName: _selectedSource?.sourceName,
-        );
-        if (mounted && !_nextSeasonDismissedThisEp) {
-          _autoPlayedThisEpisode = true;
-          _triggerNextSeasonOverlay();
-        }
-      });
-    }
-  }
-
-  /// 激活下一季居中连播弹层与 5 秒倒计时
-  void _triggerNextSeasonOverlay() {
-    if (!mounted) return;
-    if (_showNextSeasonOverlay) return;
-    if (_nextSeasonDismissedThisEp) return;
-    final candidate = _nextSeasonCandidate;
-    if (candidate == null) return;
-
-    try {
-      _player?.pause();
-    } catch (_) {}
-
-    _nextSeasonTimer?.cancel();
-    final isRepeatSelf = candidate.nextVideoInfo.title == widget.videoInfo.title;
-
-    setState(() {
-      _showNextSeasonOverlay = true;
-      _nextSeasonCountdownSec = 5;
-    });
-
-    // 若为重温本剧兜底，不自动 5 秒倒计时跳转，保留界面等待用户点击；若是下一季或推荐好剧，开启 5 秒平滑连播倒计时
-    if (!isRepeatSelf) {
-      _nextSeasonTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-        if (!mounted) {
-          timer.cancel();
-          return;
-        }
-        if (_nextSeasonCountdownSec > 1) {
-          setState(() {
-            _nextSeasonCountdownSec--;
-          });
-        } else {
-          timer.cancel();
-          _playNextSeasonNow();
-        }
-      });
-    }
-  }
-
-  /// 用户主动取消下一季自动连播弹窗
-  void _dismissNextSeasonOverlay() {
-    _nextSeasonTimer?.cancel();
-    _nextSeasonTimer = null;
-    setState(() {
-      _showNextSeasonOverlay = false;
-      _nextSeasonDismissedThisEp = true;
-    });
-  }
-
-  /// 立即播放下一季 (倒计时结束自动播放或用户点击立即播放)
-  void _playNextSeasonNow() {
-    final candidate = _nextSeasonCandidate;
-    _nextSeasonTimer?.cancel();
-    _nextSeasonTimer = null;
-    if (candidate == null || !mounted) return;
-
-    setState(() {
-      _showNextSeasonOverlay = false;
-    });
-
-    try {
-      _player?.pause();
-    } catch (_) {}
-
-    // 若是重播本片/本剧第1集
-    final isRepeatSelf = candidate.nextVideoInfo.title == widget.videoInfo.title;
-    if (isRepeatSelf) {
-      _autoPlayedThisEpisode = false;
-      _playEpisode(0);
-      return;
-    }
-
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(
-        builder: (context) => PlayerScreen(
-          videoInfo: candidate.nextVideoInfo,
-        ),
-      ),
-    );
-  }
-
-  /// 下一季居中卡片自动连播浮层 (类似 YouTube / Netflix 风格)
-  Widget _buildNextSeasonCenterOverlay() {
-    final candidate = _nextSeasonCandidate;
-    if (candidate == null || !_showNextSeasonOverlay) return const SizedBox.shrink();
-
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
-    final isRepeatSelf = candidate.nextVideoInfo.title == widget.videoInfo.title;
-
-    return Positioned.fill(
-      child: Material(
-        color: Colors.black.withOpacity(0.78),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-          child: Center(
-            child: SingleChildScrollView(
-              child: Container(
-                margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                constraints: BoxConstraints(
-                  maxWidth: isLandscape ? 500 : 380,
-                  minWidth: 280,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xF20F172A),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: const Color(0x5538BDF8),
-                    width: 1.2,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.65),
-                      blurRadius: 28,
-                      offset: const Offset(0, 10),
-                    ),
-                    const BoxShadow(
-                      color: Color(0x2238BDF8),
-                      blurRadius: 16,
-                      offset: Offset(0, 0),
-                    ),
-                  ],
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      // 顶部提示条
-                      Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(6),
-                            decoration: BoxDecoration(
-                              color: const Color(0x3338BDF8),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: const Icon(
-                              Icons.play_circle_fill_rounded,
-                              color: Color(0xFF38BDF8),
-                              size: 18,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              candidate.bannerTitle,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 15,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 0.5,
-                              ),
-                            ),
-                          ),
-                          InkWell(
-                            onTap: _dismissNextSeasonOverlay,
-                            borderRadius: BorderRadius.circular(16),
-                            child: const Padding(
-                              padding: EdgeInsets.all(4),
-                              child: Icon(Icons.close_rounded, color: Colors.white60, size: 20),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-
-                      // 主体图文
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // 海报
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(12),
-                            child: Stack(
-                              children: [
-                                SizedBox(
-                                  width: isLandscape ? 106 : 92,
-                                  height: isLandscape ? 148 : 130,
-                                  child: candidate.poster.isNotEmpty
-                                      ? CachedNetworkImage(
-                                          imageUrl: candidate.poster,
-                                          fit: BoxFit.cover,
-                                          placeholder: (c, u) => Container(
-                                            color: Colors.white10,
-                                            child: const Center(
-                                              child: SizedBox(
-                                                width: 20,
-                                                height: 20,
-                                                child: CircularProgressIndicator(
-                                                  strokeWidth: 2,
-                                                  color: Color(0xFF38BDF8),
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                          errorWidget: (c, u, e) => Container(
-                                            color: Colors.white10,
-                                            child: const Icon(Icons.movie_rounded, color: Colors.white38),
-                                          ),
-                                        )
-                                      : Container(
-                                          color: Colors.white10,
-                                          child: const Icon(Icons.movie_rounded, color: Colors.white38),
-                                        ),
-                                ),
-                                Positioned(
-                                  bottom: 6,
-                                  right: 6,
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: Colors.black.withOpacity(0.75),
-                                      borderRadius: BorderRadius.circular(6),
-                                      border: Border.all(color: Colors.white24, width: 0.5),
-                                    ),
-                                    child: Text(
-                                      candidate.seasonLabel,
-                                      style: const TextStyle(
-                                        color: Color(0xFF38BDF8),
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 14),
-
-                          // 剧集信息
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  candidate.title,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                    height: 1.25,
-                                  ),
-                                ),
-                                const SizedBox(height: 6),
-                                Wrap(
-                                  spacing: 6,
-                                  runSpacing: 4,
-                                  children: [
-                                    if (candidate.year.isNotEmpty)
-                                      _buildNextSeasonBadge(candidate.year),
-                                    if (candidate.totalEpisodes > 0)
-                                      _buildNextSeasonBadge('共${candidate.totalEpisodes}集'),
-                                    _buildNextSeasonBadge(candidate.seasonLabel),
-                                    _buildNextSeasonBadge(candidate.sourceName.isNotEmpty ? candidate.sourceName : '全网聚合'),
-                                  ],
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  candidate.desc,
-                                  maxLines: isLandscape ? 3 : 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 12,
-                                    height: 1.4,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      // 5秒动态进度条 (重温本剧不自动连播倒计时)
-                      if (!isRepeatSelf) ...[
-                        const SizedBox(height: 18),
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(4),
-                          child: LinearProgressIndicator(
-                            value: (5 - _nextSeasonCountdownSec) / 5.0,
-                            backgroundColor: Colors.white10,
-                            valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF38BDF8)),
-                            minHeight: 3,
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 14),
-
-                      // 底部按钮栏
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          TextButton(
-                            onPressed: _dismissNextSeasonOverlay,
-                            style: TextButton.styleFrom(
-                              foregroundColor: Colors.white70,
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                            ),
-                            child: Text(isRepeatSelf ? '返回' : '取消', style: const TextStyle(fontSize: 14)),
-                          ),
-                          const SizedBox(width: 8),
-                          ElevatedButton.icon(
-                            autofocus: true,
-                            onPressed: _playNextSeasonNow,
-                            icon: Icon(
-                              isRepeatSelf ? Icons.replay_rounded : Icons.play_arrow_rounded,
-                              size: 20,
-                            ),
-                            label: Text(
-                              isRepeatSelf
-                                  ? '重新播放第 1 集'
-                                  : (candidate.isNextSeason
-                                      ? '播放下一季 (${_nextSeasonCountdownSec}s)'
-                                      : '播放推荐 (${_nextSeasonCountdownSec}s)'),
-                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF0284C7),
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(24),
-                              ),
-                              elevation: 4,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildNextSeasonBadge(String text) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: Colors.white12, width: 0.5),
-      ),
-      child: Text(
-        text,
-        style: const TextStyle(
-          color: Colors.white70,
-          fontSize: 11,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-    );
-  }
-
-
 
   /// 亮度浮窗 (左侧, v1.0.40 修复主播放器手势)
   Widget _buildBrightnessIndicator() {

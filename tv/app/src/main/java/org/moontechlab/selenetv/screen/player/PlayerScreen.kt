@@ -45,8 +45,6 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import org.moontechlab.selenetv.service.NextSeasonService
-import org.moontechlab.selenetv.service.NextSeasonCandidate
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -157,6 +155,14 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     // 播放倍速 + 唤出弹窗状态。speed 变化 → 推到 controller（ExoPlayer/MPV 各自原生 API）。
     var playbackSpeed by remember { androidx.compose.runtime.mutableFloatStateOf(1f) }
     var speedPopupOpen by remember { mutableStateOf(false) }
+    // v2.7.98: 短剧清晰度选择。红果 video_tab 一次解析就带回 360P~1080P 五档直链,
+    //   切档只是换 URL+Key 重新 load, 不需要再走 23 字段签名请求。
+    //   preferredQualityPx 记住用户选过的档位, 换集时作为 resolve 的 maxQuality 上限。
+    var qualityPopupOpen by remember { mutableStateOf(false) }
+    var qualityOptions by remember { mutableStateOf<List<QualityOption>>(emptyList()) }
+    var currentQualityLabel by remember { mutableStateOf("") }
+    var preferredQualityPx by remember { mutableIntStateOf(1080) }
+    val qualityPillFocus = remember { FocusRequester() }
     LaunchedEffect(controller, playbackSpeed) { controller.speed = playbackSpeed }
 
     var resizeMode by remember { mutableStateOf(VideoResizeMode.FIT) }
@@ -305,51 +311,12 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         return if (rec.index - 1 == index) rec.playTime * 1000 else 0L
     }
 
-    // 下一季/连播推荐状态 (类似 YouTube / Netflix 风格居中海报弹层与 5 秒倒计时)
-    var nextSeasonCandidate by remember { mutableStateOf<NextSeasonCandidate?>(null) }
-    var showNextSeasonOverlay by remember { mutableStateOf(false) }
-    var nextSeasonCountdownSec by remember { mutableIntStateOf(5) }
-    var nextSeasonDismissedThisEp by remember { mutableStateOf(false) }
-    var nextSeasonTimerJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    // v2.7.98: 「播完弹出下一季/推荐海报」整套状态与预拉取已删除（用户要求去掉该浮层）。
     var playEpisodeJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var dramaAutoRetryCount by remember { mutableIntStateOf(0) }
-    val nextSeasonPlayFocus = remember { FocusRequester() }
-
-    // 预拉取下一季/推荐信息 (全分类支持：电影/电视剧/动漫/短剧)
-    fun preloadNextSeasonIfNeeded(epIdx: Int) {
-        val isLastOrMovie = epCount <= 1 || epIdx >= epCount - 1
-        if (!isLastOrMovie) {
-            nextSeasonCandidate = null
-            nextSeasonDismissedThisEp = false
-            return
-        }
-        if (nextSeasonCandidate != null) return
-        val isMovie = epCount <= 1 || launch.heroInfo?.genres?.any { it.contains("电影") } == true
-        val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
-        val srcName = src?.source ?: "hongguo"
-        val title = launch.title
-        val cover = src?.poster ?: launch.heroInfo?.backdrop ?: ""
-        val year = src?.year ?: "2026"
-        scope.launch(Dispatchers.IO) {
-            val cand = NextSeasonService.findNextSeason(
-                title = title,
-                currentSource = srcName,
-                doubanId = null,
-                isMovie = isMovie,
-                cover = cover,
-                year = year,
-            )
-            if (cand != null) {
-                withContext(Dispatchers.Main) {
-                    nextSeasonCandidate = cand
-                }
-            }
-        }
-    }
 
     // 载入指定集；startMs 为续播位置（切集默认 0，进入时用 launch.startPositionMs）
     fun playEpisode(index: Int, startMs: Long) {
-        preloadNextSeasonIfNeeded(index)
         playEpisodeJob?.cancel()
         controller.pause()
         controller.clearError()
@@ -410,16 +377,22 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
 
                 // 100% 对齐 1736608552/hongguo-tv 与手机端生产架构：优先通过本地 HTTP 回环服务输出纯明文 MP4 流
                 if (vid.isNotEmpty()) {
-                    val maxQ = 1080
+                    // v2.7.98: 上限取用户上次选的档位（默认 1080），换集也沿用同一清晰度
+                    val maxQ = preferredQualityPx
                     val repoInstance = org.moontechlab.selenetv.hongguo.ContentRepository()
                     val preResolved = pendingPreResolvedStream?.takeIf { it.first == index }
                     var streamInfo: org.moontechlab.selenetv.hongguo.StreamInfo? = preResolved?.third
+                    // 本集可选档位：一次 resolve 就带回全部直链，切档无需再签名
+                    var resolvedQualities: List<QualityOption> = if (preResolved != null) qualityOptions else emptyList()
                     if (preResolved != null) {
                         pendingPreResolvedStream = null
                     } else {
+                        // 新一集开解析前先清空上一集残留的档位，避免胶囊显示错档
+                        qualityOptions = emptyList()
+                        currentQualityLabel = ""
                         for (rAttempt in 0..1) {
                             try {
-                                val info = withContext(Dispatchers.IO) {
+                                val pair = withContext(Dispatchers.IO) {
                                     val resolved = org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resolve(vid, maxQuality = maxQ, seriesId = seriesId)
                                     val streamUrl = resolved["url"] as? String ?: ""
                                     val keyHex = resolved["decryptionKey"] as? String ?: ""
@@ -428,13 +401,29 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                                     } else null
                                     val quality = resolved["quality"] as? String ?: "${maxQ}P"
                                     val needsSoft = resolved["needsSoftwareDecode"] as? Boolean ?: false
-                                    if (streamUrl.isNotBlank()) {
+                                    val options = qualityOptionsFromResolved(resolved)
+                                    val info = if (streamUrl.isNotBlank()) {
                                         org.moontechlab.selenetv.hongguo.StreamInfo(streamUrl, keyBytes, quality, needsSoft)
                                     } else {
                                         repoInstance.stream(vid, maxQuality = maxQ)
                                     }
+                                    info to options
                                 }
-                                streamInfo = info
+                                streamInfo = pair.first
+                                resolvedQualities = if (pair.second.isNotEmpty()) {
+                                    pair.second
+                                } else {
+                                    // 走 ContentRepository 兜底时没有 multiMap，就只给当前这一档
+                                    listOf(
+                                        QualityOption(
+                                            label = pair.first.quality,
+                                            url = pair.first.url,
+                                            keyBytes = pair.first.key,
+                                            needsSoft = pair.first.needsSoftwareDecode,
+                                            qualityPx = pair.first.quality.removeSuffix("P").toIntOrNull() ?: 0,
+                                        )
+                                    )
+                                }
                                 break
                             } catch (e: Exception) {
                                 android.util.Log.w("PlayerScreen", "短剧取流异常 (attempt $rAttempt): ${e.message}")
@@ -447,6 +436,9 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                     }
 
                     if (streamInfo != null) {
+                        // 记录本集可选档位与当前档位，控制条「清晰度」胶囊读这两个值
+                        qualityOptions = resolvedQualities
+                        currentQualityLabel = streamInfo.quality
                         // 命中奇数非8对齐分辨率流（如 1924x1080）且当前仍在 ExoPlayer 硬解引擎上：
                         // 携带已解析的 streamInfo 零重复取流切换至 libmpv 纯软解引擎，彻底根除花屏！
                         if (streamInfo.needsSoftwareDecode && !useMpvSoftEngine && android.os.Build.VERSION.SDK_INT >= MPV_MIN_SDK) {
@@ -517,6 +509,10 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                 }
             }
 
+            // v2.7.98: 非短剧源没有多档流，清掉短剧残留的清晰度状态
+            qualityOptions = emptyList()
+            currentQualityLabel = ""
+
             // v2.7.81: 网页播放页 → 真实流地址 解析
             //   采集站分集地址里有大量「网页播放页」（/play/xxx、/share/xxx），
             //   返回 text/html。ExoPlayer 直接加载会报
@@ -538,6 +534,58 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         }
     }
 
+    /**
+     * v2.7.98: 短剧清晰度热切换。
+     *
+     * 档位地址来自本集 resolve 时缓存的 multiMap（[qualityOptions]），所以：
+     *   - 不走网络重新签名，秒切；
+     *   - 保持当前播放位置，不回到 0；
+     *   - 加密档位仍走本地回环代理（getPlayUrl），非加密档位直接喂直链；
+     *   - 选中档位写进 preferredQualityPx，下一集 resolve 时按这个上限取档。
+     * 非短剧源没有多档（源站只给一条流），控制条不会显示这个胶囊。
+     */
+    fun switchQuality(label: String) {
+        qualityPopupOpen = false
+        val opt = qualityOptions.firstOrNull { it.label == label } ?: return
+        if (label == currentQualityLabel) return
+        val resumeMs = controller.positionMs.coerceAtLeast(0L)
+        if (opt.qualityPx > 0) preferredQualityPx = opt.qualityPx
+        scope.launch {
+            try {
+                val streamInfo = org.moontechlab.selenetv.hongguo.StreamInfo(
+                    url = opt.url,
+                    key = opt.keyBytes,
+                    quality = opt.label,
+                    needsSoftwareDecode = opt.needsSoft,
+                )
+                val repoInstance = org.moontechlab.selenetv.hongguo.ContentRepository()
+                val localPlayUrl = withContext(Dispatchers.IO) {
+                    org.moontechlab.selenetv.hongguo.HongguoLocalServer.instance
+                        .getPlayUrl(streamInfo, repoInstance.http, eagerWarm = true)
+                }
+                if (localPlayUrl.startsWith("http://127.0.0.1")) {
+                    controller.load(localPlayUrl, resumeMs, decryptionKey = "", headers = emptyMap())
+                } else {
+                    val keyHex = opt.keyBytes?.joinToString("") { "%02x".format(it.toInt() and 0xff) } ?: ""
+                    controller.load(
+                        opt.url,
+                        resumeMs,
+                        decryptionKey = keyHex,
+                        headers = mapOf(
+                            "User-Agent" to org.moontechlab.selenetv.hongguo.VendorConstants.VIDEO_UA,
+                            "Referer" to "https://novel.snssdk.com/",
+                        ),
+                    )
+                }
+                currentQualityLabel = opt.label
+                org.moontechlab.selenetv.ui.MoonToast.show("已切换到 ${opt.label}")
+            } catch (e: Exception) {
+                android.util.Log.w("PlayerScreen", "切换清晰度失败: ${e.message}")
+                org.moontechlab.selenetv.ui.MoonToast.show("切换清晰度失败，请重试")
+            }
+        }
+    }
+
     fun goNext() {
         if (hasNext) {
             saveProgress(force = true)
@@ -551,65 +599,12 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         }
     }
 
-    // 播放下一季/推荐候选目标
-    fun playNextSeason(cand: NextSeasonCandidate) {
-        nextSeasonTimerJob?.cancel()
-        nextSeasonTimerJob = null
-        showNextSeasonOverlay = false
-        saveProgress(force = true)
-        reporter.resetThrottle()
-
-        val target = cand.targetSource
-        val targetKey = "${target.source}+${target.id}"
-        currentSourceKey = targetKey
-        currentEpisode = 0
-        playEpisode(0, 0L)
-        wake()
-    }
-
-    // 激活下一季/推荐连播弹层与 5s 倒计时
-    fun triggerNextSeasonOverlay() {
-        if (showNextSeasonOverlay || nextSeasonDismissedThisEp) return
-        val cand = nextSeasonCandidate ?: return
-        showNextSeasonOverlay = true
-        nextSeasonCountdownSec = 5
-        nextSeasonTimerJob?.cancel()
-        nextSeasonTimerJob = scope.launch {
-            while (nextSeasonCountdownSec > 1) {
-                kotlinx.coroutines.delay(1000)
-                nextSeasonCountdownSec--
-            }
-            // 5s 到期自动连播下一季或推荐影片
-            playNextSeason(cand)
-        }
-    }
-
     // 最后一集或电影播放完成
+    // v2.7.98: 播完不再弹「下一季 / 推荐」海报浮层（用户要求去掉）。
+    //   有下一集就照旧连播，最后一集则停在片尾。
     fun onPlayCompleted() {
         if (hasNext) {
             goNext()
-        } else {
-            if (nextSeasonCandidate != null) {
-                triggerNextSeasonOverlay()
-            } else {
-                scope.launch(Dispatchers.IO) {
-                    val isMovie = epCount <= 1 || launch.heroInfo?.genres?.any { it.contains("电影") } == true
-                    val src = launch.sources.firstOrNull { sourceKey(it) == currentSourceKey } ?: launch.selectedSource
-                    val cand = NextSeasonService.findNextSeason(
-                        title = launch.title,
-                        currentSource = src?.source ?: "hongguo",
-                        isMovie = isMovie,
-                        cover = src?.poster ?: "",
-                        year = src?.year ?: "2026",
-                    )
-                    withContext(Dispatchers.Main) {
-                        if (cand != null && !nextSeasonDismissedThisEp) {
-                            nextSeasonCandidate = cand
-                            triggerNextSeasonOverlay()
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -910,9 +905,9 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
 
     // OSD 自动隐藏：播放中、面板未开、倍速弹窗未开、静止满 4s 即隐去
     // 隐藏时把焦点收回进度条——避免焦点遗留在 pill 等隐藏元素上，下次按键时唤起路径不可预测
-    LaunchedEffect(controlsVisible, isPlaying, panelOpen, speedPopupOpen, aspectPopupOpen, danmakuMenuOpen, controlsRowHasFocus, interactionTick) {
+    LaunchedEffect(controlsVisible, isPlaying, panelOpen, speedPopupOpen, aspectPopupOpen, danmakuMenuOpen, qualityPopupOpen, controlsRowHasFocus, interactionTick) {
         // 焦点在按钮行（pill）时不自动隐藏——用户正在操作，控制条应常驻。
-        if (controlsVisible && isPlaying && !panelOpen && !speedPopupOpen && !aspectPopupOpen && !danmakuMenuOpen && !controlsRowHasFocus) {
+        if (controlsVisible && isPlaying && !panelOpen && !speedPopupOpen && !aspectPopupOpen && !danmakuMenuOpen && !qualityPopupOpen && !controlsRowHasFocus) {
             kotlinx.coroutines.delay(AUTO_HIDE_MS)
             controlsVisible = false
             try { (if (activeSegment != null) skipFocus else scrubberFocus).requestFocus() } catch (_: Exception) {}
@@ -980,16 +975,10 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             backExitArmed = false
         }
     }
-    // 下一季/连播推荐浮层打开时优先响应返回键关闭浮层
-    BackHandler(enabled = showNextSeasonOverlay) {
-        showNextSeasonOverlay = false
-        nextSeasonDismissedThisEp = true
-        nextSeasonTimerJob?.cancel()
-    }
     // 倍速/比例/弹幕弹窗自有 dismissOnBackPress（独立 Popup window），这里全线让位
-    BackHandler(enabled = !showNextSeasonOverlay && panelOpen && !speedPopupOpen && !aspectPopupOpen && !danmakuMenuOpen) { panelOpen = false }
-    BackHandler(enabled = !showNextSeasonOverlay && !panelOpen && controlsVisible && !speedPopupOpen && !aspectPopupOpen && !danmakuMenuOpen) { controlsVisible = false }
-    BackHandler(enabled = !showNextSeasonOverlay && !panelOpen && !controlsVisible && !speedPopupOpen && !aspectPopupOpen && !danmakuMenuOpen) {
+    BackHandler(enabled = panelOpen && !speedPopupOpen && !aspectPopupOpen && !danmakuMenuOpen && !qualityPopupOpen) { panelOpen = false }
+    BackHandler(enabled = !panelOpen && controlsVisible && !speedPopupOpen && !aspectPopupOpen && !danmakuMenuOpen && !qualityPopupOpen) { controlsVisible = false }
+    BackHandler(enabled = !panelOpen && !controlsVisible && !speedPopupOpen && !aspectPopupOpen && !danmakuMenuOpen && !qualityPopupOpen) {
         if (backExitArmed) {
             saveProgress(force = true)
             onExit()
@@ -1284,7 +1273,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                                 onClick = { speedPopupOpen = false; danmakuMenuOpen = false; aspectPopupOpen = true; wake() },
                                 focusRequester = aspectPillFocus,
                                 scrubberFocus = scrubberFocus,
-                                rightTarget = speedPillFocus,
+                                rightTarget = if (qualityOptions.isNotEmpty()) qualityPillFocus else speedPillFocus,
                                 leftTarget = if (danmakuActive) danmakuGearFocus else null,
                                 upTarget = if (activeSegment != null) skipFocus else null,
                             )
@@ -1299,6 +1288,34 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                                 onDismiss = { aspectPopupOpen = false },
                             )
                         }
+                        // v2.7.98: 清晰度胶囊 —— 只有短剧这类多档源才出现（源站单流的普通源没有档位可选）
+                        if (qualityOptions.isNotEmpty()) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Box {
+                                QualityPill(
+                                    currentLabel = currentQualityLabel,
+                                    onClick = {
+                                        speedPopupOpen = false
+                                        aspectPopupOpen = false
+                                        danmakuMenuOpen = false
+                                        qualityPopupOpen = true
+                                        wake()
+                                    },
+                                    focusRequester = qualityPillFocus,
+                                    scrubberFocus = scrubberFocus,
+                                    leftTarget = aspectPillFocus,
+                                    rightTarget = speedPillFocus,
+                                    upTarget = if (activeSegment != null) skipFocus else null,
+                                )
+                                QualityPopup(
+                                    open = qualityPopupOpen,
+                                    options = qualityOptions,
+                                    currentLabel = currentQualityLabel,
+                                    onSelect = { switchQuality(it) },
+                                    onDismiss = { qualityPopupOpen = false },
+                                )
+                            }
+                        }
                         Spacer(modifier = Modifier.width(8.dp))
                         Box {
                             SpeedPill(
@@ -1307,7 +1324,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                                 focusRequester = speedPillFocus,
                                 scrubberFocus = scrubberFocus,
                                 upTarget = if (activeSegment != null) skipFocus else null,
-                                leftTarget = aspectPillFocus,
+                                leftTarget = if (qualityOptions.isNotEmpty()) qualityPillFocus else aspectPillFocus,
                                 rightTarget = decodePillFocus,
                             )
                             // SpeedPopup 内部用 MutableTransitionState 跟踪进出态，
@@ -1525,21 +1542,6 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
         }
 
 
-
-        // v2.7.5: 类似 YouTube / Netflix 风格的居中下一季/推荐内容连播大卡片浮层
-        if (showNextSeasonOverlay && nextSeasonCandidate != null) {
-            NextSeasonCenterOverlay(
-                candidate = nextSeasonCandidate!!,
-                countdownSec = nextSeasonCountdownSec,
-                playFocusRequester = nextSeasonPlayFocus,
-                onPlayNow = { playNextSeason(nextSeasonCandidate!!) },
-                onDismiss = {
-                    showNextSeasonOverlay = false
-                    nextSeasonDismissedThisEp = true
-                    nextSeasonTimerJob?.cancel()
-                }
-            )
-        }
 
         // 二次返回退出提示（自绘，不用系统 Toast）
         BackExitHint(

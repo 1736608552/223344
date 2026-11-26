@@ -23,31 +23,33 @@ object HongguoStreamResolver {
      * 清理网络连接池 (在电视睡眠唤醒或网络波动重连时调用，彻底拔除已失效的僵尸 TCP Socket)
      */
     /**
-     * App 内一键免重装热更红果官方内核参数与密钥表 + 换发全新合法设备号
+     * App 内一键换发全新合法设备号。
+     *
+     * v2.7.98: 原实现顺手会拉上游清单「热更」协议参数与 V5 密钥，这条通道依赖
+     *   GitHub（jsdelivr / ghproxy），国内电视基本连不上，等于每次点击白等一轮
+     *   网络超时；而且真拉到新版参数时会把老 APK 的签名逻辑改到不兼容。现在
+     *   参数只随 APK 版本走，这里只做「连接池驱逐 + 换发全新设备身份」。
      */
-    fun syncHotConfigAndResetDevice(): Map<String, String> {
+    fun resetDeviceSession(): Map<String, String> {
         evictConnections()
-        val hotInfo = VendorConstants.syncHotConfig(client, force = true)
         val fresh = PlaybackDeviceSession.shared.resetAll(client)
         val devId = fresh.values["device_id"] ?: ""
         val iid = fresh.values["iid"] ?: ""
-        val kernelVer = hotInfo["kernelVersion"] ?: "${VendorConstants.mobileV5VersionName} (${VendorConstants.mobileV5VersionCode})"
-        val src = hotInfo["source"] ?: VendorConstants.hotSyncSource
+        val kernelVer = "${VendorConstants.mobileV5VersionName} (${VendorConstants.mobileV5VersionCode})"
         HongguoDiagnostic.log(
-            "INFO", "context", "HOT_SYNC_AND_RESET",
-            "免重装热更红果内核完成 [$kernelVer | $src]，已换发全新设备: did=$devId"
+            "INFO", "context", "RESET_DEVICE_SESSION",
+            "已换发全新设备身份: did=$devId"
         )
         HongguoDiagnostic.updateReport(
-            stage = "hot_config",
-            code = "HOT_SYNC_OK",
-            summary = "已同步最新红果官方内核 ($kernelVer) 并换发设备 did=$devId"
+            stage = "device_session",
+            code = "RESET_OK",
+            summary = "已换发全新设备 did=$devId"
         )
         return mapOf(
             "deviceId" to devId,
             "installId" to iid,
             "cookie" to fresh.cookie,
             "kernelVersion" to kernelVer,
-            "hotSource" to src
         )
     }
 
@@ -1406,26 +1408,6 @@ object HongguoStreamResolver {
                     )
                     return result
                 }
-            }
-        }
-
-        // 终极兜底: 若内置通道均返回空响应，自动触发一次带 60s 冷却保护的上游协议热更新并重试首选通道
-        val prevVer = VendorConstants.mobileV5VersionCode
-        VendorConstants.syncHotConfig(client, force = false)
-        if (VendorConstants.mobileV5VersionCode != prevVer || VendorConstants.hotSyncSource.startsWith("upstream")) {
-            // 热更只换了版本号/通道画像，对 video_tab 的 23 字段签名同样生效，所以仍走首选通道
-            val hotResult = tryExecuteProvider(allProviders.first(), rotated)
-            if (hotResult != null) {
-                recordSourceSuccess(seriesId, allProviders.first())
-                val totalElapsed = System.currentTimeMillis() - resolveStart
-                HongguoDiagnostic.log("INFO", "stream_resolver", "RESOLVE_HOT_OK", "上游热更新后取流成功 [画质: ${hotResult["quality"]}, 总耗时: ${totalElapsed}ms]")
-                HongguoDiagnostic.updateReport(
-                    stage = "stream_resolver",
-                    code = "RESOLVE_OK",
-                    elapsedMs = totalElapsed,
-                    summary = "热更内核后取流成功: ${hotResult["quality"]}"
-                )
-                return hotResult
             }
         }
 

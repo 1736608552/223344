@@ -753,7 +753,7 @@ private fun DiagnosticTabContent(
                 logsVersion++
                 Thread {
                     try {
-                        org.moontechlab.selenetv.hongguo.HongguoStreamResolver.syncHotConfigAndResetDevice()
+                        org.moontechlab.selenetv.hongguo.HongguoStreamResolver.resetDeviceSession()
                     } catch (_: Exception) {}
                 }.start()
             },
@@ -894,7 +894,7 @@ private fun DiagnosticTabContent(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = if (cardFocused) "按确认键热更内核并重置" else "点击热更内核",
+                        text = if (cardFocused) "按确认键换发新设备身份" else "点击重置设备身份",
                         color = Color.White.copy(alpha = 0.5f),
                         fontSize = 11.sp,
                     )
