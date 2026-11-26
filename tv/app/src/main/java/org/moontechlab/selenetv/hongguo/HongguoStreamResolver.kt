@@ -67,13 +67,71 @@ object HongguoStreamResolver {
     private val seriesIntroCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     /**
-     * 外部预热/缓存短剧 VID 列表 (如搜索结果携带时提前写入，实现秒开)
+     * 上游声明的总集数（来自 `episode_cnt`）。
+     *
+     * 存在的理由：红果**搜索建议接口**（`incent_resource/suggestion`）返回的 `vid_list`
+     * 只带**前 3 集预览**，而同一响应里的 `episode_cnt` 是真实总集数（实测 95 / 135）。
+     * 如果把这 3 条当成「全剧分集」缓存下来，第 4 集起就永远取不到 vid
+     * —— 用户侧表现就是「只能播前三集」。所以缓存必须带上总集数做完整性校验。
      */
-    fun cacheEpisodeVids(seriesId: String, vids: List<String>) {
-        val cleanId = seriesId.trim().removePrefix("hongguo:").trim()
-        if (cleanId.isNotEmpty() && vids.isNotEmpty()) {
-            episodeVidsCache[cleanId] = vids
+    private val episodeExpectCache = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /**
+     * 该剧的分集缓存是否已通过完整性校验。
+     * 只有「走完整解析通道拿到的全量列表」或「预热时明确知道总集数且长度够」才置 true。
+     * 未通过校验的缓存只当候选，取用时仍要复核 —— 否则一条 3 集的预览就能把整部剧锁死。
+     */
+    private val episodeVidsVerified = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    /**
+     * 写入分集缓存并记录总集数，**谁长用谁**（避免「3 集预览」把已拿到的全量列表挤掉）。
+     *
+     * @param verified 这份列表是否已确认是全集；false 表示只是候选，取用时还要再校验
+     */
+    private fun storeEpisodeVids(
+        cleanId: String,
+        vids: List<String>,
+        expectedCount: Int,
+        verified: Boolean = true,
+    ): List<String> {
+        if (vids.isEmpty()) return episodeVidsCache[cleanId] ?: vids
+        if (expectedCount > 0) episodeExpectCache[cleanId] = expectedCount
+        val existing = episodeVidsCache[cleanId]
+        if (existing != null && existing.size > vids.size) {
+            // 新列表更短：保留旧列表，验证标记也只允许「升级」不允许被降级
+            if (verified) episodeVidsVerified[cleanId] = true
+            return existing
         }
+        episodeVidsCache[cleanId] = vids
+        episodeVidsVerified[cleanId] = verified
+        return vids
+    }
+
+    /**
+     * 外部预热/缓存短剧 VID 列表 (如搜索结果携带时提前写入，实现秒开)
+     *
+     * @param expectedCount 上游 `episode_cnt`。搜索结果里通常只有前几集 vid，必须把总集数一起记下来，
+     *                      否则 `fetchEpisodeVids` 无从判断这份缓存是不是残缺的。
+     */
+    fun cacheEpisodeVids(seriesId: String, vids: List<String>, expectedCount: Int = 0) {
+        val cleanId = seriesId.trim().removePrefix("hongguo:").trim()
+        if (cleanId.isEmpty() || vids.isEmpty()) return
+        // 只有「知道总集数且条数够」才认定为已验证；否则只当候选缓存
+        val complete = expectedCount > 0 && vids.size >= expectedCount
+        storeEpisodeVids(cleanId, vids, expectedCount, verified = complete)
+    }
+
+    /**
+     * 丢弃某剧的分集缓存，强制下次重新拉全量。
+     * 播放侧发现「本集序号超出列表长度」时调用（分集列表可能来自上游预览）。
+     */
+    fun invalidateEpisodeVids(seriesId: String) {
+        val cleanId = seriesId.trim().removePrefix("hongguo:").trim()
+        if (cleanId.isEmpty()) return
+        episodeVidsCache.remove(cleanId)
+        episodeExpectCache.remove(cleanId)
+        episodeVidsVerified.remove(cleanId)
+        HongguoDiagnostic.log("INFO", "stream_resolver", "VID_CACHE_CLEARED", "已清空分集缓存 (seriesId=$cleanId)")
     }
 
     /**
@@ -177,7 +235,19 @@ object HongguoStreamResolver {
             throw IllegalArgumentException("Invalid seriesId: $seriesId")
         }
 
-        episodeVidsCache[cleanId]?.let { return it }
+        val expectedCount = episodeExpectCache[cleanId] ?: 0
+        episodeVidsCache[cleanId]?.let { cached ->
+            // 缓存命中也要过完整性校验：上游搜索接口的 vid_list 只给前 3 集预览。
+            // 已通过校验的缓存直接信；未校验的缓存必须长度对得上总集数才用。
+            val verified = episodeVidsVerified[cleanId] == true
+            if (verified || (expectedCount > 0 && cached.size >= expectedCount)) return cached
+            HongguoDiagnostic.log(
+                "WARN", "stream_resolver", "VID_CACHE_SHORT",
+                "缓存分集不可信 ${cached.size}/${if (expectedCount > 0) expectedCount else -1}，丢弃后重拉全量 (seriesId=$cleanId)"
+            )
+            episodeVidsCache.remove(cleanId)
+            episodeVidsVerified.remove(cleanId)
+        }
 
         var lastErr: Exception? = null
 
@@ -190,8 +260,8 @@ object HongguoStreamResolver {
                     "INFO", "stream_resolver", "VIDEO_DETAIL_OK",
                     "video_detail 取到全剧分集: ${vids.size}/$expect (seriesId=$cleanId)"
                 )
-                episodeVidsCache[cleanId] = vids
-                return vids
+                storeEpisodeVids(cleanId, vids, expect)
+                return episodeVidsCache[cleanId] ?: vids
             }
             lastErr = IOException("video_detail 集数不完整 ${vids.size}/$expect，回落官网 SSR")
         }
@@ -281,7 +351,7 @@ object HongguoStreamResolver {
 
                 val distinctVids = vids.distinct()
                 if (distinctVids.isNotEmpty()) {
-                    episodeVidsCache[cleanId] = distinctVids
+                    storeEpisodeVids(cleanId, distinctVids, expectedCount)
                     return distinctVids
                 }
             }
@@ -290,9 +360,11 @@ object HongguoStreamResolver {
         }
 
         // 通道 2（最终兜底）：通道 0 失败时，再给官方接口一次机会（设备刚换号 / 网络抖动）
-        fetchEpisodeVidsFromApp(cleanId)?.let { (vids, _) ->
-            episodeVidsCache[cleanId] = vids
-            return vids
+        fetchEpisodeVidsFromApp(cleanId)?.let { (vids, expect) ->
+            // 同样走「谁长用谁」：这一次可能只拿到预览集，不能把已经拿到的全量列表覆盖掉。
+            // 集数对不上时标为「未验证」，下次取用会重新校验并重拉。
+            val complete = expect > 0 && vids.size >= expect
+            return storeEpisodeVids(cleanId, vids, expect, verified = complete)
         }
 
         throw lastErr ?: IOException("Failed to fetch episode vids for $cleanId")

@@ -369,6 +369,14 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                             org.moontechlab.selenetv.hongguo.HongguoDiagnostic.setContext(launch.title, index + 1, vid)
                             break
                         }
+                        // v2.7.100: 序号越界说明手里的分集列表是残的（上游搜索接口只给前 3 集预览 vid）。
+                        //   清掉缓存再拉一次全量，否则第 4 集起永远取不到 vid —— 表现为「只能播前三集」。
+                        if (vAttempt == 0) {
+                            android.util.Log.w("PlayerScreen", "短剧第 ${index + 1} 集 vid 缺失（列表仅 N 条），清分集缓存重拉")
+                            withContext(Dispatchers.IO) {
+                                org.moontechlab.selenetv.hongguo.HongguoStreamResolver.invalidateEpisodeVids(seriesId)
+                            }
+                        }
                     } catch (e: Exception) {
                         android.util.Log.w("PlayerScreen", "获取短剧 vid 异常 (attempt $vAttempt): ${e.message}")
                         if (vAttempt == 0) kotlinx.coroutines.delay(300)

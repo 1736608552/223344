@@ -67,13 +67,57 @@ object HongguoStreamResolver {
     private val seriesIntroCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     /**
-     * 外部预热/缓存短剧 VID 列表 (如搜索结果携带时提前写入，实现秒开)
+     * 上游声明的总集数（`episode_cnt`）。
+     *
+     * v2.7.100：红果**搜索建议接口**（`incent_resource/suggestion`）返回的 `vid_list`
+     * 只有**前 3 集预览**，同一响应里的 `episode_cnt` 才是真实总集数（实测 95 / 135）。
+     * 把这 3 条当全剧缓存下来，第 4 集起就取不到 vid —— 表现为「只能播前三集」。
      */
-    fun cacheEpisodeVids(seriesId: String, vids: List<String>) {
-        val cleanId = seriesId.trim().removePrefix("hongguo:").trim()
-        if (cleanId.isNotEmpty() && vids.isNotEmpty()) {
-            episodeVidsCache[cleanId] = vids
+    private val episodeExpectCache = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** 该剧分集缓存是否已通过完整性校验；未通过的只当候选，取用时还要复核。 */
+    private val episodeVidsVerified = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    /** 写入分集缓存并记录总集数，**谁长用谁**（短列表不许覆盖已拿到的全量列表）。 */
+    private fun storeEpisodeVids(
+        cleanId: String,
+        vids: List<String>,
+        expectedCount: Int,
+        verified: Boolean = true,
+    ): List<String> {
+        if (vids.isEmpty()) return episodeVidsCache[cleanId] ?: vids
+        if (expectedCount > 0) episodeExpectCache[cleanId] = expectedCount
+        val existing = episodeVidsCache[cleanId]
+        if (existing != null && existing.size > vids.size) {
+            if (verified) episodeVidsVerified[cleanId] = true
+            return existing
         }
+        episodeVidsCache[cleanId] = vids
+        episodeVidsVerified[cleanId] = verified
+        return vids
+    }
+
+    /**
+     * 外部预热/缓存短剧 VID 列表 (如搜索结果携带时提前写入，实现秒开)
+     *
+     * @param expectedCount 上游 `episode_cnt`。搜索结果只有前几集 vid，必须带上总集数，
+     *                      否则 `fetchEpisodeVids` 无法判断这份缓存是否残缺。
+     */
+    fun cacheEpisodeVids(seriesId: String, vids: List<String>, expectedCount: Int = 0) {
+        val cleanId = seriesId.trim().removePrefix("hongguo:").trim()
+        if (cleanId.isEmpty() || vids.isEmpty()) return
+        val complete = expectedCount > 0 && vids.size >= expectedCount
+        storeEpisodeVids(cleanId, vids, expectedCount, verified = complete)
+    }
+
+    /** 丢弃某剧分集缓存，强制下次重拉全量（播放侧发现序号越界时调用）。 */
+    fun invalidateEpisodeVids(seriesId: String) {
+        val cleanId = seriesId.trim().removePrefix("hongguo:").trim()
+        if (cleanId.isEmpty()) return
+        episodeVidsCache.remove(cleanId)
+        episodeExpectCache.remove(cleanId)
+        episodeVidsVerified.remove(cleanId)
+        HongguoDiagnostic.log("INFO", "stream_resolver", "VID_CACHE_CLEARED", "已清空分集缓存 (seriesId=$cleanId)")
     }
 
     /**
@@ -256,14 +300,25 @@ object HongguoStreamResolver {
             throw IllegalArgumentException("Invalid seriesId: $seriesId")
         }
 
-        episodeVidsCache[cleanId]?.let { return it }
+        val expectedCount = episodeExpectCache[cleanId] ?: 0
+        episodeVidsCache[cleanId]?.let { cached ->
+            // v2.7.100：缓存命中也过完整性校验，防止「搜索预览 3 条」被当全集
+            val verified = episodeVidsVerified[cleanId] == true
+            if (verified || (expectedCount > 0 && cached.size >= expectedCount)) return cached
+            HongguoDiagnostic.log(
+                "WARN", "stream_resolver", "VID_CACHE_SHORT",
+                "缓存分集不可信 ${cached.size}/${if (expectedCount > 0) expectedCount else -1}，丢弃后重拉全量 (seriesId=$cleanId)"
+            )
+            episodeVidsCache.remove(cleanId)
+            episodeVidsVerified.remove(cleanId)
+        }
 
         // 通道 0 (v2.7.94 新增，优先级最高): 官方 video_detail 接口。
         //   不依赖第三方网页、一次请求拿全剧、带 episode_cnt 完整性校验。
         try {
             val apiVids = fetchVidsFromVideoDetail(cleanId)
             if (apiVids.isNotEmpty()) {
-                episodeVidsCache[cleanId] = apiVids
+                storeEpisodeVids(cleanId, apiVids, expectedCount)
                 return apiVids
             }
         } catch (e: Exception) {
@@ -360,7 +415,7 @@ object HongguoStreamResolver {
 
                 val distinctVids = vids.distinct()
                 if (distinctVids.isNotEmpty()) {
-                    episodeVidsCache[cleanId] = distinctVids
+                    storeEpisodeVids(cleanId, distinctVids, expectedCount)
                     return distinctVids
                 }
             }
@@ -425,8 +480,9 @@ object HongguoStreamResolver {
                 pairs.sortBy { it.first }
                 val vids = pairs.map { it.second }.distinct()
                 if (vids.isNotEmpty()) {
-                    episodeVidsCache[cleanId] = vids
-                    return vids
+                    // v2.7.100：同样按集数校验，别让「只有前几集」的响应覆盖掉全量列表
+                    val expect = videoData.optInt("episode_cnt", 0)
+                    return storeEpisodeVids(cleanId, vids, expect, verified = expect > 0 && vids.size >= expect)
                 }
             } catch (e: Exception) {
                 lastErr = e

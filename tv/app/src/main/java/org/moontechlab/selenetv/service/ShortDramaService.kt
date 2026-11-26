@@ -576,11 +576,15 @@ object ShortDramaService {
                             val intro = vData["series_intro"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
 
                             // 预注入 VID 缓存与简介，加速用户点击后的起播体验
+                            // 注意：搜索结果里的 vid_list 只有**前 3 集预览**（实测），
+                            //   必须把 episode_cnt 一起传下去，否则这 3 条会被当成全集缓存，
+                            //   第 4 集起取不到 vid → 只能播前三集。
                             val vidsArr = vData["vid_list"]?.jsonArray
                             if (vidsArr != null && vidsArr.isNotEmpty()) {
                                 val vids = vidsArr.mapNotNull { it.jsonPrimitive.contentOrNull?.trim() }.filter { it.isNotEmpty() }
                                 if (vids.isNotEmpty()) {
-                                    org.moontechlab.selenetv.hongguo.HongguoStreamResolver.cacheEpisodeVids(seriesId, vids)
+                                    org.moontechlab.selenetv.hongguo.HongguoStreamResolver
+                                        .cacheEpisodeVids(seriesId, vids, epCount)
                                 }
                             }
                             if (intro.isNotEmpty()) {

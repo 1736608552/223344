@@ -1,5 +1,70 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.100 (2026-11-26)
+
+### TV 端短剧「只能播前三集」：分集缓存被上游搜索预览污染
+
+**1. 现象**
+
+TV 端从搜索进红果短剧，第 1~3 集正常，**第 4 集起黑屏/直接失败**，且换剧、返回重进都无法恢复，只有重启 App 才可能碰运气恢复。
+
+**2. 根因（已用上游响应实测）**
+
+`incent_resource/suggestion`（红果官网搜索建议，`searchDramas()` 用它）返回的 `vid_list`
+**只有前 3 集预览**，而同一响应里的 `episode_cnt` 是真实总集数：
+
+```
+总裁是我前女友        episode_cnt=95   vid_list.length=3
+总裁女友不知我绑定…   episode_cnt=135  vid_list.length=3
+```
+
+`searchDramas()` 拿到这 3 条后调用 `HongguoStreamResolver.cacheEpisodeVids()` 做「秒开预热」，
+而 `fetchEpisodeVids()` 开头是**无校验的缓存直返**（`episodeVidsCache[id]?.let { return it }`），
+于是这份 3 条预览被当成「全剧分集」长期驻留：
+
+- 播放第 1~3 集：`vids.getOrNull(0..2)` 命中 → 正常；
+- 播放第 4 集起：`vids.getOrNull(3)` = null → `vid` 为空 → 取流直接放弃 → 只有前三集能播。
+
+讽刺的是 `fetchEpisodeVids()` 的通道 0（`video_detail`）**本来就有 `episode_cnt` 完整性校验**
+（集数不够就回落官网 SSR），但这条校验被“缓存直返”整个绕过了 —— 校验加在了错误的位置。
+
+**3. 改法**
+
+- `HongguoStreamResolver` 新增 `episodeExpectCache`（记录上游 `episode_cnt`）；
+- `cacheEpisodeVids(seriesId, vids, expectedCount)` 增加总集数入参，内部统一走新的
+  `storeEpisodeVids()`：**谁长用谁**，短列表不会覆盖已拿到的全量列表；
+- `fetchEpisodeVids()` 的缓存命中也做完整性校验：缓存未标「已校验」且长度不足 `expectedCount` 时丢弃缓存、重拉全量，
+  并打 `VID_CACHE_SHORT` 诊断日志（`episodeVidsVerified` 只在走完整解析通道或预热时明确知道总集数且条数够的情况下置真）；
+- 通道 0 / 通道 1 / 通道 2 三处写缓存全部改走 `storeEpisodeVids()`，不再直接赋值；
+- 新增 `invalidateEpisodeVids(seriesId)`：播放侧发现「本集序号超出列表长度」时清缓存；
+- `PlayerScreen.playEpisode()` 的 vid 重试逻辑：第一次取到空 vid 时先清分集缓存再重试，
+  这样即便别处又写进了残缺列表，也能在当前集自愈而不是等重启；
+- `ShortDramaService.searchDramas()` 把 `epCount` 一并传给 `cacheEpisodeVids()`，
+  从源头让缓存知道「这部剧到底多少集」。
+
+**4. 行为对照**
+
+| 场景 | v2.7.99 | v2.7.100 |
+|---|---|---|
+| 搜索进红果短剧 | 只能播前 3 集 | 全 95/135 集可播 |
+| 缓存里是预览片段 | 直接当全集用 | 识别为残缺，自动重拉全量 |
+| 播放中列表异常 | 只能重启 | 当前集清缓存自愈 |
+
+**5. 注意（与上一版无关的部分）**
+
+这一问题与 v2.7.99 的清晰度改动**没有因果关系**：v2.7.99 在 TV 侧只动了三处胶囊挂载/焦点条件，
+不碰分集列表。该缺陷在「搜索 → 预热缓存」这条链路上一直存在，只要上游把 `vid_list` 缩到 3 条预览就会暴露。
+
+### 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `tv/.../hongguo/HongguoStreamResolver.kt` | 新增 `episodeExpectCache` / `episodeVidsVerified` / `storeEpisodeVids()` / `invalidateEpisodeVids()`；缓存命中加完整性校验；三处写缓存改走 `storeEpisodeVids()` |
+| `tv/.../service/ShortDramaService.kt` | `cacheEpisodeVids()` 调用补 `epCount`，避免把搜索预览 vid 当全集 |
+| `tv/.../screen/player/PlayerScreen.kt` | vid 为空时清分集缓存后重试 |
+| `android/.../hongguo/HongguoStreamResolver.kt` | 与 TV 端同一套修法（两端是独立拷贝，必须同步） |
+| `pubspec.yaml` | `2.7.99+20899` → `2.7.100+20900` |
+
 ## v2.7.99 (2026-11-26)
 
 ### 手机端清晰度：与 TV 端对齐，「只在短剧可选分辨率」
