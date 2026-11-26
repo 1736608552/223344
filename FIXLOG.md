@@ -1,5 +1,45 @@
 # LunaTV-Mobile 修复日记
 
+## v2.8.4 (2026-11-27)
+
+### 车机版全屏后「露底」：播放页 Dialog 窗口只有屏高减两条系统栏
+
+**1. 现象**
+
+车机包播放短剧时，竖屏视频左右的黑边正常，但**屏幕最上、最下各露出一条下层内容**
+（详情页的返回按钮、剧名、选集等），看着像播放页没铺满。
+
+**2. 根因：播放页是独立 Dialog 窗口，不是 Activity 里的普通 Composable**
+
+播放页为了焦点隔离（详情根 Box 是 `focusGroup(exit = Cancel)`，兄弟节点抢不到焦点）
+是用 `Dialog` 挂的。Compose 的 Dialog 默认 `decorFitsSystemWindows = true`，
+窗口尺寸是 `WRAP_CONTENT` —— DecorView 先按系统栏 inset 收缩，内容再按收缩后的
+测量上限铺满。于是播放页窗口只有「屏高 − 上栏 − 下栏」，居中摆放后上下各露一条缝，
+缝里直通下层窗口。竖屏短剧视频本身左右 pillarbox 是黑的，所以左右看不出来，
+现象就变成「两边黑正常，上下露底」。改 Compose 布局（`fillMaxSize` / 背景色）没用，
+破的是窗口尺寸，不是内容。
+
+**3. 改法（只对车机包生效，TV 包 0 变化）**
+
+新增 `ui/CarDialogFullscreen.kt`，在播放页 Dialog 内容里调用一次：
+
+```kotlin
+window.setBackgroundDrawable(ColorDrawable(BLACK))          // 窗口自身纯黑兜底
+window.setLayout(MATCH_PARENT, MATCH_PARENT)                // 窗口撑满整屏（关键）
+WindowCompat.setDecorFitsSystemWindows(window, false)       // DecorView 不再消费 inset
+WindowInsetsControllerCompat(window, window.decorView)
+    .hide(WindowInsetsCompat.Type.systemBars())             // 弹窗自己再收一次系统栏
+```
+
+- 通过 `DialogWindowProvider` 拿到窗口，TV 包 `CAR_TOUCH=false` 直接 `return`，
+  Dialog 窗口属性与旧版完全一致。
+- 同时把三道底铺实：`AppNavHost` 根 Box 一层黑、`DetailScreen` 播放弹窗外一层黑、
+  `MainActivity` 窗背景在车机包保留不透明黑（TV 包仍置空，过度绘制优化不变）。
+  这样即使某层尺寸算错，透出来也是黑，不会再透到桌面/详情节。
+- 与 Activity 侧一致，`layoutInDisplayCutoutMode` 用 `DEFAULT`，不主动画进 cutout，
+  避免顶到车机的半透明 HUD 条底下。
+- 遥控器通路零改动：焦点、方向键、OK、返回分发一行未碰。
+
 ## v2.8.3 (2026-11-26)
 
 ### 车机版改为真·全屏：收起系统栏，不再把界面往下推

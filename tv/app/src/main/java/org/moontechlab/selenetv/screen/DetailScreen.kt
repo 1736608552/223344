@@ -1104,7 +1104,18 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
                     dismissOnClickOutside = false,
                 ),
             ) {
-                PlayerScreen(launch = l, onExit = { playerLaunch = null })
+                // v2.8.4：Dialog 是独立窗口，车机走真全屏后它没覆盖到的条带会直接透到下层。
+                // 根因是窗口尺寸：默认 decorFitsSystemWindows=true + WRAP_CONTENT，播放页窗口
+                // 只有「屏高 − 上栏 − 下栏」，居中后上下各露一条（竖屏短剧左右本来有黑边，看不出来）。
+                // 先在窗口层铺满整屏（CarDialogFullscreen），再在里面垫一层不透明黑兜底。
+                org.moontechlab.selenetv.ui.CarDialogFullscreen()
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black)
+                ) {
+                    PlayerScreen(launch = l, onExit = { playerLaunch = null })
+                }
             }
         }
     }

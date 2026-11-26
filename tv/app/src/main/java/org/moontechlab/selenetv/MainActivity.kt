@@ -61,7 +61,16 @@ class MainActivity : ComponentActivity() {
         // Compose 内容铺满整屏并绘制不透明渐变背景 → DecorView 的窗口背景被完全遮挡，是每屏一层
         // 白白浪费的全屏过度绘制（顶部标签栏等处实测达 4×）。运行期置空窗口背景 → 全 App 各屏 -1×。
         // 启动那一帧仍由主题里的深色 windowBackground 兜底，避免白闪。
-        window.setBackgroundDrawable(null)
+        //
+        // v2.8.4（车机包例外）：车机走真全屏（decorFitsSystemWindows=false + 收起系统栏），
+        // 播放页又是独立 Dialog 窗口 —— Dialog 不覆盖的那条系统栏区域由 Activity 窗口自己绘制，
+        // 背景为 null 时那块直接透到下层桌面/壁纸，实测就是「露底」。
+        // 所以车机包保留一层不透明深色窗口背景兜底；TV 包仍旧置空，过度绘制优化不变。
+        if (BuildConfig.CAR_TOUCH) {
+            window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0xFF000000.toInt()))
+        } else {
+            window.setBackgroundDrawable(null)
+        }
 
         // 启动时自动刷新登录 cookie
         refreshLoginCookieIfNeeded()
@@ -126,9 +135,12 @@ class MainActivity : ComponentActivity() {
         if (!BuildConfig.CAR_TOUCH) return
         WindowCompat.setDecorFitsSystemWindows(window, false)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            // 不用 SHORT_EDGES：车机把「顶部状态 HUD 条」当 cutout 的不在少数，
+            // 允许绘制到 cutout 会让内容顶到那条半透明 HUD 底下（看起来像画面被穿透）。
+            // 保持默认策略，屏幕该留的边由系统自己算，我们不抢。
             window.attributes = window.attributes.apply {
                 layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
             }
         }
         hideCarSystemBars()

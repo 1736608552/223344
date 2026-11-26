@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -12,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -28,7 +30,10 @@ fun AppNavHost() {
         if (AppDataService.isLoggedInSync() || AppDataService.isLocalModeSync()) HomeRoute else LoginRoute
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    // 根容器铺一层不透明黑底：车机走真全屏（内容延伸到屏幕物理边界）后，任何页面/覆盖层
+    // 没画到的像素都会直接透到下层窗口（桌面/壁纸），表现就是「露底」。
+    // 这里做最外层兜底，各页自己的渐变/图片背景照旧覆盖在上面，观感不变。
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
     NavHost(
         navController = navController,
         startDestination = startDestination,
