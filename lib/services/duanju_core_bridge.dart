@@ -29,6 +29,11 @@ class DuanjuPlaybackPlan {
   final String session;
   final String danmakuId;
 
+  /// 直链到期时间（秒级时间戳）。0 表示服务端未给或该通道不提供，此时不做 TTL 判断。
+  /// 红果 video_model 通道实测 expire_time = 请求时刻 + 21600s（6 小时），
+  /// 过期后 CDN 返回 403/410，所以缓存必须带失效判断。
+  final int expireAt;
+
   const DuanjuPlaybackPlan({
     required this.url,
     this.decryptionKey = '',
@@ -41,7 +46,15 @@ class DuanjuPlaybackPlan {
     this.qualities = const [1080, 720, 480],
     this.session = '',
     this.danmakuId = '',
+    this.expireAt = 0,
   });
+
+  /// 是否已过期（留 5 分钟安全边界，避免"刚起播就失效"）
+  bool get isExpired {
+    if (expireAt <= 0) return false;
+    final nowSec = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    return nowSec >= expireAt - 300;
+  }
 
   /// 获取指定清晰度标签或默认的解密 Key
   String getKeyForResolution(String? resLabel) {
@@ -1295,7 +1308,24 @@ class DuanjuCoreBridge {
     final cacheKey = quality == 0 ? '$cleanId-$episode' : '$cleanId-$episode-$quality';
 
     if (_planCache.containsKey(cacheKey)) {
-      return _planCache[cacheKey];
+      final cached = _planCache[cacheKey];
+      // v2.7.93: 直链只有约 6 小时有效期，命中缓存前先看是否已过期；
+      // 过期就整条链路失效（含 URL / 多清晰度 / 分辨率映射），重新向服务端取新链。
+      if (cached != null && !cached.isExpired) {
+        return cached;
+      }
+      _planCache.remove(cacheKey);
+      // 同一条 plan 会以三个别名同时入缓存（见通道1），必须一起清，否则带 quality 的 key 失效后
+      // 仍会从 '$cleanId-$episode' 命中同一条死链。
+      _planCache.remove('$cleanId-$episode');
+      _planCache.remove('hongguo:$cleanId-$episode');
+      _playbackUrlCache.remove(cacheKey);
+      _playbackUrlCache.remove('$cleanId-$episode');
+      _playbackMultiResCache.remove(cacheKey);
+      _playbackMultiResCache.remove('$cleanId-$episode');
+      _playbackResolutionCache.remove(cacheKey);
+      _playbackResolutionCache.remove('$cleanId-$episode');
+      DiaryService.add('[短剧] 缓存已过期(expireAt=${cached?.expireAt})，重新取流: $cacheKey');
     }
 
     if (_pendingPlanRequests.containsKey(cacheKey)) {
@@ -1363,6 +1393,8 @@ class DuanjuCoreBridge {
             }
           }
           if (streamUrl.isNotEmpty && streamUrl.startsWith('http')) {
+            // v2.7.93: 原生层透传的直链到期时间（秒级），用于缓存失效判断
+            final expireAt = int.tryParse(res['expireAt']?.toString() ?? '') ?? 0;
             final plan = DuanjuPlaybackPlan(
               url: streamUrl,
               decryptionKey: decKey,
@@ -1376,6 +1408,7 @@ class DuanjuCoreBridge {
               quality: quality,
               actualQuality: actQ,
               qualities: qualities,
+              expireAt: expireAt,
             );
             _planCache[cacheKey] = plan;
             _planCache['$cleanId-$episode'] = plan;

@@ -1047,19 +1047,29 @@ object HongguoStreamResolver {
                 "video_model 响应: code=$statusCode len=${body.length} preview=${body.take(80)}"
             )
             if (resp.isSuccessful && body.isNotBlank()) {
-                    val root = JSONObject(body)
-                    val code = root.optInt("Code", root.optInt("code", 0))
-                    if (code == 0) {
-                        val d = root.optJSONObject("data")
-                        val vm = d?.opt("video_model") ?: root.opt("video_model")
-                        val model = when (vm) {
-                            is JSONObject -> vm
-                            is String -> try { JSONObject(vm) } catch (_: Exception) { null }
-                            else -> null
+                val root = JSONObject(body)
+                val code = root.optInt("Code", root.optInt("code", 0))
+                if (code == 0) {
+                    val d = root.optJSONObject("data")
+                    val vm = d?.opt("video_model") ?: root.opt("video_model")
+                    val model = when (vm) {
+                        is JSONObject -> vm
+                        is String -> try { JSONObject(vm) } catch (_: Exception) { null }
+                        else -> null
+                    }
+                    if (model != null) {
+                        // v2.7.93: 直链有效期只有约 6 小时（data.expire_time 实测 = 请求时刻 + 21600s），
+                        // 把到期时间塞进 model 透传给 Dart 层，用于缓存失效判断。
+                        val expireAt = d?.optLong("expire_time", 0L) ?: 0L
+                        if (expireAt > 0) {
+                            try {
+                                model.put("__expire_at", expireAt)
+                            } catch (_: Exception) {}
                         }
-                        if (model != null) return model
+                        return model
                     }
                 }
+            }
         } catch (e: Exception) {
             android.util.Log.w("HongguoStreamResolver", "video_model 单集接口异常: ${e.message}")
         }
@@ -1323,7 +1333,9 @@ object HongguoStreamResolver {
                 "qualities" to qualityList,
                 "multiMap" to multiMap,
                 "needsSoftwareDecode" to needsSoft,
-                "softDecMap" to softDecMap
+                "softDecMap" to softDecMap,
+                // v2.7.93: 直链到期时间（秒级），0 = 未知（则不做 TTL 判断）
+                "expireAt" to model.optLong("__expire_at", 0L)
             )
         }
         return null

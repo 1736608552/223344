@@ -1,24 +1,65 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.93 (2026-11-26)
+
+### 「过两天就播不了」：直链其实只有 6 小时，而缓存没有保质期
+
+v2.7.92 之后能取到流了，但 `_planCache` 是纯内存 Map、**没有任何 TTL**：命中就直接返回。实测服务端下发的
+`data.expire_time` 与请求时刻差正好 21600 秒：
+
+```
+请求时刻        2026-11-26 16:18:31
+expire_time     1795702711  →  2026-11-26 22:18:31   (+6h)
+url_expire      1795702814  →  2026-11-26 22:20:14   (+103s，约等于视频时长)
+```
+
+所以只要 App 进程活得够久（后台保活、车机/电视长期不关、第二天从「继续观看」直接回到同一集），
+就会拿到一条早已过期的死链，CDN 回 403/410，表现为黑屏或「源错误」。
+
+### 改了什么
+
+1. `HongguoStreamResolver.executeSingleVideoModel()`：把外层 `data.expire_time` 写进 model
+   （`__expire_at`），再由 `extractPlaybackOptions()` 以 `expireAt` 透传给 Dart。
+2. `DuanjuPlaybackPlan` 新增 `expireAt`（秒级）与 `isExpired`（留 5 分钟安全边界）。
+3. `getPlaybackPlan()` 命中缓存前先判 `isExpired`；过期则连同 `_playbackUrlCache` /
+   `_playbackMultiResCache` / `_playbackResolutionCache` 一起清掉，重新向服务端取新链。
+4. 其它通道（`app` / `legacy` / `single_registered`）的 `expireAt` 默认为 0，即不做 TTL 判断，行为不变。
+
+直链本身不落盘、不入库，只当「同一集短时间重复播放」的加速器；**每次真正要播都重新签一次
+`video_model`**，所以接口本身能用多久，播放就能用多久 —— 有效期不再是风险点。
+
+### 同批更正 v2.7.92 日志里三处错误判断
+
+- `multi_video_model/player/v1` **不是「官方不存在」**，它是 dex 里的 `:dr_scene` 路径模板；真实情况是
+  这条接口稳定回空包，`video_model/v1/` 才有数据。
+- 流**不是明文 MP4**：`stsd` 是 `encv`/`enca` + `sinf/tenc/senc`，`mdat` 按 `cenc-aes-ctr` 加密，
+  头 1KB 的 `ftyp/moov` 明文只是因为索引在文件头。
+- 有效期**不是 2 天，是 6 小时**（见上面的实测）。
+
 ## v2.7.92 (2026-11-26)
 
-### 短剧取流一直 200 空包：接口路径本身就是错的
+### 短剧取流一直 200 空包：换了接口路径 + 换了签名信封
 
-从官方红果 7.4.5.32（156 MB APK，`com.phoenix.read`）的 dex 里取到明文字符串后，发现播放接口是：
+从官方红果 7.4.5.32（156 MB APK，`com.phoenix.read`）的 dex 里取到明文字符串后，播放接口有两条：
 
 ```
 POST /novel/player/video_model/v1/
+POST /novel/player/multi_video_model/:dr_scene/v1/     ← :dr_scene 展开成 player 就是我们原来打的路径
 ```
 
-而上游参考实现（以及我们照抄的四个通道）打的是 `/novel/player/multi_video_model/player/v1`
-——这条路径在官方包里**根本不存在**，网关对它一律返回 `200` + `content-length: 0`，不报错、不解释。
-这就是连续几个版本「签名全对、信封全对、注册也成功，但五个通道全是 len=0」的真正原因。
+> 更正（v2.7.93 复核）：`multi_video_model/player/v1` **不是"官方不存在"**，它在 dex 里是
+> `:dr_scene` 路径模板，运行时才拼出 `player`。真实情况是这条接口对我们的设备/渠道**稳定返回空包**
+> （`200` + `content-length: 0`，不报错不解释），而 `video_model/v1/` 有数据。
 
-用同一套 v5 信封打正确路径，立刻拿到 `code: 0` 和完整的 `video_model`：
+用 v5 信封打 `video_model/v1/`，拿到 `code: 0` 和完整的 `video_model`：
 
-- `video_list[0].main_url` → 火山 CDN 的明 MP4（`ftyp isom`，206 分段可取）
-- 720×1280 / H.264+bytevc1 / 25fps / 5.1 MB / 有效期 2 天
-- 全程**不需要登录**，`X-Argus` / `X-Ladon` / SDI token 都不需要
+- `video_list[0].main_url` → 火山 CDN 地址，`Range` 返回 206 分段可取
+- 720×1280 / bytevc1(H.265) / 25fps / 5.1 MB
+- **流是 CENC 加密的**：`stsd` 里是 `encv`/`enca`，带 `sinf/tenc/senc/saiz/saio`，
+  头 1KB 的 `ftyp/moov` 是明文，`mdat` 样本数据按 `cenc-aes-ctr` 加密 → 必须经
+  `MediaCrypto` + 本地 HTTP 代理解密，直接喂播放器会花屏/黑屏
+- 直链有效期实测 `expire_time - 请求时刻 = 21600s`，即 **6 小时**（不是 2 天）
+- 全程**不需要登录**，`X-Argus` / `X-Ladon` / SDI token 也都不需要（dex 里 `X-Argus`/`X-Ladon` 命中数为 0）
 
 ### 改了什么
 
