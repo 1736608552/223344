@@ -7,6 +7,10 @@ import kotlin.random.Random
 
 internal object VendorConstants {
     const val MOBILE_V5_UA = "com.phoenix.read/73932 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)"
+    // video_tab 恢复通道专用 UA（对齐 upstream miniReelMobileV5RecoveryUA）。上游对这条 GET
+    // 用的是 Android 16 / 25053RT47C / Cronet 画像，与 POST 的 PGT-AN10 不一致；
+    // 沿用 POST 的 UA 打这条接口同样只回 200 空包。
+    const val MOBILE_V5_RECOVERY_UA = "com.phoenix.read/73932 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
     const val VIDEO_UA = "com.phoenix.read/73532 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
     const val APP_UA = "com.phoenix.read/73532 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001)"
 

@@ -1,5 +1,84 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.89 (2026-11-26)
+
+### 短剧取流全通道 len=0：v5 签名两个字段没跟上上游
+
+#### 现象
+短剧第 1 集起播失败，原生日志里五个通道全是 `HTTP 200` + `len=0`：
+
+```
+MOBILE_V5_RESP  code=200 len=0          (主备双端点各一次)
+MOBILE_V5_TAB_RECOVER  code=200 len=0
+SINGLE_REG_RESP  code=200 len=0
+MULTI_RESP  code=200 len=0
+SINGLE_MODEL_RESP / VIDEO_TAB_RESP  code=200 len=0
+```
+
+设备注册本身是成功的（`DEVICE_REGISTER_OK did=… iid=… 384 字节`），换 `did` 重试仍然空包，
+所有请求耗时都在 100~250 毫秒，没有超时、没有 403、没有 404。也就是说服务端收到了、
+认了这个设备，但**拒绝下发模型**。这不是网络问题，也不是版本号过期。
+
+#### 根因：签名覆盖的字段集合与服务端不一致 + proof marker 用了旧值
+上游 `aston314/hongguo-tv` 在 2026-11-23 的 commit `bc2e41cd`
+「fix(playback): restore v5 proof marker and manifest version」里修的就是这个问题，
+它的改动说明写得很直白：
+
+```go
+-	p.sint(21, 377)          // 线值 754
++	// v04.10.03 expects wire value 738; the former 754 returns HTTP 200 / an empty body.
++	p.sint(21, 369)          // 线值 738
+```
+
+以及同一 commit 里给 `miniReelMobileV5Query` / `playbackV5Tune` / `signPlaybackV5` /
+`miniReelMobileV5VideoTabKeys` 四处都补上了 `manifest_version_code`。
+
+我方在 v2.7.86 只把 `manifest_version_code` 加进了**实际请求参数**（`v5Params`），
+没有同步加进**签名用的有序 key 序列**；`proto` 第 21 字段也一直停在 754。两者叠加：
+
+- 签名里少一个字段：服务端按自己的规则重拼 query 验签，必然不匹配；
+- proof marker 用 754：v04.10.03 这个 SDK 版本明确只认 738，旧值直接触发静默空包。
+
+服务端对这两种情况的处理都是「HTTP 200 + 空 body」，不会给错误码，所以日志里看起来像
+「请求成功了但没内容」。
+
+#### 修复（手机 + TV 双端）
+**`Signer.kt`（两端同改）**
+- proto 第 21 字段 `f(21, 377L, "sint")` → `f(21, 369L, "sint")`，线值 754 → 738；
+- 签名有序 key 序列补 `manifest_version_code`，位置按上游放在 `version_name` 之后；
+- 抽出 `signPlaybackV5Keys(base, values, body, orderedKeys)`，因为 video_tab 恢复通道
+  要签的是 23 个字段，与 POST 的 14 个字段不是同一套顺序。
+
+**`HongguoStreamResolver.kt`（手机端 video_tab 恢复通道）**
+- 参数补齐到上游 `miniReelMobileV5VideoTabParams` 的 22 个字段：原来只带
+  `video_id / item_id / need_all_video_definition`，而签名 key 序列里**根本没有 `video_id`**，
+  等于请求里不携带剧集 id，服务端只可能回空包；
+- 签名改用 23 字段顺序的 `signPlaybackV5VideoTab`；
+- UA 换成 `MOBILE_V5_RECOVERY_UA`（Android 16 / 25053RT47C / Cronet 画像）。
+  上游对这条 GET 用的是与 POST 不同的 UA，沿用 POST 的 PGT-AN10 同样回空包。
+
+**`VendorConstants.kt`（手机端）**
+- 新增 `MOBILE_V5_RECOVERY_UA` 常量。
+
+#### 为什么这次不是「再等等上游」
+内核版本号三方完全一致，没有可升级目标：内置 `74332 / 7.4.3.32`、云端热更清单
+`configVersion 20873 / versionCode 74332`、上游最新 Release v0.2.182 的
+`minireel_mobile_v5.go:46` 也是 74332。上游唯一的差异就是 `bc2e41cd` 这两个字段，
+对齐它即可，不需要等新版本。
+
+#### 装上后的判定方法
+起播时看原生日志的 `MOBILE_V5_RESP`：
+
+- 修复生效：`len` 是几千到几十万字节，紧接着出现档位列表（360P/480P/540P/720P/1080P）；
+- 未生效：仍是 `len=0`，且 `MOBILE_V5_TAB_RECOVER` 也 len=0。
+
+### 版本回顾（v2.7.85 ~ v2.7.88，此前未写进本日志）
+- v2.7.85 详情页移除爬虫图标与选集旁日记按钮，保留播放控件内部入口。
+- v2.7.86 对齐上游 v0.2.182：mobile_v5 主备双端点 + `manifest_version_code`（只加了请求参数）。
+- v2.7.87 移植 V5 `recoverVideoTab` 恢复通道与 `device_level=1`；android job 编译失败，
+  未产出手机包（Release 里只有 TV/PC 共 9 个资产）。
+- v2.7.88 修复 v2.7.87 的 `extractVideoModelFromResponse` 未定义，重新出包。
+
 ## v2.7.84 (2026-11-23)
 
 ### TV 端：纵向翻行时白色焦点框不跟随滚动

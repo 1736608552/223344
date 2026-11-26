@@ -703,7 +703,10 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
             f(15, count, "raw_bytes"),
             f(17, ts.toLong() and 0xffffffffL, "sint"),
             f(20, "none"),
-            f(21, 377L, "sint"),
+            // proof marker：v04.10.03 期望线值 738（sint 369）。旧值 754（sint 377）会让
+            // 服务端直接回 HTTP 200 + 空 body，上层看到的就是 len=0。
+            // 对齐 upstream aston314/hongguo-tv bc2e41cd「restore v5 proof marker」。
+            f(21, 369L, "sint"),
             f(23, env, "raw_bytes"),
             f(24, """{"cmr":16777216,"cmr2":16777216,"un_h":11,"vpn":0,"kd":0,"dyn":"","do":1,"tk":true}"""),
         )
@@ -896,8 +899,8 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         val stamp = clock()
         val ts = (stamp / 1000).toInt()
         val orderedKeys = listOf(
-            "aid", "app_name", "version_code", "version_name", "channel",
-            "device_platform", "device_type", "os_version", "update_version_code",
+            "aid", "app_name", "version_code", "version_name", "manifest_version_code",
+            "channel", "device_platform", "device_type", "os_version", "update_version_code",
             "iid", "cdid", "device_id", "_rticket"
         )
         val bodyMd5 = digest("MD5", body)

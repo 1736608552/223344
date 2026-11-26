@@ -703,7 +703,10 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
             f(15, count, "raw_bytes"),
             f(17, ts.toLong() and 0xffffffffL, "sint"),
             f(20, "none"),
-            f(21, 377L, "sint"),
+            // proof marker：v04.10.03 期望线值 738（sint 369）。旧值 754（sint 377）会让
+            // 服务端直接回 HTTP 200 + 空 body，上层看到的就是 len=0。
+            // 对齐 upstream aston314/hongguo-tv bc2e41cd「restore v5 proof marker」。
+            f(21, 369L, "sint"),
             f(23, env, "raw_bytes"),
             f(24, """{"cmr":16777216,"cmr2":16777216,"un_h":11,"vpn":0,"kd":0,"dyn":"","do":1,"tk":true}"""),
         )
@@ -889,17 +892,43 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
     }
 
     /**
-     * 100% 对齐 aston314/hongguo-tv v0.2.173 (playback_v5_sign.go -> signPlaybackV5):
+     * 100% 对齐 aston314/hongguo-tv v0.2.182 (playback_v5_sign.go -> signPlaybackV5):
      * 针对 /novel/player/multi_video_model/player/v1 移动端 v5 Gzip 请求体生成 F13 branch 12 + X-Medusa + X-Helios 签名。
+     *
+     * 签名 query 的字段顺序必须与服务端重算签名时的顺序一致。旧实现漏了
+     * `manifest_version_code`（该字段自 v2.7.86 起已进实际请求参数，却没进签名），
+     * 服务端按自己的字段集合验签必然不符，于是回 HTTP 200 空 body。
      */
-    fun signPlaybackV5(base: String, values: Map<String, String>, body: ByteArray): Request {
+    private val playbackV5QueryKeys = listOf(
+        "aid", "app_name", "version_code", "version_name", "manifest_version_code",
+        "channel", "device_platform", "device_type", "os_version", "update_version_code",
+        "iid", "cdid", "device_id", "_rticket"
+    )
+
+    /** video_tab 恢复通道的签名顺序，对齐 upstream miniReelMobileV5VideoTabKeys（23 个字段）。 */
+    private val playbackV5VideoTabKeys = listOf(
+        "aid", "app_name", "version_code", "version_name", "manifest_version_code",
+        "channel", "device_platform", "device_type", "os_version", "update_version_code",
+        "iid", "cdid", "device_id", "video_id", "video_id_type", "device_level",
+        "need_all_video_definition", "need_mp4_align", "use_os_player", "video_platform",
+        "source", "from_video_id", "_rticket"
+    )
+
+    fun signPlaybackV5(base: String, values: Map<String, String>, body: ByteArray): Request =
+        signPlaybackV5Keys(base, values, body, playbackV5QueryKeys)
+
+    /** video_tab 是无 body 的 GET：签名不覆盖 body 摘要，X-SS-STUB 由调用方丢弃。 */
+    fun signPlaybackV5VideoTab(base: String, values: Map<String, String>): Request =
+        signPlaybackV5Keys(base, values, ByteArray(0), playbackV5VideoTabKeys)
+
+    fun signPlaybackV5Keys(
+        base: String,
+        values: Map<String, String>,
+        body: ByteArray,
+        orderedKeys: List<String>,
+    ): Request {
         val stamp = clock()
         val ts = (stamp / 1000).toInt()
-        val orderedKeys = listOf(
-            "aid", "app_name", "version_code", "version_name", "channel",
-            "device_platform", "device_type", "os_version", "update_version_code",
-            "iid", "cdid", "device_id", "_rticket"
-        )
         val bodyMd5 = digest("MD5", body)
         var query = ""
         var querySm3 = ByteArray(32)

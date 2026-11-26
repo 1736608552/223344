@@ -610,6 +610,9 @@ object HongguoStreamResolver {
         val cdid = profile.values["cdid"] ?: VendorConstants.cdid
         if (deviceId.isBlank() || installId.isBlank() || deviceId == "0" || installId == "0") return null
 
+        // 对齐 upstream miniReelMobileV5VideoTabParams：13 个基础字段 + 9 个业务字段。
+        // 旧实现只带 video_id/item_id/need_all_video_definition，而签名用的 key 序列里
+        // 根本没有 video_id —— 等于请求里不携带剧集 id，服务端只可能回 200 空包。
         val tabParams = linkedMapOf(
             "aid" to "8662",
             "app_name" to "novelread",
@@ -625,19 +628,25 @@ object HongguoStreamResolver {
             "cdid" to cdid,
             "device_id" to deviceId,
             "video_id" to vid,
-            "item_id" to vid,
-            "need_all_video_definition" to "true",
+            "video_id_type" to "0",
+            "device_level" to "1",
+            "need_all_video_definition" to "1",
+            "need_mp4_align" to "0",
+            "use_os_player" to "0",
+            "video_platform" to "1024",
+            "source" to "0",
+            "from_video_id" to "",
         )
         return try {
             val tabUrl = "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/"
-            val signed = signer.signPlaybackV5(tabUrl, tabParams, ByteArray(0))
+            val signed = signer.signPlaybackV5VideoTab(tabUrl, tabParams)
             val reqBuilder = Request.Builder().url(signed.url).get()
             for ((k, v) in signed.headers) {
                 if (!k.equals("X-SS-STUB", ignoreCase = true)) {
                     reqBuilder.header(k, v)
                 }
             }
-            reqBuilder.header("User-Agent", VendorConstants.mobileV5Ua)
+            reqBuilder.header("User-Agent", VendorConstants.MOBILE_V5_RECOVERY_UA)
             reqBuilder.header("Accept", "application/json; charset=utf-8")
             reqBuilder.header("Accept-Language", "zh-CN,zh;q=0.9")
 
