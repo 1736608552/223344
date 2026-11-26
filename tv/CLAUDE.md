@@ -69,6 +69,7 @@ Ktor Netty 嵌入式 HTTP 服务器，从 `28256` 起逐端口探测可用端口
 1. **不要使用** `androidx.tv.foundation.lazy.*`（`TvLazyRow`/`TvLazyColumn`/`TvLazyGrid`/`pivotOffsets`/`rememberTvLazyListState`）——这些 API 已弃用。一律使用 `androidx.compose.foundation` 的标准 `LazyRow` / `LazyColumn` / `LazyVerticalGrid`。
 2. 需要让聚焦项停留在屏幕特定位置（例如水平居中、垂直 30% 偏移），用 `CompositionLocalProvider(LocalBringIntoViewSpec provides ...)` 包裹列表，自定义 `calculateScrollDistance`。
 3. 可聚焦卡片使用 `androidx.tv.material3.Surface` 处理 focus 高亮（自动缩放/边框），**不要**用 `Box + clickable` 模拟。焦点缩放约定：`1.05x scale`、`0.6 damping` 的 spring 动画。
+   **触摸例外**：`androidx.tv.material3.Surface` 内部只有 `handleDPadEnter + focusable`，**没有 pointerInput**，手指点不动。所以本仓库一律 `import org.moontechlab.selenetv.ui.Surface`（`ui/TvTouch.kt` 里的同签名包装，只多一层 `tvTouchTap`），**不要**直接用 `androidx.tv.material3.Surface`。新增纯触摸组件（不参与焦点）用 `Modifier.tvTouchTap`，且必须用 `TouchMode` 门控，绝不挂 `focusable`。
 4. 设计稿基准 1080p，最小字号 11sp，主题色 `#4CAF50`，背景渐变 `#0a0a0a → #1a1a1a → #0f0f0f → #050505`，玻璃拟态层透明度 0.08。
 
 ### 文本测量
@@ -113,4 +114,4 @@ Casual home viewers using a TV remote (D-pad navigation only). They want a relax
 - **UI Framework:** Jetpack Compose for TV (androidx.tv.material3)
 - **DO NOT** use deprecated `androidx.tv.foundation.lazy.*` components (TvLazyRow, TvLazyColumn). Use standard `LazyRow`, `LazyColumn` from `androidx.compose.foundation`.
 - **Design base:** 1080p (1920×1080), density-independent pixels scale to 4K automatically.
-- **Input:** D-pad remote only — no touch, no mouse. All interactions must work with directional navigation.
+- **Input:** 遥控器（D-pad）为主，车机触摸屏为**并行**通路（v2.8.0 起）。两条通路互不可见：`pointerInput` 收不到 KeyEvent，按键不进 `detectTapGestures`；触摸也不 `requestFocus`。任何新增交互都必须先保证方向键可用，再叠加触摸。
