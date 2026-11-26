@@ -20,6 +20,8 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Devices
@@ -97,6 +99,12 @@ fun TabSwitcher(
     
     // 记录 TabSwitcher 上一次是否持有焦点，用于检测「从外部重新进入」
     var wasFocused by remember { mutableStateOf(false) }
+
+    // v2.8.0（仅车机包）：触摸兜底。标签条整体挂一层带坐标的点击，按 x 轴命中到具体标签。
+    // 子项自己的 Surface 触摸若正常，会先消费按下事件，这层就不会触发（不会重复切换）；
+    // 若子项被上层容器吃掉（历史 bug：满屏内容层命中原先抢在前面），这层仍能切 tab。
+    val rowCoords = remember { arrayOfNulls<LayoutCoordinates>(1) }
+    val tabCoords = remember { mutableMapOf<Int, LayoutCoordinates>() }
     
     // 自动切换逻辑：等待动画完成后再计时 500ms
     LaunchedEffect(focusedTabId) {
@@ -138,6 +146,16 @@ fun TabSwitcher(
                     shape = RoundedCornerShape(22.dp)
                 )
                 .padding(2.4.dp)
+                .onGloballyPositioned { rowCoords[0] = it }
+                .tvTouchTapAt { pos ->
+                    val row = rowCoords[0]
+                    if (row != null) {
+                        val hit = tabCoords.entries.firstOrNull { (_, child) ->
+                            row.localBoundingBoxOf(child, clipBounds = false).contains(pos)
+                        }?.key
+                        if (hit != null) tabs.getOrNull(hit)?.let { onTabSelected(it.id) }
+                    }
+                }
                 .focusRequester(focusRequester)
                 .onFocusChanged { focusState ->
                     // 通知父组件焦点状态变化
@@ -172,6 +190,7 @@ fun TabSwitcher(
                         focusedTabId = if (isFocused) tab.id else null
                     },
                     onTabClick = { onTabSelected(tab.id) },
+                    onPositioned = { tabCoords[index] = it },
                     onNavigateDown = {
                         onNavigateDown(selectedTabId)
                     },
@@ -203,6 +222,7 @@ private fun TabButton(
     isSwitching: Boolean,
     onFocusChanged: (Boolean) -> Unit,
     onTabClick: () -> Unit,
+    onPositioned: (LayoutCoordinates) -> Unit = {},
     onNavigateDown: () -> Unit,
     onBackPressed: () -> Unit
 ) {
@@ -232,6 +252,7 @@ private fun TabButton(
         onClick = onTabClick,
         modifier = Modifier
             .height(31.dp)
+            .onGloballyPositioned { onPositioned(it) }
             .focusRequester(focusRequester)
             .onFocusChanged { focusState ->
                 isFocused = focusState.isFocused

@@ -59,6 +59,7 @@ import kotlinx.coroutines.delay
 import org.moontechlab.selenetv.model.LiveChannel
 import org.moontechlab.selenetv.service.MediaHttp
 import org.moontechlab.selenetv.ui.tvHiddenControlsShield
+import org.moontechlab.selenetv.ui.tvPointerInput
 import org.moontechlab.selenetv.ui.tvTouchTap
 
 private const val LIVE_AUTO_HIDE_MS = 5_000L
@@ -217,7 +218,7 @@ fun LivePlayerScreen(launch: LiveLaunch, onExit: () -> Unit, modifier: Modifier 
             .focusProperties { exit = { FocusRequester.Cancel } }
             // 车机触摸（v2.8.0）：点画面 ≈ 遥控器 OK——面板展开先收面板、控制条隐藏先唤出、
             // 否则播放/暂停。pointerInput 收不到 KeyEvent，遥控器通路完全不受影响。
-            .pointerInput(Unit) {
+            .tvPointerInput(Unit) {
                 detectTapGestures { offset ->
                     when {
                         // 面板展开：只有点在面板以外的画面区才收面板（面板内点击不误关）。

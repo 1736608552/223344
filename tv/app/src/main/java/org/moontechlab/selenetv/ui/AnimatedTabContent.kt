@@ -98,16 +98,6 @@ fun AnimatedTabContent(
     }
     
     Box(modifier = modifier) {
-        // Header 在动画层外部，不参与切换动画
-        // 使用 offset 跟随滚动状态
-        Box(
-            modifier = Modifier
-                .zIndex(1f)
-                .offset { IntOffset(0, -scrollState.value) }
-        ) {
-            header()
-        }
-        
         // 内容区域参与动画
         Box(
             modifier = Modifier
@@ -122,6 +112,20 @@ fun AnimatedTabContent(
                 }
         ) {
             content(displayedTabId)
+        }
+
+        // Header 在动画层外部，不参与切换动画，使用 offset 跟随滚动状态。
+        //
+        // v2.8.0 顺序修正：原来 header 声明在前、满屏 content 声明在后，触摸命中走的是
+        // 「后声明的子节点优先」，于是手指按在 tab 上时事件被满屏内容层吃掉，tab 点不动
+        // （遥控器靠焦点导航，不受命中顺序影响，所以只有触摸坏）。把 header 移到 content
+        // 之后声明 + 保留 zIndex(1f)，绘制顺序与之前完全一致，命中顺序变成 header 优先。
+        Box(
+            modifier = Modifier
+                .zIndex(1f)
+                .offset { IntOffset(0, -scrollState.value) }
+        ) {
+            header()
         }
     }
 }

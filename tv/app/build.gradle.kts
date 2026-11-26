@@ -44,7 +44,12 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
-    flavorDimensions += "channel"
+    // v2.8.0: 两条维度 —— channel(渠道) × device(设备形态)。
+    //   device=tv  : 纯遥控器电视包，BuildConfig.CAR_TOUCH=false，触摸相关代码在编译期就被关掉，
+    //                包内不出现任何触摸专用元素（与加触摸之前的版本逐像素一致）。
+    //   device=car : 车机触摸包，独立 applicationId（org.moontechlab.selenetv.car，可与 TV 包共存），
+    //                单独出一个 APK，BuildConfig.CAR_TOUCH=true 才装配触摸按钮/进度条拖动。
+    flavorDimensions += listOf("channel", "device")
     productFlavors {
         create("standard") {
             dimension = "channel"
@@ -53,6 +58,16 @@ android {
             dimension = "channel"
             applicationIdSuffix = ".hisense"
             versionNameSuffix = "-hisense"
+        }
+        create("tv") {
+            dimension = "device"
+            buildConfigField("boolean", "CAR_TOUCH", "false")
+        }
+        create("car") {
+            dimension = "device"
+            applicationIdSuffix = ".car"
+            versionNameSuffix = "-car"
+            buildConfigField("boolean", "CAR_TOUCH", "true")
         }
     }
 

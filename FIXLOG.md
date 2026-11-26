@@ -1,5 +1,58 @@
 # LunaTV-Mobile 修复日记
 
+## v2.8.1 (2026-11-26)
+
+### 车机版拆成独立编译包：TV 包里不再有任何触摸元素
+
+**1. 为什么拆**
+
+v2.8.0 把触摸支持直接做进了 `app` 的同一个包，结果是 TV 包里也带着触摸专用按钮、
+触摸手势、触摸命中兜底——电视用户拿到的包和加触摸之前不是同一份东西。
+要求是：**TV 包保持纯遥控器形态，车机要单独一个包**。
+
+**2. 改法：`channel × device` 两条 flavor 维度**
+
+```kotlin
+flavorDimensions += listOf("channel", "device")
+create("tv")  { dimension = "device"; buildConfigField("boolean", "CAR_TOUCH", "false") }
+create("car") { dimension = "device"; applicationIdSuffix = ".car"; versionNameSuffix = "-car"
+                buildConfigField("boolean", "CAR_TOUCH", "true") }
+```
+
+- 车机包 applicationId = `org.moontechlab.selenetv.car`，**与 TV 包可同时安装**，互不覆盖；
+- 所有触摸代码统一受 `BuildConfig.CAR_TOUCH` 编译期开关控制：
+  - `Modifier.tvTouchTap` / `tvTouchTapAt` / `tvPointerInput` / `tvHiddenControlsShield`
+    在 TV 包里**直接返回原 Modifier**，连 pointerInput 节点都不创建；
+  - `TouchMode.active` 在 TV 包里恒为 false → 播放页触摸按钮、登录页触摸按钮、详情页触摸按钮
+    根本不进组合树，焦点链与绘制结果与 v2.8.0 之前的 TV 包一致；
+- 产物也彻底分开：`LunaTV-TV-*`（纯遥控）与 `LunaTV-Car-*`（触摸），CI 里车机包缺失直接 fail。
+
+### 头部 tab（首页 / 电影 / 剧集 …）触摸点不动
+
+**1. 现象**
+
+车机上用手指点顶部标签条完全没反应，遥控器左右+下却能正常切；其余卡片、按钮触摸都正常。
+
+**2. 根因**
+
+`AnimatedTabContent` 里两个子节点的**声明顺序**是：
+
+```kotlin
+Box { Box(zIndex 1f) { header() } ; Box(fillMaxSize) { content() } }
+```
+
+tab 栏在前、满屏内容层在后。触摸命中是「后声明的子节点优先」，手指按在 tab 上时
+事件先被这块满屏内容层接走，标签条永远收不到 —— 只有触摸坏、遥控焦点导航不受影响，
+正是这个现象。
+
+**3. 改法**
+
+- 把 header 移到 content **之后**声明（保留 `zIndex(1f)`，绘制顺序不变）；
+- 车机包再加一层兜底：标签条整行挂 `tvTouchTapAt`，用子项 `LayoutCoordinates`
+  做 x 轴命中，即使子项 Surface 被上层吃掉也能切；子项自己命中时会先消费按下事件，
+  这层不会重复触发。
+- 遥控器路径零改动：按键不进 pointerInput，焦点导航、下键下沉、返回键语义全部照旧。
+
 ## v2.8.0 (2026-11-26)
 
 ### TV 端支持车机触摸屏：触摸 / 遥控双通路并存（遥控器一行未改）

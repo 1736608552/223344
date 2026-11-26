@@ -16,6 +16,7 @@ import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.ClickableSurfaceScale
 import androidx.tv.material3.ClickableSurfaceShape
 import androidx.tv.material3.Surface as TvMaterialSurface
+import org.moontechlab.selenetv.BuildConfig
 
 /**
  * v2.8.0：车机触摸屏支持（触摸 / 遥控 双通路并存）
@@ -42,7 +43,8 @@ fun Modifier.tvTouchTap(
 ): Modifier {
     val latestOnClick = rememberUpdatedState(onClick)
     val latestOnLongPress = rememberUpdatedState(onLongPress)
-    if (!enabled) return this
+    // 车机包才挂 pointerInput；TV 包的 Modifier 链与加触摸之前完全一致（零成本、零行为差异）。
+    if (!BuildConfig.CAR_TOUCH || !enabled) return this
     return this.pointerInput(enabled) {
         detectTapGestures(
             onTap = { latestOnClick.value() },
@@ -50,6 +52,35 @@ fun Modifier.tvTouchTap(
         )
     }
 }
+
+/**
+ * 带命中坐标的触摸点击：给「容器自己按坐标判断点到哪个子项」的场景用
+ * （TabSwitcher 的兜底就是用它在标签条上做 x 轴命中，见 TabSwitcher.kt）。
+ * 同样只在车机包启用，TV 包直接原样返回。
+ */
+@Composable
+fun Modifier.tvTouchTapAt(
+    enabled: Boolean = true,
+    onTap: (androidx.compose.ui.geometry.Offset) -> Unit,
+): Modifier {
+    val latestOnTap = rememberUpdatedState(onTap)
+    if (!BuildConfig.CAR_TOUCH || !enabled) return this
+    return this.pointerInput(enabled) {
+        detectTapGestures(onTap = { pos -> latestOnTap.value(pos) })
+    }
+}
+
+/**
+ * 车机包才挂的 pointerInput。
+ *
+ * 播放页的「点画面播放/暂停」「进度条拖动」这类底层手势是直接写的 pointerInput，
+ * 这里统一收口：TV 包直接返回原 Modifier —— 连指针节点都不创建，与加触摸之前的
+ * 版本完全一致；车机包才真正注册。
+ */
+fun Modifier.tvPointerInput(
+    key: Any? = Unit,
+    block: suspend androidx.compose.ui.input.pointer.PointerInputScope.() -> Unit,
+): Modifier = if (!BuildConfig.CAR_TOUCH) this else this.pointerInput(key, block)
 
 /**
  * 控制条淡出后仍在组合中（`graphicsLayer { alpha = 0f }` 只改透明度，照样能命中），
@@ -64,6 +95,7 @@ fun Modifier.tvTouchTap(
 fun Modifier.tvHiddenControlsShield(hidden: Boolean, onTouch: () -> Unit): Modifier {
     val latestHidden = rememberUpdatedState(hidden)
     val latestOnTouch = rememberUpdatedState(onTouch)
+    if (!BuildConfig.CAR_TOUCH) return this
     return this.pointerInput(Unit) {
         awaitPointerEventScope {
             while (true) {
@@ -125,15 +157,23 @@ fun Surface(
 object TouchMode {
     private val state = mutableStateOf(false)
 
-    val active: Boolean get() = state.value
+    /**
+     * 车机包（`device=car`）且设备确实摸得到屏幕时才为 true。
+     * TV 包里恒为 false —— 触摸专用按钮（播放页「选集/频道/退出」、登录页触摸按钮等）
+     * 在 TV 包的组合树里根本不存在，与加触摸之前逐像素一致。
+     */
+    val active: Boolean
+        get() = BuildConfig.CAR_TOUCH && state.value
 
     /** 收到第一根手指按下时置位（MainActivity.dispatchTouchEvent 里只观察、不拦截）。 */
     fun markTouched() {
+        if (!BuildConfig.CAR_TOUCH) return
         if (!state.value) state.value = true
     }
 
     /** 车机通常直接声明触摸屏：开机即进入触摸态，不必先盲点一下。 */
     fun seedFromSystem(context: Context) {
+        if (!BuildConfig.CAR_TOUCH) return
         if (state.value) return
         val pm = context.packageManager
         val hasTouch = pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN) ||

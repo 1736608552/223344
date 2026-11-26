@@ -293,9 +293,10 @@ jobs:
           GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx5120m -XX:+UseG1GC"
         run: |
           cd tv
-          ./gradlew assembleRelease --stacktrace
+          # 只构建要发布的三个变体：TV(standard/hisense) + 车机(standard/car)
+          ./gradlew assembleStandardTvRelease assembleHisenseTvRelease assembleStandardCarRelease --stacktrace
 
-      - name: Prepare TV artifacts
+      - name: Prepare TV / Car artifacts
         run: |
           VERSION=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1 | tr -d '\r\n')
           BASE_VERSION="${VERSION%+*}"
@@ -309,20 +310,43 @@ jobs:
           echo "Listing all generated APKs in outputs:"
           find tv/app/build/outputs/apk/ -name "*.apk" -exec ls -la {} +
 
-          # 1. 提取 standard 渠道的 arm64-v8a 包
-          find tv/app/build/outputs/apk/ -path "*/standard/release/*arm64-v8a*.apk" -exec cp {} "tv_dist/LunaTV-TV-${TAG}-arm64-v8a.apk" \;
-          cp "tv_dist/LunaTV-TV-${TAG}-arm64-v8a.apk" "tv_dist/LunaTV-TV-arm64-v8a.apk"
+          # 变体命名：channel(standard/hisense) × device(tv/car) → standardTv / standardCar / hisenseTv
+          # 目录名是驼峰、文件名是连字符，两种都试一遍，避免 Gradle 命名细节把发布卡死。
+          pick() {  # $1=驼峰变体名  $2=连字符变体名  $3=abi
+            local hit
+            hit=$(find tv/app/build/outputs/apk/ -type f -name "*${3}*.apk" | grep -i -- "$1" | head -n1)
+            if [[ -z "$hit" ]]; then
+              hit=$(find tv/app/build/outputs/apk/ -type f -name "app-${2}-*${3}*.apk" | head -n1)
+            fi
+            echo "$hit"
+          }
 
-          # 2. 提取 standard 渠道的 armeabi-v7a 包
-          find tv/app/build/outputs/apk/ -path "*/standard/release/*armeabi-v7a*.apk" -exec cp {} "tv_dist/LunaTV-TV-${TAG}-armeabi-v7a.apk" \;
+          # 1. TV 包（纯遥控器，不含任何触摸元素）
+          cp "$(pick standardTv standard-tv arm64-v8a)"      "tv_dist/LunaTV-TV-${TAG}-arm64-v8a.apk"
+          cp "$(pick standardTv standard-tv armeabi-v7a)"    "tv_dist/LunaTV-TV-${TAG}-armeabi-v7a.apk"
+          cp "tv_dist/LunaTV-TV-${TAG}-arm64-v8a.apk"   "tv_dist/LunaTV-TV-arm64-v8a.apk"
           cp "tv_dist/LunaTV-TV-${TAG}-armeabi-v7a.apk" "tv_dist/LunaTV-TV-armeabi-v7a.apk"
 
-          # 3. 提取 hisense 渠道的海信专用包 (armeabi-v7a 架构)
-          find tv/app/build/outputs/apk/ -path "*/hisense/release/*armeabi-v7a*.apk" -exec cp {} "tv_dist/LunaTV-TV-${TAG}-hisense.apk" \;
+          # 2. 海信渠道（TV 形态）
+          cp "$(pick hisenseTv hisense-tv armeabi-v7a)" "tv_dist/LunaTV-TV-${TAG}-hisense.apk"
           cp "tv_dist/LunaTV-TV-${TAG}-hisense.apk" "tv_dist/LunaTV-TV-hisense.apk"
 
-          echo "Final prepared TV artifacts:"
+          # 3. 车机包（触摸屏，独立 applicationId: org.moontechlab.selenetv.car，可与 TV 包共存）
+          cp "$(pick standardCar standard-car arm64-v8a)"   "tv_dist/LunaTV-Car-${TAG}-arm64-v8a.apk"
+          cp "$(pick standardCar standard-car armeabi-v7a)" "tv_dist/LunaTV-Car-${TAG}-armeabi-v7a.apk"
+          cp "tv_dist/LunaTV-Car-${TAG}-arm64-v8a.apk"   "tv_dist/LunaTV-Car-arm64-v8a.apk"
+          cp "tv_dist/LunaTV-Car-${TAG}-armeabi-v7a.apk" "tv_dist/LunaTV-Car-armeabi-v7a.apk"
+
+          echo "Final prepared artifacts:"
           ls -la tv_dist/
+
+          # 车机包缺失说明 flavor 配置或构建挂了，必须显式报错（不再静默少件）
+          for f in "LunaTV-TV-${TAG}-arm64-v8a.apk" "LunaTV-Car-${TAG}-arm64-v8a.apk" "LunaTV-Car-${TAG}-armeabi-v7a.apk"; do
+            if [[ ! -f "tv_dist/$f" ]]; then
+              echo "::error title=产物缺失::$f 未生成，请检查 device flavor(tv/car) 配置"
+              exit 1
+            fi
+          done
 
       - name: Upload TV APK artifact
         continue-on-error: true

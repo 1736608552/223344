@@ -82,6 +82,7 @@ import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import org.moontechlab.selenetv.screen.detail.sourceKey
 import org.moontechlab.selenetv.ui.tvHiddenControlsShield
+import org.moontechlab.selenetv.ui.tvPointerInput
 import org.moontechlab.selenetv.ui.tvTouchTap
 
 private const val SEEK_STEP_MS = 10_000L
@@ -1069,7 +1070,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             // 车机触摸（v2.8.0）：手指点画面 ≈ 遥控器 OK 的语义——
             // 面板展开先收面板、控制条隐藏先唤出、控制条可见则播放/暂停。
             // 这个 pointerInput 只收 MotionEvent；按键永远不进这里，遥控器通路一行未改。
-            .pointerInput(Unit) {
+            .tvPointerInput(Unit) {
                 detectTapGestures { offset ->
                     when {
                         // 面板展开：只有点在面板以外的画面区才收面板——
@@ -1691,7 +1692,7 @@ private fun PlayerScrubber(
             .height(28.dp)
             // 车机触摸（v2.8.0）：点进度条任意位置直接跳，按住左右拖动连续 seek。
             // 遥控器左右键仍走下面那段 onKeyEvent，两条通路互不可见。
-            .pointerInput(Unit) {
+            .tvPointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     // 吞掉按下：否则父级「点画面=播放/暂停」会跟着触发，seek 完又被打断播放。
