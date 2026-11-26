@@ -1078,6 +1078,18 @@ fun DetailScreen(entry: DetailEntry, onBack: () -> Unit, onGoToSearch: (String) 
             onCancel = { migrateDeleteVisible = false },
         )
 
+        // 车机触摸兜底：详情页左上角「返回」。
+        // 遥控器仍走 BACK 键（BackHandler）；此按钮不挂 focusable / focusRequester，
+        // 方向键永远不会停到它上面，焦点链与旧版逐节点一致。
+        if (org.moontechlab.selenetv.ui.TouchMode.active) {
+            org.moontechlab.selenetv.ui.TouchBackButton(
+                onClick = onBack,
+                modifier = Modifier
+                    .align(androidx.compose.ui.Alignment.TopStart)
+                    .padding(start = 40.dp, top = 30.dp),
+            )
+        }
+
         // 播放页覆盖层：用 Dialog 建立独立焦点域（与 EpisodePickerDialog / SummaryDialog 同理）。
         // 详情根 Box 是 focusGroup(exit=Cancel)，作为兄弟节点的播放页无法被跨焦点组的 requestFocus
         // 夺焦（焦点进不去 → 方向键全失效）；Dialog 是独立窗口，焦点天然隔离，进度条 requestFocus 即生效。
@@ -1165,7 +1177,7 @@ private fun HeroErrorState(message: String, onRetry: () -> Unit, modifier: Modif
                 color = Color.White.copy(alpha = 0.6f),
                 fontSize = 14.sp,
             )
-            androidx.tv.material3.Surface(
+            org.moontechlab.selenetv.ui.Surface(
                 onClick = onRetry,
                 shape = androidx.tv.material3.ClickableSurfaceDefaults.shape(shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),
                 scale = androidx.tv.material3.ClickableSurfaceDefaults.scale(focusedScale = 1.05f),

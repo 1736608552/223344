@@ -7,6 +7,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,6 +46,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -56,6 +58,8 @@ import androidx.tv.material3.Text
 import kotlinx.coroutines.delay
 import org.moontechlab.selenetv.model.LiveChannel
 import org.moontechlab.selenetv.service.MediaHttp
+import org.moontechlab.selenetv.ui.tvHiddenControlsShield
+import org.moontechlab.selenetv.ui.tvTouchTap
 
 private const val LIVE_AUTO_HIDE_MS = 5_000L
 // 二次返回退出的确认窗口：首按弹 toast，窗口内再按才退出
@@ -210,7 +214,20 @@ fun LivePlayerScreen(launch: LiveLaunch, onExit: () -> Unit, modifier: Modifier 
             .background(Color.Black)
             .focusGroup()
             // 焦点陷阱：禁止任何方向把焦点带出播放页覆盖层、穿透到下层直播 Tab
-            .focusProperties { exit = { FocusRequester.Cancel } },
+            .focusProperties { exit = { FocusRequester.Cancel } }
+            // 车机触摸（v2.8.0）：点画面 ≈ 遥控器 OK——面板展开先收面板、控制条隐藏先唤出、
+            // 否则播放/暂停。pointerInput 收不到 KeyEvent，遥控器通路完全不受影响。
+            .pointerInput(Unit) {
+                detectTapGestures { offset ->
+                    when {
+                        // 面板展开：只有点在面板以外的画面区才收面板（面板内点击不误关）。
+                        panelOpen ->
+                            if (offset.y < size.height - LivePanelHeight.toPx()) panelOpen = false
+                        !controlsVisible -> wake()
+                        else -> togglePlay()
+                    }
+                }
+            },
     ) {
         controller.VideoSurface(Modifier.fillMaxSize())
 
@@ -300,6 +317,9 @@ fun LivePlayerScreen(launch: LiveLaunch, onExit: () -> Unit, modifier: Modifier 
                 modifier = Modifier
                     .fillMaxWidth()
                     .graphicsLayer { alpha = ctrlAlpha }
+                    // 控制条淡出后仍留在组合里（alpha=0 照样吃指针），手指误触会点到看不见的控件。
+                    // 隐藏期间这一层的指针事件只当作一次「唤起控制条」；按键不进 pointerInput。
+                    .tvHiddenControlsShield(hidden = !controlsVisible) { wake() }
                     .background(
                         Brush.verticalGradient(
                             0f to Color.Transparent,
@@ -323,7 +343,11 @@ fun LivePlayerScreen(launch: LiveLaunch, onExit: () -> Unit, modifier: Modifier 
                     if (!panelOpen) {
                         Spacer(modifier = Modifier.height(6.dp))
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                // 车机触摸：这条「频道列表」提示就是面板入口，手指可直接点。
+                                .tvTouchTap { openPanel() }
+                                .padding(vertical = 6.dp),
                             horizontalArrangement = Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -356,6 +380,17 @@ fun LivePlayerScreen(launch: LiveLaunch, onExit: () -> Unit, modifier: Modifier 
                 )
             }
         }
+
+        // 车机触摸兜底：右上角「频道 / 退出」（只在触摸态渲染，且不参与焦点链）。
+        PlayerTouchBar(
+            visible = controlsVisible,
+            primaryLabel = "频道",
+            onPrimary = { openPanel() },
+            onExit = onExit,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 22.dp, end = 56.dp),
+        )
 
         // 二次返回退出提示（自绘，不用系统 Toast）
         BackExitHint(

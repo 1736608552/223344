@@ -1,0 +1,143 @@
+package org.moontechlab.selenetv.ui
+
+import android.content.Context
+import android.content.pm.PackageManager
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.tv.material3.ClickableSurfaceBorder
+import androidx.tv.material3.ClickableSurfaceColors
+import androidx.tv.material3.ClickableSurfaceDefaults
+import androidx.tv.material3.ClickableSurfaceScale
+import androidx.tv.material3.ClickableSurfaceShape
+import androidx.tv.material3.Surface as TvMaterialSurface
+
+/**
+ * v2.8.0：车机触摸屏支持（触摸 / 遥控 双通路并存）
+ *
+ * 为什么需要这一层：tv-material 1.1.0-alpha01 的 `Surface(onClick)` 内部只挂了
+ * `handleDPadEnter` + `focusable`（见库内 `SurfaceClickableUtils.tvClickable`），
+ * 整个组件没有任何 pointerInput —— 于是遥控器 OK 能点，手指点上去毫无反应。
+ *
+ * 设计红线：**只加触摸，绝不动遥控器**。
+ * - 这里只往 Modifier 链上追加一个 pointerInput；按键事件（KeyEvent）永远不会进入
+ *   pointerInput，也不经过 detectTapGestures，所以遥控器/网络遥控的按键通路
+ *   （handleDPadEnter、focusable、onKeyEvent、focusProperties、焦点顺序）一行未改。
+ * - 不调用 `clickable`（它会额外注册 focusable + 按键点击，与 handleDPadEnter 抢 OK 键）。
+ * - 触摸不 requestFocus：手指点完，焦点仍在原处，遥控器接着用时的落点与之前完全一致。
+ *
+ * 触摸侧还会顺带满足列表拖动：detectTapGestures 只在「按下→抬起且未移动」时判定点击，
+ * 手指一滑就退出识别，纵向滚动/横向翻行仍由父级 scrollable 接管。
+ */
+@Composable
+fun Modifier.tvTouchTap(
+    enabled: Boolean = true,
+    onLongPress: (() -> Unit)? = null,
+    onClick: () -> Unit,
+): Modifier {
+    val latestOnClick = rememberUpdatedState(onClick)
+    val latestOnLongPress = rememberUpdatedState(onLongPress)
+    if (!enabled) return this
+    return this.pointerInput(enabled) {
+        detectTapGestures(
+            onTap = { latestOnClick.value() },
+            onLongPress = { latestOnLongPress.value?.invoke() },
+        )
+    }
+}
+
+/**
+ * 控制条淡出后仍在组合中（`graphicsLayer { alpha = 0f }` 只改透明度，照样能命中），
+ * 手指落在这一层时会点到那些「看不见的胶囊按钮」。本修饰符在控制条隐藏期间把这一层的
+ * 指针事件全部吞掉，并只当成一次「唤起控制条」——按键事件不进 pointerInput，
+ * 遥控器在控制条隐藏时的行为（任意键只唤起控制条）完全不变。
+ *
+ * @param hidden 控制条当前是否处于隐藏态（alpha≈0）
+ * @param onTouch 手指落在隐藏控制条上时的动作（通常是 wake()）
+ */
+@Composable
+fun Modifier.tvHiddenControlsShield(hidden: Boolean, onTouch: () -> Unit): Modifier {
+    val latestHidden = rememberUpdatedState(hidden)
+    val latestOnTouch = rememberUpdatedState(onTouch)
+    return this.pointerInput(Unit) {
+        awaitPointerEventScope {
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                if (!latestHidden.value) continue
+                val first = event.changes.firstOrNull() ?: continue
+                val freshDown = first.pressed && !first.previousPressed
+                event.changes.forEach { it.consume() }
+                if (freshDown) latestOnTouch.value()
+            }
+        }
+    }
+}
+
+/**
+ * tv-material3 `Surface(onClick)` 的触摸补丁版：签名与库内完全一致，只在转调前
+ * 补一层 [tvTouchTap]。调用方把 `import androidx.tv.material3.Surface` 换成
+ * `import org.moontechlab.selenetv.ui.Surface` 即可，其余代码零改动。
+ *
+ * 触摸点击 / 长按走 pointerInput，遥控器 OK / 长按仍走库内 handleDPadEnter，
+ * 两条通路互不可见，互不干扰。
+ */
+@Composable
+fun Surface(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
+    enabled: Boolean = true,
+    shape: ClickableSurfaceShape = ClickableSurfaceDefaults.shape(),
+    colors: ClickableSurfaceColors = ClickableSurfaceDefaults.colors(),
+    scale: ClickableSurfaceScale = ClickableSurfaceDefaults.scale(),
+    border: ClickableSurfaceBorder = ClickableSurfaceDefaults.border(),
+    content: @Composable BoxScope.() -> Unit,
+) {
+    TvMaterialSurface(
+        onClick = onClick,
+        modifier = modifier.tvTouchTap(
+            enabled = enabled,
+            onLongPress = onLongClick,
+            onClick = onClick,
+        ),
+        onLongClick = onLongClick,
+        enabled = enabled,
+        shape = shape,
+        colors = colors,
+        scale = scale,
+        border = border,
+        content = content,
+    )
+}
+
+/**
+ * 触摸态标志：只有「设备声明了触摸屏」或「用户真的用手指点过」时才为 true。
+ *
+ * 只用来决定是否绘制触摸专用按钮（播放页右上角的「选集 / 频道 / 退出」）。
+ * 纯电视用户永远是 false → 这些按钮根本不进组合树，画面与旧版逐像素一致，
+ * 焦点链里也不存在它们（它们本来就没挂 focusable）。
+ */
+object TouchMode {
+    private val state = mutableStateOf(false)
+
+    val active: Boolean get() = state.value
+
+    /** 收到第一根手指按下时置位（MainActivity.dispatchTouchEvent 里只观察、不拦截）。 */
+    fun markTouched() {
+        if (!state.value) state.value = true
+    }
+
+    /** 车机通常直接声明触摸屏：开机即进入触摸态，不必先盲点一下。 */
+    fun seedFromSystem(context: Context) {
+        if (state.value) return
+        val pm = context.packageManager
+        val hasTouch = pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN) ||
+            pm.hasSystemFeature(PackageManager.FEATURE_FAKETOUCH)
+        if (hasTouch) state.value = true
+    }
+}

@@ -20,7 +20,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.tv.material3.ClickableSurfaceDefaults
-import androidx.tv.material3.Surface
+import org.moontechlab.selenetv.ui.Surface
 import androidx.tv.material3.Text
 import kotlinx.coroutines.delay
 

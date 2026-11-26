@@ -1,5 +1,63 @@
 # LunaTV-Mobile 修复日记
 
+## v2.8.0 (2026-11-26)
+
+### TV 端支持车机触摸屏：触摸 / 遥控双通路并存（遥控器一行未改）
+
+**1. 现象**
+
+TV 端装到车机（带触摸屏的安卓车机 / 平板）上，**几乎所有东西都点不动**：
+卡片点不开、标签点不换、播放页的倍速/清晰度/选集全无反应，只有遥控器能用。
+
+**2. 根因（读库源码确认）**
+
+tv-material 1.1.0-alpha01 的 `Surface(onClick)` 内部只挂了 `tvClickable`：
+
+```kotlin
+internal fun Modifier.tvClickable(...) =
+    handleDPadEnter(...)          // 只处理 OK 键按下/长按
+        .focusable(...)           // 只参与焦点
+        .semantics { onClick { ... } }   // 只给无障碍读屏
+```
+
+**整条链里没有任何 `pointerInput` / `clickable`** —— 遥控器 OK 走 `handleDPadEnter`，
+手指按下的 MotionEvent 无人接收，于是「看得见、点不动」。
+这不是本项目的问题，而是 Compose for TV 的组件本来就不为触摸设计。
+
+**3. 改法：只加触摸，绝不动遥控器**
+
+新增 `ui/TvTouch.kt`：
+
+- `Modifier.tvTouchTap()`：往 Modifier 链**追加**一个 `pointerInput` + `detectTapGestures`，
+  不调 `clickable`（那会额外注册 focusable + 按键点击，与 `handleDPadEnter` 抢 OK 键）、
+  不 `requestFocus`（手指点完焦点仍在原处，遥控器接着用落点不变）；
+- `Surface()`：与库内**同签名**的包装，转调前补一层 `tvTouchTap`。
+  26 个文件的 `import androidx.tv.material3.Surface` 换成 `import org.moontechlab.selenetv.ui.Surface`，
+  调用点零改动 —— 一张卡片、一个标签、一个弹窗按钮的改动量都是 1 行 import；
+- `Modifier.tvHiddenControlsShield()`：播放页控制条淡出后仍留在组合里（`alpha=0` 照样吃指针），
+  手指落在这一带会点到「看不见的胶囊」。控制条隐藏期间把这一层的指针事件拦成一次「唤起控制条」。
+
+**为什么遥控器零影响**：`pointerInput` 只收 MotionEvent，**根本收不到 KeyEvent**；
+按键通路（`handleDPadEnter` / `focusable` / `onKeyEvent` / `focusProperties` / 焦点顺序）一行未改。
+
+**4. 播放页的触摸语义（对齐遥控器）**
+
+| 手指动作 | 等价遥控操作 |
+| --- | --- |
+| 点画面（控制条隐藏） | 任意键 → 先唤出控制条 |
+| 点画面（控制条可见） | OK → 播放/暂停 |
+| 点画面（面板展开） | BACK → 收面板（只在面板外的画面区生效） |
+| 点/拖进度条 | ←→ → seek（按 x 比例定位，4px 阈值防抖） |
+| 点「详情 · 选集 · 换源」/「频道列表」 | ↓ → 唤出面板 |
+| 点右上角「选集 / 频道 / 退出」 | ↓ / BACK（见下） |
+
+**5. 触摸专用兜底按钮（不参与焦点链）**
+
+车机可能没有 BACK 键，故补了三个只在触摸态出现的按钮，**故意全部不挂 `focusable`**，
+方向键永远不会停到它们上面：播放页「选集/频道 + 退出」（`PlayerTouchBar`）、
+详情页左上角「返回」（`TouchBackButton`）、登录页右上角「×」（`TouchIconButton`）。
+`TouchMode` 只在「设备声明了触摸屏」或「用户真的点过屏」时为真，纯电视上这些节点不存在。
+
 ## v2.7.100 (2026-11-26)
 
 ### TV 端短剧「只能播前三集」：分集缓存被上游搜索预览污染

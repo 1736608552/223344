@@ -70,15 +70,16 @@ import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Border
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Icon
-import androidx.tv.material3.Surface
+import org.moontechlab.selenetv.ui.Surface
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import org.moontechlab.selenetv.model.LiveChannel
 import org.moontechlab.selenetv.model.LiveChannelGroup
+import org.moontechlab.selenetv.ui.tvTouchTap
 
 private val LiveAccent = Color(0xFF4CAF50)
-private val LivePanelHeight = 300.dp
+internal val LivePanelHeight = 300.dp
 private const val AllTab = "全部"
 
 internal fun livePanelChannelsForTab(groups: List<LiveChannelGroup>, tab: String): List<LiveChannel> =
@@ -199,6 +200,8 @@ private fun LivePanelTabItem(
                     }
                 }
                 .focusable()
+                // 车机触摸：点分组标签 = 切分组并下沉到频道网格（等价于遥控器按「下」）。
+                .tvTouchTap { onFocused(); onEnterContent() }
                 .clip(RoundedCornerShape(9.dp))
                 // 焦点态 = 实心白底（全场最高对比，与内容卡白描边焦点同源）；选中但未聚焦时无底，靠下划线标记
                 .background(if (focused) Color.White else Color.Transparent)

@@ -50,7 +50,7 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.tv.material3.ClickableSurfaceDefaults
-import androidx.tv.material3.Surface
+import org.moontechlab.selenetv.ui.Surface
 import androidx.tv.material3.Text
 
 data class SpeedOption(val value: Float, val label: String)

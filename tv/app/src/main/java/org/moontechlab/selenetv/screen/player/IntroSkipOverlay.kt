@@ -28,6 +28,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.moontechlab.selenetv.ui.tvTouchTap
 
 /**
  * 单色矩形跳过按钮。未聚焦黑底白字+1dp白边，聚焦反色（白底黑字）。
@@ -76,6 +77,8 @@ fun IntroSkipButton(
                 }
             }
             .focusable(interactionSource = interactionSource)
+            // 车机触摸：直接点「跳过片头/片尾」（遥控器 OK 通路不动）。
+            .tvTouchTap { onSkip() }
             .border(1.dp, borderColor, RoundedCornerShape(6.dp))
             .background(bg, RoundedCornerShape(6.dp))
             .padding(horizontal = 20.dp, vertical = 10.dp),

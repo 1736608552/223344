@@ -36,7 +36,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.ClickableSurfaceDefaults
-import androidx.tv.material3.Surface
+import org.moontechlab.selenetv.ui.Surface
 import androidx.tv.material3.Text
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -101,6 +101,17 @@ fun LoginScreen(navController: androidx.navigation.NavController) {
         contentAlignment = Alignment.Center,
     ) {
         LoginScreenContent(isGate = isGate, onLeave = { leave() })
+
+        // 车机触摸兜底：没有 BACK 键时也能退出登录页。
+        // 守卫模式（isGate，未登录不可用）不给关；按钮不参与焦点链，遥控器仍按 BACK。
+        if (!isGate && org.moontechlab.selenetv.ui.TouchMode.active) {
+            org.moontechlab.selenetv.ui.TouchIconButton(
+                onClick = { leave() },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 28.dp, end = 40.dp),
+            )
+        }
     }
 }
 

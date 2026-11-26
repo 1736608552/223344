@@ -8,6 +8,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -29,7 +32,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.tv.material3.ClickableSurfaceDefaults
-import androidx.tv.material3.Surface
+import org.moontechlab.selenetv.ui.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -39,6 +42,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -69,6 +73,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -76,6 +81,8 @@ import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import org.moontechlab.selenetv.screen.detail.sourceKey
+import org.moontechlab.selenetv.ui.tvHiddenControlsShield
+import org.moontechlab.selenetv.ui.tvTouchTap
 
 private const val SEEK_STEP_MS = 10_000L
 private const val AUTO_HIDE_MS = 5_000L
@@ -1058,7 +1065,22 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             }
             .focusGroup()
             // 焦点陷阱：禁止任何方向把焦点带出播放页覆盖层、穿透到下层详情内容
-            .focusProperties { exit = { FocusRequester.Cancel } },
+            .focusProperties { exit = { FocusRequester.Cancel } }
+            // 车机触摸（v2.8.0）：手指点画面 ≈ 遥控器 OK 的语义——
+            // 面板展开先收面板、控制条隐藏先唤出、控制条可见则播放/暂停。
+            // 这个 pointerInput 只收 MotionEvent；按键永远不进这里，遥控器通路一行未改。
+            .pointerInput(Unit) {
+                detectTapGestures { offset ->
+                    when {
+                        // 面板展开：只有点在面板以外的画面区才收面板——
+                        // 否则连点详情里的海报/简介文字都会误关面板。
+                        panelOpen ->
+                            if (offset.y < size.height - PanelHeight.toPx()) panelOpen = false
+                        !controlsVisible -> wake()
+                        else -> togglePlay()
+                    }
+                }
+            },
     ) {
 
         androidx.compose.runtime.key(controller) {
@@ -1167,6 +1189,10 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                 modifier = Modifier
                     .fillMaxWidth()
                     .graphicsLayer { alpha = ctrlAlpha }
+                    // 控制条淡出后仍留在组合里（alpha=0 依旧吃指针），手指落在这一带会点到
+                    // 「看不见的胶囊」。隐藏期间把这一层的指针事件全部拦成一次「唤起控制条」；
+                    // 按键不进 pointerInput，遥控器在隐藏态的行为（任意键只唤起）完全不变。
+                    .tvHiddenControlsShield(hidden = !controlsVisible) { wake() }
                     .background(
                         // 底边收到 0xCC，与面板顶端同值 → 衔接无硬边（面板背景 0xCC→0xF2 续接加深）
                         Brush.verticalGradient(
@@ -1425,7 +1451,9 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(22.dp * (1f - panelReveal.value))
-                            .clipToBounds(),
+                            .clipToBounds()
+                            // 车机触摸：这条「详情 · 选集 · 换源」提示本身就是面板入口，手指可直接点。
+                            .tvTouchTap { openPanel() },
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
@@ -1555,6 +1583,17 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
 
 
 
+        // 车机触摸兜底：右上角「选集 / 退出」（只在触摸态渲染，且不参与焦点链）。
+        PlayerTouchBar(
+            visible = controlsVisible,
+            primaryLabel = "选集",
+            onPrimary = { openPanel() },
+            onExit = onExit,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 22.dp, end = 56.dp),
+        )
+
         // 二次返回退出提示（自绘，不用系统 Toast）
         BackExitHint(
             visible = backExitArmed,
@@ -1639,10 +1678,50 @@ private fun PlayerScrubber(
     val knob by animateDpAsState(if (active) 18.dp else 0.dp, spring(dampingRatio = 0.55f, stiffness = 420f), label = "knob")
     val glow by animateFloatAsState(if (active) 1f else 0f, tween(180), label = "glow")
 
+    // 触摸拖动读的是「最新值」：pointerInput 只创建一次，若直接捕获参数，切集/切源后
+    // 时长与回调仍是首帧那份，会跳到错误的进度。
+    val latestDurationMs by rememberUpdatedState(durationMs)
+    val latestControlsVisible by rememberUpdatedState(controlsVisible)
+    val latestOnSeek by rememberUpdatedState(onSeek)
+    val latestOnWake by rememberUpdatedState(onWake)
+
     BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
             .height(28.dp)
+            // 车机触摸（v2.8.0）：点进度条任意位置直接跳，按住左右拖动连续 seek。
+            // 遥控器左右键仍走下面那段 onKeyEvent，两条通路互不可见。
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    // 吞掉按下：否则父级「点画面=播放/暂停」会跟着触发，seek 完又被打断播放。
+                    down.consume()
+                    // 控制条隐藏时进度条虽不可见却仍占位：这一下只当「唤起控制条」，
+                    // 与遥控器在隐藏态「任意键只唤起」的语义一致。
+                    if (!latestControlsVisible) {
+                        latestOnWake()
+                        return@awaitEachGesture
+                    }
+                    val width = size.width.toFloat()
+                    if (width <= 0f) return@awaitEachGesture
+                    var lastX = down.position.x
+                    latestOnSeek((latestDurationMs * (lastX / width).coerceIn(0f, 1f)).toLong())
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) {
+                            change.consume()
+                            break
+                        }
+                        // 阈值 4px：手指微抖不重复 seek（mpv/Exo 每次 seek 都要重定位关键帧）
+                        if (kotlin.math.abs(change.position.x - lastX) >= 4f) {
+                            lastX = change.position.x
+                            latestOnSeek((latestDurationMs * (lastX / width).coerceIn(0f, 1f)).toLong())
+                        }
+                        change.consume()
+                    }
+                }
+            }
             .focusRequester(focusRequester)
             .onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }
             .focusProperties { up = upTarget }

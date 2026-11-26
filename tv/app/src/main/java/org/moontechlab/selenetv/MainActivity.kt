@@ -46,6 +46,10 @@ class MainActivity : ComponentActivity() {
         adjustDensity()
         super.onCreate(savedInstanceState)
 
+        // 车机触摸：按系统能力先判一次是否触摸设备（只决定「是否绘制触摸专用按钮」，
+        // 不影响任何按键/焦点逻辑；纯电视上恒为 false，界面与旧版一致）。
+        org.moontechlab.selenetv.ui.TouchMode.seedFromSystem(this)
+
         // Compose 内容铺满整屏并绘制不透明渐变背景 → DecorView 的窗口背景被完全遮挡，是每屏一层
         // 白白浪费的全屏过度绘制（顶部标签栏等处实测达 4×）。运行期置空窗口背景 → 全 App 各屏 -1×。
         // 启动那一帧仍由主题里的深色 windowBackground 兜底，避免白闪。
@@ -92,6 +96,15 @@ class MainActivity : ComponentActivity() {
         setContent {
             AppNavHost()
         }
+    }
+
+    // 车机触摸态探测：只观察一根手指的按下、置一个标志位，然后把事件原样交给 super。
+    // 不改分发、不消费、不拦截——遥控器走的是 dispatchKeyEvent，与本方法毫无交集。
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
+        if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
+            org.moontechlab.selenetv.ui.TouchMode.markTouched()
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     // 返回键完全自管（修复真机播放页返回失效，同时杜绝重复分发）：

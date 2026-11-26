@@ -594,7 +594,62 @@ object HongguoStreamResolver {
         val spadeA: String,
         val vwidth: Int = 0,
         val vheight: Int = 0,
+        // v2.8.0：同一档位上的多条 CDN 备用直链（backup_url_list / backup_url_1..N）
+        val backups: List<String> = emptyList(),
     )
+
+    /**
+     * v2.8.0 多 CDN 线路：把一条档位记录里的备用直链全部收集出来。
+     *
+     * 红果的 `video_list[档位]` 除了 `main_url` 还会带 `backup_url_list`（数组）与
+     * `backup_url_1/2/3`、`backup_url`（单个）。这些就是同一部片、同一档位的不同 CDN 节点，
+     * 主链抖动/跨网慢时换一条即可，无需重新签名取流。
+     */
+    private fun backupUrlsOf(item: JSONObject): List<String> {
+        val out = mutableListOf<String>()
+        (item.opt("backup_url_list") as? org.json.JSONArray)?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val u = arr.optString(i)
+                if (u.isNotBlank()) out.add(u)
+            }
+        }
+        for (k in listOf("backup_url_1", "backup_url_2", "backup_url_3", "backup_url")) {
+            val u = item.optString(k)
+            if (u.isNotBlank()) out.add(u)
+        }
+        return out.distinct()
+    }
+
+    /** 线路标签：能从主机名认出运营商就写运营商，认不出就按序号「线路N」。 */
+    private fun cdnLineTag(url: String, index: Int): String {
+        val host = runCatching { java.net.URI(url).host.orEmpty() }.getOrDefault("").lowercase()
+        if (host.isEmpty()) return "线路$index"
+        val isp = when {
+            host.contains("chinamobile") || host.contains("cmnet") || host.contains("10086") -> "移动"
+            host.contains("chinatelecom") || host.contains("telecom") || host.contains("189.cn") -> "电信"
+            host.contains("chinaunicom") || host.contains("unicom") || host.contains("10010") -> "联通"
+            else -> ""
+        }
+        return isp.ifEmpty { "线路$index" }
+    }
+
+    /** 备用直链与主链同一套加密：先 seed 解密，再试 base64 明文。 */
+    private fun normalizePlaybackUrl(raw: String, seed: ByteArray): String {
+        if (raw.isEmpty()) return ""
+        if (raw.startsWith("http://") || raw.startsWith("https://")) return raw
+        if (seed.isNotEmpty()) {
+            try {
+                val decrypted = MediaCrypto.decryptUrl(raw, seed)
+                if (decrypted.startsWith("http")) return decrypted
+            } catch (_: Exception) {}
+        }
+        return try {
+            val b64 = String(decode64(raw), Charsets.UTF_8)
+            if (b64.startsWith("http://") || b64.startsWith("https://")) b64 else ""
+        } catch (_: Exception) {
+            ""
+        }
+    }
 
     private fun isOddDimension(w: Int, h: Int): Boolean =
         (w > 0 && w != 540 && w % 8 != 0) || (h > 0 && h != 540 && h % 8 != 0)
@@ -1138,7 +1193,7 @@ object HongguoStreamResolver {
                 val vh = meta.optInt("vheight", meta.optInt("height", item.optInt("vheight", item.optInt("height", 0))))
                 val encInfo = item.optJSONObject("encrypt_info")
                 val spadeA = encInfo?.optString("spade_a")?.ifEmpty { item.optString("spade_a") } ?: item.optString("spade_a")
-                candidateList.add(VideoCandidate(qNum, mainUrl, spadeA, vw, vh))
+                candidateList.add(VideoCandidate(qNum, mainUrl, spadeA, vw, vh, backupUrlsOf(item)))
             }
         } else if (rawVideoList is JSONObject) {
             val keys = rawVideoList.keys()
@@ -1175,7 +1230,7 @@ object HongguoStreamResolver {
                 val vh = meta.optInt("vheight", meta.optInt("height", item.optInt("vheight", item.optInt("height", 0))))
                 val encInfo = item.optJSONObject("encrypt_info")
                 val spadeA = encInfo?.optString("spade_a")?.ifEmpty { item.optString("spade_a") } ?: item.optString("spade_a")
-                candidateList.add(VideoCandidate(qNum, mainUrl, spadeA, vw, vh))
+                candidateList.add(VideoCandidate(qNum, mainUrl, spadeA, vw, vh, backupUrlsOf(item)))
             }
         }
 
@@ -1224,7 +1279,7 @@ object HongguoStreamResolver {
                                 val vw = item.optInt("vwidth", item.optInt("width", 0))
                                 val vh = item.optInt("vheight", item.optInt("height", 0))
                                 val spadeA = item.optString("spade_a")
-                                candidateList.add(VideoCandidate(qNum, mainUrl, spadeA, vw, vh))
+                                candidateList.add(VideoCandidate(qNum, mainUrl, spadeA, vw, vh, backupUrlsOf(item)))
                             }
                         }
                     }
@@ -1269,7 +1324,7 @@ object HongguoStreamResolver {
                                         val vw = item.optInt("vwidth", item.optInt("width", 0))
                                         val vh = item.optInt("vheight", item.optInt("height", 0))
                                         val spadeA = item.optString("spade_a")
-                                        candidateList.add(VideoCandidate(qNum, mainUrl, spadeA, vw, vh))
+                                        candidateList.add(VideoCandidate(qNum, mainUrl, spadeA, vw, vh, backupUrlsOf(item)))
                                     }
                                     if (candidateList.isNotEmpty()) break
                                 }

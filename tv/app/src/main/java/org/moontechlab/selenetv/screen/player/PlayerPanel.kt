@@ -68,7 +68,7 @@ import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Border
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Icon
-import androidx.tv.material3.Surface
+import org.moontechlab.selenetv.ui.Surface
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -82,6 +82,7 @@ import org.moontechlab.selenetv.screen.detail.HeroInfo
 import org.moontechlab.selenetv.screen.detail.sourceKey
 import org.moontechlab.selenetv.service.SpeedTestService
 import org.moontechlab.selenetv.ui.SpeedTestPill
+import org.moontechlab.selenetv.ui.tvTouchTap
 import org.moontechlab.selenetv.util.getImageUrlSync
 
 enum class PanelTab { Detail, Episodes, Sources, Diagnostic }
@@ -257,6 +258,9 @@ private fun PanelTabItem(
                     if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionDown) { onEnterContent(); true } else false
                 }
                 .focusable()
+                // 车机触摸：点标签 = 切到该标签并下沉到内容区（等价于遥控器在标签上按「下」）。
+                // 只加 pointerInput，焦点与按键通路不动。
+                .tvTouchTap { onFocused(); onEnterContent() }
                 .clip(RoundedCornerShape(9.dp))
                 // 焦点态 = 实心白底（全场最高对比，与内容卡白描边焦点同源）；选中但未聚焦时无底，靠下划线标记
                 .background(if (focused) Color.White else Color.Transparent)
