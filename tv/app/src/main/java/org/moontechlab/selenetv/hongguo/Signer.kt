@@ -895,14 +895,42 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
      * 100% 对齐 aston314/hongguo-tv v0.2.173 (playback_v5_sign.go -> signPlaybackV5):
      * 针对 /novel/player/multi_video_model/player/v1 移动端 v5 Gzip 请求体生成 F13 branch 12 + X-Medusa + X-Helios 签名。
      */
-    fun signPlaybackV5(base: String, values: Map<String, String>, body: ByteArray): Request {
+    fun signPlaybackV5(base: String, values: Map<String, String>, body: ByteArray): Request =
+        signPlaybackV5Keys(base, values, body, playbackV5QueryKeys)
+
+    /**
+     * video_tab 恢复通道（无 body 的 GET）签名，对齐手机端 v2.7.95 实测通过的那套。
+     *
+     * 与 [signPlaybackV5] 的区别只有字段序：服务端按**自己**的字段集合验签，序不对就静默回
+     * `200 + 空 body`（不报错），所以这条必须用 23 字段序，不能复用 14 字段的 POST 序。
+     */
+    fun signPlaybackV5VideoTab(base: String, values: Map<String, String>): Request =
+        signPlaybackV5Keys(base, values, ByteArray(0), playbackV5VideoTabKeys)
+
+    /** 14 字段序：/novel/player/multi_video_model/player/v1 的 POST。 */
+    private val playbackV5QueryKeys = listOf(
+        "aid", "app_name", "version_code", "version_name", "manifest_version_code",
+        "channel", "device_platform", "device_type", "os_version", "update_version_code",
+        "iid", "cdid", "device_id", "_rticket"
+    )
+
+    /** 23 字段序：/reading/bookapi/video_tab/video_model/v1/ 的 GET（对齐 miniReelMobileV5VideoTabKeys）。 */
+    private val playbackV5VideoTabKeys = listOf(
+        "aid", "app_name", "version_code", "version_name", "manifest_version_code",
+        "channel", "device_platform", "device_type", "os_version", "update_version_code",
+        "iid", "cdid", "device_id", "video_id", "video_id_type", "device_level",
+        "need_all_video_definition", "need_mp4_align", "use_os_player", "video_platform",
+        "source", "from_video_id", "_rticket"
+    )
+
+    private fun signPlaybackV5Keys(
+        base: String,
+        values: Map<String, String>,
+        body: ByteArray,
+        orderedKeys: List<String>,
+    ): Request {
         val stamp = clock()
         val ts = (stamp / 1000).toInt()
-        val orderedKeys = listOf(
-            "aid", "app_name", "version_code", "version_name", "manifest_version_code",
-            "channel", "device_platform", "device_type", "os_version", "update_version_code",
-            "iid", "cdid", "device_id", "_rticket"
-        )
         val bodyMd5 = digest("MD5", body)
         var query = ""
         var querySm3 = ByteArray(32)

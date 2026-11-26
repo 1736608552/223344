@@ -1,5 +1,47 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.96 (2026-11-26)
+
+### TV 端一直没跟上手机端：电视上的 1080P 其实从来没拿到过
+
+此前 v2.7.93/94/95 修的都是 `android/app/src/main/kotlin/com/example/lunatv/hongguo/`（手机端），
+而 TV 端 `tv/app/src/main/java/org/moontechlab/selenetv/hongguo/` 是**独立一份拷贝**，三轮都没同步。
+
+TV 的 `executeVideoTab` 三个错叠在一起，导致这条通道**一次都没成功过**：
+
+1. **路径错**：还在打 `video_tab/multi_video_model/v1/`，服务端固定回 `200 + 空 body`；
+2. **没签名**：这条 GET 必须带 v5 信封（**23 字段序**）。TV 的 `Signer` 里压根没有 video_tab 的签法，
+   而且它当时发的是 40 个字段的裸 GET（掺了 `ac`/`dpi`/`resolution`/`ssmix` 等无关键）；
+3. **解析错**：按 `data.video_model_data[vid].video_model` 取；真实形态是 `data.video_model`
+   **直挂的 JSON 字符串**，`data.expire_time` 与它同层。
+
+后果：TV 端实际能出流的只有 `video_model`（**1 档 720P**），而且前面 `mobile_v5` / `single_registered` /
+`multi_video_model` 三个通道每次都要白跑一遍才轮到它 —— 大屏上画质一直锁在 720P。
+
+### 改了什么（全部在 TV 端）
+
+| 文件 | 改动 |
+|---|---|
+| `Signer.kt` | `signPlaybackV5` 抽出通用实现 `signPlaybackV5Keys(base, values, body, orderedKeys)`；新增 23 字段序的 `signPlaybackV5VideoTab` |
+| `VendorConstants.kt` | 新增 `MOBILE_V5_RECOVERY_UA`（Android 16 / 25053RT47C / Cronet 画像；用 POST 那条 UA 打 video_tab 只回空包） |
+| `HongguoStreamResolver.kt` | `executeVideoTab` 重写：签名 + 正确路径 + 正确 UA + 正确解析；新增 `videoModelFromTabRoot` / `asVideoModelJson` / `attachTabExpireAt` |
+| 同上 | 通道顺序改 **`video_tab` → `video_model` → `mobile_v5` → `single_registered`**；`multi_video_model` 移出调度（三形态稳定空包） |
+| 同上 | 记忆通道只允许提前 `video_tab`：否则旧的「mobile_v5 成功过」记忆会把 720P 通道顶到前面，1080P 永远拿不到 |
+| 同上 | `fetchEpisodeVids` 改为 **`video_detail` 优先**（带 `episode_cnt` 完整性校验，不够就回落），官网 SSR 降为兜底；抽出 `fetchEpisodeVidsFromApp()` |
+| `ContentRepository.kt`（两端） | 修正注释里残留的旧通道顺序，避免下次又被误导 |
+
+### TV 端确认**不需要**的东西
+
+- **不需要 TTL 修复**：TV 每次起播都重新 `resolve()`，不缓存直链，6 小时过期不构成问题（`expireAt` 只透传作诊断）。
+- **不需要新看门狗**：`PlayerController.bufferingWatchdogRunnable` 已在 4.5 秒无首帧时降级到本地回环解密流，
+  另有 `controller.error` 自愈重试和取流 2 次重试。
+- **不需要画质切换 UI**：TV 播放页没有档位选择器，直接按 `maxQuality=1080` 取最高档，修好后自动升到 1080P。
+
+### 验证方式
+
+本机无 Android SDK/Gradle，只经 CI `build-tv` 编译。装机后看日志：
+`VIDEO_TAB_RESP`（`len>0` 即通）、`PROVIDER_OK` 里的 `画质=1080P`、`VIDEO_DETAIL_OK`（集数 x/y）。
+
 ## v2.7.95 (2026-11-26)
 
 ### 1080P 一直是摆设：video_tab 通道的路径与解析同时是错的

@@ -179,7 +179,22 @@ object HongguoStreamResolver {
 
         var lastErr: Exception? = null
 
-        // 通道 1 (首选最高优先级，彻底突破试看 3 集限制):
+        // 通道 0（v2.7.96，对齐手机端 v2.7.94）：官方 App 接口优先。
+        // video_detail 是官方接口，站点改版不影响它；HTML 抓取降为兜底。
+        // 带 episode_cnt 完整性校验：集数不够就当失败，交给 HTML 通道补全（否则用户看不到后几集）。
+        fetchEpisodeVidsFromApp(cleanId)?.let { (vids, expect) ->
+            if (vids.isNotEmpty() && (expect <= 0 || vids.size >= expect)) {
+                HongguoDiagnostic.log(
+                    "INFO", "stream_resolver", "VIDEO_DETAIL_OK",
+                    "video_detail 取到全剧分集: ${vids.size}/$expect (seriesId=$cleanId)"
+                )
+                episodeVidsCache[cleanId] = vids
+                return vids
+            }
+            lastErr = IOException("video_detail 集数不完整 ${vids.size}/$expect，回落官网 SSR")
+        }
+
+        // 通道 1 (兜底，官网 SSR 详情页):
         // 从官网 SSR 详情页 _ROUTER_DATA 提取全剧完整 vid_list (可一次性获取全部 80~100+ 集)
         try {
             val webUrl = "https://hongguoduanju.com/detail?series_id=$cleanId"
@@ -272,11 +287,28 @@ object HongguoStreamResolver {
             lastErr = e
         }
 
-        // 通道 2 (官方 App 原生接口抖动重试兜底，使用合法会话设备身份)
-        val devProfile = PlaybackDeviceSession.shared.profile(client)
+        // 通道 2（最终兜底）：通道 0 失败时，再给官方接口一次机会（设备刚换号 / 网络抖动）
+        fetchEpisodeVidsFromApp(cleanId)?.let { (vids, _) ->
+            episodeVidsCache[cleanId] = vids
+            return vids
+        }
+
+        throw lastErr ?: IOException("Failed to fetch episode vids for $cleanId")
+    }
+
+    /**
+     * 官方 App 原生接口取整剧分集列表：`POST /novel/player/video_detail/v1/` + **单数** `series_id`。
+     *
+     * 与手机端 v2.7.94 对齐。入参是 `{"series_id":"<19位字符串>"}` —— 注意**不是 `series_ids`**，
+     * 那个字段根本不存在（打 `multi_video_detail` 会固定回 `100001 series_ids invalid`）。
+     *
+     * 返回 `(vids, episodeCnt)`；`episodeCnt <= 0` 表示响应没给总集数，调用方只校验非空。
+     */
+    private fun fetchEpisodeVidsFromApp(cleanId: String): Pair<List<String>, Int>? {
         val payload = """{"series_id":"$cleanId"}""".toByteArray()
         for (attempt in 0..1) {
             try {
+                val devProfile = PlaybackDeviceSession.shared.profile(client)
                 val signed = signer.sign(
                     "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/video_detail/v1/",
                     devProfile.values,
@@ -301,7 +333,7 @@ object HongguoStreamResolver {
                 val videoData = json.optJSONObject("data")?.optJSONObject("video_data")
                     ?: throw IOException("No video_data in video_detail response")
 
-                // 兜底提取剧情简介
+                // 顺手补剧情简介
                 if (!seriesIntroCache.containsKey(cleanId)) {
                     val appIntro = (videoData.optString("series_intro"))
                         .ifEmpty { videoData.optString("video_desc") }
@@ -329,16 +361,15 @@ object HongguoStreamResolver {
                 pairs.sortBy { it.first }
                 val vids = pairs.map { it.second }.distinct()
                 if (vids.isNotEmpty()) {
-                    episodeVidsCache[cleanId] = vids
-                    return vids
+                    return Pair(vids, videoData.optInt("episode_cnt", 0))
                 }
             } catch (e: Exception) {
-                lastErr = e
-                try { Thread.sleep(200) } catch (ignored: InterruptedException) {}
+                if (attempt == 0) {
+                    try { Thread.sleep(200) } catch (ignored: InterruptedException) {}
+                }
             }
         }
-
-        throw lastErr ?: IOException("Failed to fetch episode vids for $cleanId")
+        return null
     }
 
     /**
@@ -691,47 +722,36 @@ object HongguoStreamResolver {
     }
 
     /**
-     * Provider 1 (官方免风控最高优先级，对齐 aston314/hongguo-tv 核心突破):
-     * 官方客户端视频推荐流原生 video_tab GET 接口，放行率最高且不消耗匿名设备一次性限额
+     * Provider 1（官方免风控最高优先级）：`video_tab` GET —— **单集唯一能拿 5 档（含 1080P）的通道**。
+     *
+     * 与手机端 v2.7.95 对齐。TV 端此前这条通道**一次都没成功过**，因为三个错叠在一起：
+     * 1. **路径错**：打的是 `video_tab/multi_video_model/v1/`，服务端固定回 `200 + 空 body`
+     *    （POST / GET 两种形态都试过）；能出数据的是 `video_tab/video_model/v1/`。
+     * 2. **没签名**：这条 GET 必须带 v5 信封（**23 字段序**，见 `Signer.signPlaybackV5VideoTab`），
+     *    裸 GET 只会拿到空包；而 14 字段的 POST 序打这条同样回空包。
+     * 3. **解析错**：真实响应是 `data.video_model` **直挂**的 JSON 字符串，`data.expire_time` 与它同层；
+     *    旧代码按 `data.video_model_data[vid].video_model` 取，永远 null。
      */
     private fun executeVideoTab(vid: String, profile: PlaybackDeviceSession.Profile): JSONObject? {
-        val stamp = System.currentTimeMillis()
-        val cdid = profile.values["cdid"] ?: VendorConstants.cdid
         val deviceId = profile.values["device_id"] ?: ""
         val installId = profile.values["iid"] ?: profile.values["install_id"] ?: ""
-        val deviceBrand = profile.values["device_brand"] ?: "Redmi"
-        val deviceType = profile.values["device_type"] ?: "23049RAD8C"
+        if (deviceId.isBlank() || installId.isBlank() || deviceId == "0" || installId == "0") return null
 
+        // 顺序即签名顺序：13 个设备字段 + 9 个业务字段，_rticket 由签名器追加在最后。
         val queryParams = linkedMapOf(
-            "_rticket" to stamp.toString(),
-            "ac" to "wifi",
             "aid" to "8662",
             "app_name" to "novelread",
-            "channel" to "update_64",
-            "cdid" to cdid,
-            "device_brand" to deviceBrand,
-            "device_id" to deviceId,
+            "version_code" to VendorConstants.mobileV5VersionCode,
+            "version_name" to VendorConstants.mobileV5VersionName,
+            "manifest_version_code" to VendorConstants.mobileV5VersionCode,
+            "channel" to VendorConstants.mobileV5Channel,
             "device_platform" to "android",
-            "device_type" to deviceType,
-            "dpi" to "440",
-            "dragon_device_type" to "phone",
-            "host_abi" to "arm64-v8a",
+            "device_type" to VendorConstants.mobileV5DeviceType,
+            "os_version" to VendorConstants.mobileV5OsVersion,
+            "update_version_code" to VendorConstants.mobileV5VersionCode,
             "iid" to installId,
-            "is_android_pad_screen" to "0",
-            "language" to "zh",
-            "manifest_version_code" to "73532",
-            "need_personal_recommend" to "1",
-            "os" to "android",
-            "os_api" to "34",
-            "os_version" to "14",
-            "resolution" to "1080*2400",
-            "player_so_load" to "1",
-            "pv_player" to "73532",
-            "ssmix" to "a",
-            "update_version_code" to "73532",
-            "version_code" to "73532",
-            "version_name" to "7.3.5.32",
-            "compliance_status" to "0",
+            "cdid" to (profile.values["cdid"] ?: VendorConstants.cdid),
+            "device_id" to deviceId,
             "video_id" to vid,
             "video_id_type" to "0",
             "device_level" to "1",
@@ -743,23 +763,22 @@ object HongguoStreamResolver {
             "from_video_id" to ""
         )
 
-        val qs = queryParams.entries.joinToString("&") { (k, v) ->
-            java.net.URLEncoder.encode(k, "UTF-8") + "=" + java.net.URLEncoder.encode(v, "UTF-8")
-        }
-        val url = "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/?$qs"
+        val signed = signer.signPlaybackV5VideoTab(
+            "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/video_model/v1/",
+            queryParams
+        )
 
         val reqBuilder = Request.Builder()
-            .url(url)
+            .url(signed.url)
             .get()
-            .header("User-Agent", VendorConstants.VIDEO_UA)
+            .header("User-Agent", VendorConstants.MOBILE_V5_RECOVERY_UA)
             .header("Accept", "application/json; charset=utf-8")
-
-        val cookie = if (profile.cookie.isNotBlank()) {
-            profile.cookie
-        } else {
-            "install_id=$installId; ttreq=1; store-region=cn; store-region-src=did"
+            .header("Accept-Language", "zh-CN,zh;q=0.9")
+        // video_tab 是无 body 的 GET：签名器算出的 X-SS-STUB 是空 body 的 MD5，必须丢掉。
+        for ((k, v) in signed.headers) {
+            if (k.equals("X-SS-STUB", ignoreCase = true)) continue
+            reqBuilder.header(k, v)
         }
-        reqBuilder.header("Cookie", cookie)
 
         try {
             val resp = client.newCall(reqBuilder.build()).execute()
@@ -776,21 +795,56 @@ object HongguoStreamResolver {
             val code = root.optInt("Code", root.optInt("code", 0))
             if (code != 0) return null
 
-            val data = root.optJSONObject("data") ?: return null
-            val rows = data.optJSONObject("video_model_data") ?: data
-            val row = rows.optJSONObject(vid)
-                ?: rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull { it.has("video_model") }
-                ?: return null
-
-            val vm = row.opt("video_model")
-            return when (vm) {
-                is JSONObject -> vm
-                is String -> try { JSONObject(vm) } catch (_: Exception) { null }
-                else -> null
-            }
+            val model = videoModelFromTabRoot(root, vid) ?: return null
+            attachTabExpireAt(root, model)
+            return model
         } catch (e: Exception) {
             android.util.Log.w("HongguoStreamResolver", "video_tab 请求异常: ${e.message}")
             return null
+        }
+    }
+
+    /**
+     * 从 video_tab 响应里取 `video_model`。
+     *
+     * 实测响应形态（2026-11-26，官方 7.4.5.32 参数）：
+     * ```
+     * {"code":0,"message":"SUCCESS","data":{
+     *    "video_model":"{\"status\":10,...,\"video_list\":[...5 档...]}",
+     *    "authorization":"...","video_width":1080,"video_height":1920,"expire_time":1795706390}}
+     * ```
+     * `data.video_model` 直接是**字符串**，既不在 `data[vid]` 也不在 `data["1004"][vid]`。
+     * map 形态（`video_model_data` / `1004` / `data` 下按 vid 取）保留作兼容。
+     */
+    private fun videoModelFromTabRoot(root: JSONObject, vid: String): JSONObject? {
+        val data = root.optJSONObject("data") ?: return null
+        asVideoModelJson(data.opt("video_model"))?.let { return it }
+        val containers = listOfNotNull(data.optJSONObject("video_model_data"), data.optJSONObject("1004"), data)
+        for (c in containers) {
+            val row = c.optJSONObject(vid) ?: continue
+            asVideoModelJson(row.opt("video_model"))?.let { return it }
+        }
+        return null
+    }
+
+    private fun asVideoModelJson(v: Any?): JSONObject? = when (v) {
+        is JSONObject -> v
+        is String -> {
+            val t = v.trim()
+            if (t.startsWith("{")) {
+                runCatching { JSONObject(t) }.getOrNull()
+            } else {
+                runCatching { JSONObject(String(decode64(t), Charsets.UTF_8)) }.getOrNull()
+            }
+        }
+        else -> null
+    }
+
+    /** video_tab 把过期时间放在 `data.expire_time`（`video_model` 里没有），透传给上层做 TTL 判断。 */
+    private fun attachTabExpireAt(root: JSONObject, model: JSONObject) {
+        val exp = root.optJSONObject("data")?.optLong("expire_time", 0L) ?: 0L
+        if (exp > 0) {
+            runCatching { model.put("__expire_at", exp) }
         }
     }
 
@@ -1222,19 +1276,23 @@ object HongguoStreamResolver {
                 "qualities" to qualityList,
                 "multiMap" to multiMap,
                 "needsSoftwareDecode" to needsSoft,
-                "softDecMap" to softDecMap
+                "softDecMap" to softDecMap,
+                // video_tab 的 data.expire_time 由 attachTabExpireAt() 注入；直链 6 小时过期。
+                // TV 每次起播都重新 resolve，这个值主要用于诊断与「播放中途断流」的判定。
+                "expireAt" to model.optLong("__expire_at", 0L)
             )
         }
         return null
     }
 
     /**
-     * 单集视频流模型与 CENC 解密 Key 解析 (对齐 aston314/hongguo-tv 2026-11-07 工业级三路协同体系)
-     * 1. 记忆首选：若命中 seriesId 成功通道缓存，优先直连秒开 (0.3 秒无感起播)
-     * 2. video_tab GET 免风控通道优先
-     * 3. multi_video_model 双域名 POST 轮询
-     * 4. video_model 单集六签名高可用终极兜底
-     * 5. 官方 Web 试看直链平滑保障
+     * 单集视频流模型与 CENC 解密 Key 解析（v2.7.96 起与手机端 v2.7.95 对齐）
+     * 1. 记忆首选：仅当记忆通道是 video_tab 时提前（避免旧记忆把 720P 通道顶到前面）
+     * 2. **video_tab GET（v5 23 字段签名）优先** —— 唯一给 5 档 360~1080P 的通道
+     * 3. video_model 单集六签名（只有 720P，作为快速兜底）
+     * 4. mobile_v5（gzip v5 信封）
+     * 5. single_registered（换号重试）
+     * multi_video_model 已移出序列：POST/player、POST/v1、GET(video_tab) 三形态稳定 200+空包。
      */
     fun resolve(vid: String, maxQuality: Int = 1080, seriesId: String = ""): Map<String, Any?> {
         resolveLock.lock()
@@ -1251,14 +1309,18 @@ object HongguoStreamResolver {
             throw IllegalArgumentException("Invalid vid: $vid")
         }
 
+        // v2.7.96（TV 对齐手机端 v2.7.95）：video_tab 提到第一位 —— 它是唯一给 5 档（含 1080P）的通道。
+        // multi_video_model 移出序列（POST/player、POST/v1、GET(video_tab) 三形态稳定 200+空包，
+        // 与手机端 2026-11-26 结论一致），函数保留留档，勿再加入。
         val allProviders = listOf(
+            PROVIDER_VIDEO_TAB,
+            PROVIDER_SINGLE_VIDEO_MODEL,
             PROVIDER_MOBILE_V5,
             PROVIDER_SINGLE_REGISTERED,
-            PROVIDER_MULTI_VIDEO_MODEL,
-            PROVIDER_SINGLE_VIDEO_MODEL,
-            PROVIDER_VIDEO_TAB,
         )
-        val preferred = getPreferredProvider(seriesId)
+        // 记忆通道只允许把 video_tab 提前：「上次 mobile_v5 成功过」不代表这次该走 720P。
+        // 若让旧记忆把 720P 通道顶到前面，1080P 永远拿不到（这是 TV 端画质只有一档的第二层原因）。
+        val preferred = getPreferredProvider(seriesId)?.takeIf { it == PROVIDER_VIDEO_TAB }
         val providers = if (preferred != null && allProviders.contains(preferred)) {
             listOf(preferred) + allProviders.filter { it != preferred }
         } else {
@@ -1329,7 +1391,7 @@ object HongguoStreamResolver {
         val oldDevId = identity.values["device_id"] ?: ""
         val rotated = PlaybackDeviceSession.shared.rotate(client, failedDeviceId = oldDevId)
         if (rotated.values["device_id"] != oldDevId) {
-            for (provider in listOf(PROVIDER_MOBILE_V5, PROVIDER_SINGLE_REGISTERED, PROVIDER_MULTI_VIDEO_MODEL, PROVIDER_SINGLE_VIDEO_MODEL)) {
+            for (provider in allProviders) {
                 val result = tryExecuteProvider(provider, rotated)
                 if (result != null) {
                     recordSourceSuccess(seriesId, provider)
@@ -1351,9 +1413,10 @@ object HongguoStreamResolver {
         val prevVer = VendorConstants.mobileV5VersionCode
         VendorConstants.syncHotConfig(client, force = false)
         if (VendorConstants.mobileV5VersionCode != prevVer || VendorConstants.hotSyncSource.startsWith("upstream")) {
-            val hotResult = tryExecuteProvider(PROVIDER_MOBILE_V5, rotated)
+            // 热更只换了版本号/通道画像，对 video_tab 的 23 字段签名同样生效，所以仍走首选通道
+            val hotResult = tryExecuteProvider(allProviders.first(), rotated)
             if (hotResult != null) {
-                recordSourceSuccess(seriesId, PROVIDER_MOBILE_V5)
+                recordSourceSuccess(seriesId, allProviders.first())
                 val totalElapsed = System.currentTimeMillis() - resolveStart
                 HongguoDiagnostic.log("INFO", "stream_resolver", "RESOLVE_HOT_OK", "上游热更新后取流成功 [画质: ${hotResult["quality"]}, 总耗时: ${totalElapsed}ms]")
                 HongguoDiagnostic.updateReport(

@@ -134,7 +134,8 @@ open class ContentRepository(
 
     /**
      * 取官方短剧单集正片播放直链与密钥（100% 对齐 1736608552/hongguo-tv 核心生产设计）：
-     * 1. 优先通过 HongguoStreamResolver 四通道（single_registered -> multi_video_model -> video_model -> video_tab）极速解析；
+     * 1. 优先通过 HongguoStreamResolver 四通道（video_tab -> video_model -> mobile_v5 -> single_registered）极速解析；
+     *    实际顺序以 HongguoStreamResolver.kt 的 allProviders 为准（multi_video_model 已移出调度）。
      * 2. 若需本类直连兜底，严格保持已签名 URL 与请求头完整一致，同时支持内联 video_list 与 fallback_api。
      */
     fun stream(id: String, maxQuality: Int = 1080): StreamInfo {
