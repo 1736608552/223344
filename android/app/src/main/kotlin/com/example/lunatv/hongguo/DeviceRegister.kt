@@ -241,6 +241,219 @@ object DeviceRegister {
         return null
     }
 
+    /** 原生加密注册的机型画像，对齐 upstream passport_device.go 的 passportDevice.payload。 */
+    private const val NATIVE_APP_VERSION = "7.3.5.32"
+    private const val NATIVE_VERSION_CODE = 73532
+    private const val NATIVE_DEVICE_MODEL = "25053RT47C"
+
+    /**
+     * 官方原生匿名注册（tt-data 加密体 + X-Gorgon + X-Argus）。
+     *
+     * 这是上游唯一在用的注册通道：明文 JSON 注册（[registerSingleRegistered]）虽然也能拿到
+     * 非 0 的 device_id，但那台「设备」没有风控签名背书，后续 player/v1、video_tab
+     * 无论信封多正确都只回 HTTP 200 + 0 字节 —— 短剧 len=0 的根就在这里。
+     *
+     * 请求结构 1:1 对齐 upstream passport_device.go 的 registerDeviceProfile：
+     *  - query 走 `aid/app_name/version_*/channel/device_*/os_*/resolution/dpi/ac` + tt_data/ts/_rticket/package
+     *  - body = ttEncrypt(明文 JSON)，Content-Encoding 仍标 gzip（官方客户端行为）
+     *  - X-Argus 只是 le32(unix) 的 base64；X-Gorgon 覆盖 query + body
+     */
+    fun nativeRegister(http: OkHttpClient, now: Long = System.currentTimeMillis()): Registered? {
+        val stamp = now
+        val ts = (now / 1000).toInt()
+        val cdid = VendorConstants.cdid.ifBlank { UUID.randomUUID().toString() }
+        val openudid = VendorConstants.openUdid.ifBlank { UUID.randomUUID().toString().replace("-", "").take(16) }
+        val clientudid = VendorConstants.clientUdid.ifBlank { UUID.randomUUID().toString() }
+
+        val json = JSONObject().apply {
+            put("magic_tag", "ss_app_log")
+            put(
+                "header",
+                JSONObject().apply {
+                    put("aid", 8662)
+                    put("access", "wifi")
+                    put("app_version", NATIVE_APP_VERSION)
+                    put("app_version_minor", "")
+                    put("channel", "update_64")
+                    put("device_brand", "Redmi")
+                    put("device_manufacturer", "Redmi")
+                    put("device_model", NATIVE_DEVICE_MODEL)
+                    put("device_category", "phone")
+                    put("device_platform", "android")
+                    put("os", "Android")
+                    put("os_api", 36)
+                    put("os_version", "16")
+                    put("density_dpi", 520)
+                    put("display_density", "xxxhdpi")
+                    put("resolution", "2772x1280")
+                    put("language", "zh")
+                    put("timezone", 8)
+                    put("tz_name", "Asia/Shanghai")
+                    put("tz_offset", 28800)
+                    put("region", "CN")
+                    put("package", "com.phoenix.read")
+                    put("version_code", NATIVE_VERSION_CODE)
+                    put("manifest_version_code", NATIVE_VERSION_CODE)
+                    put("update_version_code", NATIVE_VERSION_CODE)
+                    put("apk_first_install_time", stamp)
+                    put("cdid", cdid)
+                    put("clientudid", clientudid)
+                    put("openudid", openudid)
+                    put("cpu_abi", "arm64-v8a")
+                    put("display_name", "红果短剧")
+                    put("sdk_version", "3.7.2")
+                    put("sdk_target_version", 29)
+                    put("sdk_flavor", "china")
+                    put("guest_mode", 0)
+                    put("is_system_app", 0)
+                    put("not_request_sender", 0)
+                    put("oaid_may_support", true)
+                    put("ipv6_list", JSONArray())
+                    put("sim_serial_number", JSONArray())
+                    put(
+                        "custom",
+                        JSONObject().apply {
+                            put("is_android_fold", 0)
+                            put("filter_warn", 0)
+                            put("web_ua", "")
+                            put("is_android_pad", 0)
+                            put("client_ipv4", "")
+                        },
+                    )
+                },
+            )
+            put("_gen_time", stamp)
+        }
+        val body = ttEncrypt(json.toString().toByteArray(Charsets.UTF_8))
+
+        val queryMap = linkedMapOf(
+            "aid" to "8662",
+            "app_name" to "novelread",
+            "version_code" to NATIVE_VERSION_CODE.toString(),
+            "version_name" to NATIVE_APP_VERSION,
+            "manifest_version_code" to NATIVE_VERSION_CODE.toString(),
+            "update_version_code" to NATIVE_VERSION_CODE.toString(),
+            "channel" to "update_64",
+            "device_platform" to "android",
+            "os" to "android",
+            "ssmix" to "a",
+            "device_type" to NATIVE_DEVICE_MODEL,
+            "device_brand" to "Redmi",
+            "language" to "zh",
+            "os_api" to "36",
+            "os_version" to "16",
+            "resolution" to "2772*1280",
+            "dpi" to "520",
+            "ac" to "wifi",
+            "package" to "com.phoenix.read",
+            "tt_data" to "a",
+            "ts" to ts.toString(),
+            "_rticket" to stamp.toString(),
+        )
+        val queryStr = encodeQuery(queryMap)
+
+        val headers = linkedMapOf(
+            "User-Agent" to VendorConstants.MOBILE_V5_RECOVERY_UA,
+            "Content-Type" to "application/octet-stream;tt-data=a",
+            "Accept" to "application/json; charset=utf-8,application/x-protobuf",
+            "Content-Encoding" to "gzip",
+            "X-Tt-Request-Tag" to "t=0;n=1",
+            "Log-Encode-Type" to "gzip",
+            "Lc" to "102",
+            "Sdk-Version" to "2",
+            "Passport-Sdk-Version" to "60755",
+            "Passport-Sdk-Settings" to "device_transfer_s_0,device_transfer_ab_1",
+            "X-SS-DP" to "8662",
+            "X-Vc-Bdturing-Sdk-Version" to "4.0.3.cn",
+            "X-Tt-Store-Region" to "cn",
+            "X-Tt-Store-Region-Src" to "did",
+            "X-Khronos" to ts.toString(),
+            "X-Argus" to java.util.Base64.getEncoder().encodeToString(le32(ts)),
+            "X-SS-Req-Ticket" to stamp.toString(),
+            "X-SS-STUB" to digest("MD5", body).hex(),
+            "X-Gorgon" to Signer().gorgon(queryStr, body, ts, (Math.random() * 65536).toInt()),
+        )
+
+        val startTime = System.currentTimeMillis()
+        HongguoDiagnostic.log("INFO", "device_register", "START", "发起原生加密注册 HOST=$HOST")
+        return try {
+            val req = Request.Builder()
+                .url("$HOST$PATH?$queryStr")
+                .apply { headers.forEach { (k, v) -> header(k, v) } }
+                .post(body.toRequestBody("application/octet-stream;tt-data=a".toMediaType()))
+                .build()
+            val registered = RequestScope.execute(http.newCall(req)) { resp ->
+                val code = resp.code
+                val raw = resp.body?.bytes() ?: ByteArray(0)
+                val elapsed = System.currentTimeMillis() - startTime
+                val plain = if (raw.size > 6 && raw.copyOf(6).contentEquals(MAGIC)) ttDecrypt(raw) else raw
+                val text = plain?.toString(Charsets.UTF_8).orEmpty()
+                val parsed = if (resp.isSuccessful && text.isNotBlank()) parse(text, resp.headers("Set-Cookie")) else null
+                if (parsed != null) {
+                    HongguoDiagnostic.log(
+                        "INFO", "device_register", "DEVICE_REGISTER_NATIVE_OK",
+                        "原生加密注册成功 did=${parsed.deviceId} iid=${parsed.installId}",
+                        mapOf("code" to code, "bytes" to raw.size, "elapsed" to "${elapsed}ms")
+                    )
+                } else {
+                    HongguoDiagnostic.log(
+                        "WARN", "device_register", "DEVICE_REGISTER_NATIVE_FAIL",
+                        "原生加密注册未返回有效身份: code=$code bytes=${raw.size} 详情: ${text.take(120)}",
+                        mapOf("code" to code, "bytes" to raw.size, "elapsed" to "${elapsed}ms")
+                    )
+                }
+                parsed
+            }
+            if (registered != null) {
+                HongguoDiagnostic.updateReport(
+                    stage = "device_register",
+                    code = "DEVICE_REGISTER_OK",
+                    summary = "原生加密身份注册正常 (did=${registered.deviceId})"
+                )
+            }
+            registered
+        } catch (e: Exception) {
+            HongguoDiagnostic.log(
+                "WARN", "device_register", "DEVICE_REGISTER_NATIVE_ERR",
+                "原生加密注册异常: ${e.message}"
+            )
+            null
+        }
+    }
+
+    private fun encodeQuery(map: Map<String, String>): String =
+        map.entries.sortedBy { it.key }.joinToString("&") { (k, v) ->
+            val ek = URLEncoder.encode(k, "UTF-8").replace("+", "%20").replace("%7E", "~").replace("*", "%2A")
+            val ev = URLEncoder.encode(v, "UTF-8").replace("+", "%20").replace("%7E", "~").replace("*", "%2A")
+            "$ek=$ev"
+        }
+
+    /** 解密官方加密响应体：MAGIC || seed[32] || AES-128-CBC(SHA512(z)||z)，z 为 gzip 后的 JSON。 */
+    private fun ttDecrypt(raw: ByteArray): ByteArray? {
+        if (raw.size <= 38 || (raw.size - 38) % 16 != 0) return null
+        return try {
+            val seed = raw.copyOfRange(6, 38)
+            val derived = digest("SHA-512", digest("SHA-512", seed) + KDF_SALT)
+            val decrypted = javax.crypto.Cipher.getInstance("AES/CBC/NoPadding").run {
+                init(
+                    javax.crypto.Cipher.DECRYPT_MODE,
+                    javax.crypto.spec.SecretKeySpec(derived.copyOfRange(0, 16), "AES"),
+                    javax.crypto.spec.IvParameterSpec(derived.copyOfRange(16, 32)),
+                )
+                doFinal(raw.copyOfRange(38, raw.size))
+            }
+            val pad = decrypted.last().toInt() and 255
+            if (pad !in 1..16 || decrypted.size < pad + 64) return null
+            val body = decrypted.copyOf(decrypted.size - pad)
+            val hash = body.copyOfRange(0, 64)
+            val payload = body.copyOfRange(64, body.size)
+            if (!digest("SHA-512", payload).contentEquals(hash)) return null
+            java.util.zip.GZIPInputStream(payload.inputStream()).use { it.readBytes() }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /**
      * ttEncrypt：MAGIC || rnd[32] || AES-128-CBC(SHA512(SHA512(rnd)+KDF_SALT) 前 32 字节, PKCS7(SHA512(data)||data))。
      */

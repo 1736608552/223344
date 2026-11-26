@@ -1,5 +1,38 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.90 (2026-11-26)
+
+### 短剧 len=0 的第二层根因：设备身份没有风控背书
+
+v2.7.89 把 v5 信封对齐到上游（proof marker 738 + manifest_version_code 进签名）之后，
+实测仍是五通道 `code=200 len=0`。继续对读上游 `passport_device.go` 才发现，问题不在信封，
+而在**注册阶段拿到的设备身份**：
+
+- 我们一直走 `registerSingleRegistered` 的「明文 JSON 注册」——它确实能拿到非 0 的
+  `device_id`/`install_id`，但那台设备没有任何风控签名背书（缺 `X-Gorgon` / `X-Argus` /
+  `X-Tt-Request-Tag`，body 也不是 ttEncrypt 密文）。
+- 官方客户端（以及上游唯一在用的通道）走的是 `/service/2/device_register/` 的
+  **tt-data 加密注册**：body = ttEncrypt(明文 JSON)，头里带 `X-Gorgon`（覆盖 query+body）、
+  `X-Argus`（`le32(unix)` 的 base64）、`X-SS-STUB`、`Lc: 102`、`Passport-Sdk-Version: 60755` 等。
+- 服务端对「无签名的注册设备」是软拒绝：注册照样回 200 并下发 did，但后续 `player/v1`
+  的 POST、`video_tab` 的 GET 一律回 200 + 0 字节——正是诊断里看到的形态。
+
+同时补掉另一个确定的缺陷：`video_tab` 这条 GET 之前是**裸发**的（没有任何 v5 信封头），
+等于让服务端去验一个不存在的签名。
+
+#### 修复
+
+1. 新增 `DeviceRegister.nativeRegister()`：1:1 对齐上游 `registerDeviceProfile`——ttEncrypt 体、
+   `X-Gorgon`/`X-Argus`/`X-SS-STUB`/`X-Khronos` 全套头、`25053RT47C` + Android 16 + 7.3.5.32 画像；
+   响应体带 `tc\x05\x10` 魔数时用同一 KDF（SHA512(SHA512(seed)+salt)）解密再解析。
+2. `PlaybackDeviceSession.register()` 首选原生加密注册，明文注册降为兜底；两条都失败才回退
+   本地持久化身份/虚拟身份。
+3. `executeVideoTab()` 改为带 `signPlaybackV5VideoTab`（23 字段签名 query）+ 恢复通道 UA +
+   `Accept-Language` 的正式请求，并丢弃无正文请求不该有的 `X-SS-STUB`。
+
+> 若原生注册被风控拒绝（`DEVICE_REGISTER_NATIVE_FAIL`），会自动落回明文注册，
+> 行为与 v2.7.89 一致，不会比上一版更差。
+
 ## v2.7.89 (2026-11-26)
 
 ### 短剧取流全通道 len=0：v5 签名两个字段没跟上上游

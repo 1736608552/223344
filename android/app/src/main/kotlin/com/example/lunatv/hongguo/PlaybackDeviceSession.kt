@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package org.moontechlab.lunatv.hongguo
 
-import java.io.IOException
 import java.util.UUID
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
  * 专门给播放链路准备一套注册过的设备参数。
@@ -121,46 +118,22 @@ class PlaybackDeviceSession {
         val cdid = UUID.randomUUID().toString()
         val openudid = UUID.randomUUID().toString().replace("-", "").take(16)
         val clientudid = UUID.randomUUID().toString()
-        val template =
-            VendorConstants.device +
-                mapOf(
-                    "cdid" to cdid,
-                    "openudid" to openudid,
-                    "clientudid" to clientudid,
-                )
 
         var registeredDevice: DeviceRegister.Registered? = null
         var isOfficial = false
 
-        // 1. 优先使用 hongguo-tv 验证 100% 成功的 single-registered 协议注册真实设备身份（单次快速尝试，不循环轰炸）
-        val singleReg = DeviceRegister.registerSingleRegistered(http)
-        if (singleReg != null) {
-            registeredDevice = singleReg
+        // 1. 首选：官方原生加密注册（tt-data 体 + X-Gorgon/X-Argus）。
+        //    明文 JSON 注册拿到的 did 没有风控签名背书，播放接口一律 200 空包。
+        DeviceRegister.nativeRegister(http)?.let {
+            registeredDevice = it
             isOfficial = true
         }
 
-        // 2. 备用：若明文注册未返回，单次尝试 ttEncrypt 加密通道
+        // 2. 备用：明文 JSON 注册（原生通道被风控拒绝时的兜底）
         if (registeredDevice == null) {
-            try {
-                val now = System.currentTimeMillis()
-                val body = DeviceRegister.payload(template, now)
-                val request =
-                    Request.Builder()
-                        .url(DeviceRegister.url())
-                        .apply { DeviceRegister.headers(body, template, now).forEach(::header) }
-                        .post(body.toRequestBody("application/octet-stream;tt-data=a".toMediaType()))
-                        .build()
-                val parsed = RequestScope.execute(http.newCall(request)) { response ->
-                    DeviceRegister.parse(
-                        readRegisterBody(response),
-                        response.headers("Set-Cookie"),
-                    )
-                }
-                if (parsed != null) {
-                    registeredDevice = parsed
-                    isOfficial = true
-                }
-            } catch (_: Exception) {
+            DeviceRegister.registerSingleRegistered(http)?.let {
+                registeredDevice = it
+                isOfficial = true
             }
         }
 
@@ -226,24 +199,4 @@ class PlaybackDeviceSession {
         }
         return createdProfile
     }
-}
-
-private fun readRegisterBody(response: okhttp3.Response): String {
-    if (!response.isSuccessful) throw IOException("播放设备注册失败（HTTP ${response.code}）")
-    val body = response.body ?: throw IOException("播放设备注册响应为空")
-    val limit = 2L * 1024 * 1024
-    if (body.contentLength() > limit) throw IOException("播放设备注册响应过大")
-    val input = body.byteStream()
-    val out = java.io.ByteArrayOutputStream()
-    val buffer = ByteArray(8192)
-    while (out.size() <= limit) {
-        val n = input.read(buffer)
-        if (n < 0) break
-        out.write(buffer, 0, n)
-    }
-    val bytes = out.toByteArray()
-    if (bytes.size > limit) throw IOException("播放设备注册响应过大")
-    val text = String(bytes, Charsets.UTF_8)
-    if (text.isBlank()) throw IOException("播放设备注册返回空响应")
-    return text
 }
