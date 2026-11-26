@@ -651,7 +651,28 @@ object HongguoStreamResolver {
                 "mobile_v5 video_tab 恢复响应: code=$statusCode len=${body.length} preview=${body.take(80)}"
             )
             if (resp.isSuccessful && body.isNotBlank()) {
-                extractVideoModelFromResponse(body, vid)
+                val root = JSONObject(body)
+                val code = root.optInt("Code", root.optInt("code", -1))
+                if (code == 0) {
+                    val data = root.optJSONObject("data")
+                    val entries = data?.optJSONObject("1004") ?: data
+                    val entry = entries?.optJSONObject(vid)
+                    val vm = entry?.opt("video_model")
+                    when (vm) {
+                        is JSONObject -> vm
+                        is String -> {
+                            val trimmed = vm.trim()
+                            if (trimmed.startsWith("{")) {
+                                runCatching { JSONObject(trimmed) }.getOrNull()
+                            } else {
+                                runCatching { JSONObject(String(decode64(trimmed), Charsets.UTF_8)) }.getOrNull()
+                            }
+                        }
+                        else -> null
+                    }
+                } else {
+                    null
+                }
             } else {
                 null
             }
