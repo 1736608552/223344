@@ -88,6 +88,19 @@ internal fun Modifier.tvClickable(...) =
 线路选择不跨集记忆（换集后回到主链，档位记忆保留）。运营商靠主机名关键字识别
 （cmnet / chinatelecom / unicom 等），红果 CDN 多数不带这些字样，实际多显示为「线路2 / 线路3」。
 
+### 手机端核对：同一处「分集缓存被 3 条预览污染」也补上了
+
+手机端 `client/lib/services/duanju_core_bridge.dart` 查了一遍，主链路没问题
+（原生通道 / 官方 App `video_detail` 都回全量分集，每集 `video_tab` 各自带真实 `multiMap`，
+所以第 4 集起清晰度胶囊正常），但**Web 搜索兜底那条路有同一个坑**：
+
+- `searchDramas()` 的 Web 建议接口分支把 `suggestion.video_data.vid_list` 无条件写进
+  `_vidListCache`，而这个接口只给前 3 集预览 → 一旦走到 Web 兜底，之后所有集数都从
+  「3 条」里取，第 4 集起直接卡在第 3 集（或拿不到档位）；
+- 修法与 TV 一致：新增 `_vidListExpectCount`（记住上游 `episode_cnt`），
+  写缓存要求 `vid_list.length >= episode_cnt`，读缓存时再次复核，
+  残缺列表用完即弃、下次重拉；列表/详情格式化路径也统一登记总集数。
+
 ## v2.7.100 (2026-11-26)
 
 ### TV 端短剧「只能播前三集」：分集缓存被上游搜索预览污染

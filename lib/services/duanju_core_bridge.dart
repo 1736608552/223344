@@ -765,9 +765,12 @@ class DuanjuCoreBridge {
       vidList = rawVidList.map((e) => e.toString()).toList();
       // 关键防污染：列表/搜索页返回的 vid_list 通常仅为 3 集试看，绝不能污染全剧集缓存！
       // 只有当 vidList 达到全量集数时，才认定为完整章节并缓存
+      _rememberExpectCount(cleanDramaId, finalEpCount);
       if (finalEpCount > 0 && vidList.length >= finalEpCount) {
         _vidListCache[cleanDramaId] = vidList;
       }
+    } else {
+      _rememberExpectCount(cleanDramaId, finalEpCount);
     }
 
     final firstVid = (it['vid'] ?? it['first_vid'])?.toString() ?? '';
@@ -865,7 +868,19 @@ class DuanjuCoreBridge {
                       .where((e) => e.isNotEmpty)
                       .toList();
                   final sid = cleanSeriesId(vMap['series_id'] ?? kw);
-                  if (sid.isNotEmpty && vids.isNotEmpty) {
+                  // v2.8.0: 建议接口的 vid_list 只有前 3 集试看（真实总集数在 episode_cnt）。
+                  // 这里原来无条件写全剧缓存，会让第 4 集起全部失联，必须按总集数校验。
+                  final expectRaw = vMap['episode_cnt'] ??
+                      vMap['episode_count'] ??
+                      vMap['episodes'] ??
+                      vMap['total_episodes'] ??
+                      vMap['total_episode'];
+                  final expectText =
+                      expectRaw?.toString().replaceAll(RegExp(r'[^\d]'), '') ?? '';
+                  final expect = int.tryParse(expectText) ?? 0;
+                  if (sid.isNotEmpty) _rememberExpectCount(sid, expect);
+                  final complete = expect > 0 && vids.length >= expect;
+                  if (sid.isNotEmpty && complete) {
                     _vidListCache[sid] = vids;
                   }
                 }
@@ -886,6 +901,19 @@ class DuanjuCoreBridge {
   // 官方短剧分集与真实直链高效内存缓存 (保证切集精准、秒开)
   // -------------------------------------------------------------
   final Map<String, List<String>> _vidListCache = {};
+
+  /// v2.8.0: 每部剧的「上游声称的总集数」。列表 / 搜索 / 建议接口返回的 `vid_list`
+  /// 通常只有前 3 集试看，写缓存前必须拿它做完整性校验，读缓存时也要复核 —— 否则
+  /// 第 4 集起会拿到残缺列表（表现为「只能看前三集」或「第 4 集起没有清晰度可选」）。
+  /// 键统一用 `cleanSeriesId()` 结果，与 [_vidListCache] 对齐。
+  final Map<String, int> _vidListExpectCount = {};
+
+  void _rememberExpectCount(String cleanId, int expect) {
+    if (cleanId.isEmpty || expect <= 0) return;
+    final old = _vidListExpectCount[cleanId] ?? 0;
+    if (expect > old) _vidListExpectCount[cleanId] = expect;
+  }
+
   final Map<String, String> _playbackUrlCache = {};
   final Map<String, String> _playbackResolutionCache = {};
   final Map<String, Map<String, String>> _playbackMultiResCache = {};
@@ -999,10 +1027,17 @@ class DuanjuCoreBridge {
     final cleanId = cleanSeriesId(dramaId);
     if (cleanId.isEmpty) return [];
 
-    // 双键检查高速缓存
+    // 双键检查高速缓存（v2.8.0: 必须复核总集数，避免把 3 条试看当成全集）
     final cached = _vidListCache[cleanId] ?? _vidListCache[dramaId.trim()];
-    if (cached != null && cached.isNotEmpty && cached.length > 1) {
-      return cached;
+    if (cached != null && cached.isNotEmpty) {
+      final expect = _vidListExpectCount[cleanId] ?? 0;
+      final trusted = expect > 0 ? cached.length >= expect : cached.length > 1;
+      if (trusted) return cached;
+      DiaryService.add(
+          '[短剧] 分集缓存残缺 ${cached.length}/${expect > 0 ? expect : -1}，丢弃后重拉 (id=$cleanId)');
+      _vidListCache.remove(cleanId);
+      _vidListCache.remove(dramaId.trim());
+      _vidListCache.remove('hongguo:$cleanId');
     }
 
     if (_pendingVidRequests.containsKey(cleanId)) {
@@ -1014,8 +1049,16 @@ class DuanjuCoreBridge {
     try {
       final res = await future;
       if (res.isNotEmpty) {
-        _vidListCache[cleanId] = res;
-        _vidListCache['hongguo:$cleanId'] = res;
+        // v2.8.0: 已知总集数时，只缓存达到集数的完整列表；残缺列表用完即弃，下次重拉。
+        final expect = _vidListExpectCount[cleanId] ?? 0;
+        final complete = expect <= 0 || res.length >= expect;
+        if (complete) {
+          _vidListCache[cleanId] = res;
+          _vidListCache['hongguo:$cleanId'] = res;
+        } else {
+          DiaryService.add(
+              '[短剧] 分集列表不完整 ${res.length}/$expect，跳过缓存等下次重拉 (id=$cleanId)');
+        }
       }
       return res;
     } finally {
