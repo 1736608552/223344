@@ -33,7 +33,7 @@ object DeviceRegister {
         )
 
     const val SINGLE_REG_UA =
-        "com.phoenix.read/73532 (Linux; U; Android 14; zh_CN; 23049RAD8C; Build/UKQ1.230804.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
+        "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
 
     /** 注册结果：平台下发的设备身份 + 需要回写的那几个 Cookie。 */
     data class Registered(
@@ -68,13 +68,13 @@ object DeviceRegister {
             "device_platform" to "android",
             "os" to "android",
             "ssmix" to "a",
-            "device_type" to "23049RAD8C",
+            "device_type" to "25053RT47C",
             "device_brand" to "Redmi",
             "language" to "zh",
-            "os_api" to "34",
-            "os_version" to "14",
-            "resolution" to "1080*2400",
-            "dpi" to "440",
+            "os_api" to "36",
+            "os_version" to "16",
+            "resolution" to "1280*2772",
+            "dpi" to "520",
             "ac" to "wifi",
             "_rticket" to now.toString(),
             "req_id" to reqId,
@@ -102,15 +102,15 @@ object DeviceRegister {
                     put("update_version_code", 73532)
                     put("manifest_version_code", 73532)
                     put("os", "Android")
-                    put("os_version", "14")
-                    put("os_api", 34)
-                    put("device_model", "23049RAD8C")
+                    put("os_version", "16")
+                    put("os_api", 36)
+                    put("device_model", "25053RT47C")
                     put("device_brand", "Redmi")
                     put("device_manufacturer", "Xiaomi")
                     put("cpu_abi", "arm64-v8a")
-                    put("density_dpi", 440)
+                    put("density_dpi", 520)
                     put("display_density", "xxhdpi")
-                    put("resolution", "2400x1080")
+                    put("resolution", "2772x1280")
                     put("language", "zh")
                     put("mc", "02:00:00:00:00:00")
                     put("timezone", 8)
@@ -118,8 +118,8 @@ object DeviceRegister {
                     put("not_request_sender", 0)
                     put("carrier", "China Mobile")
                     put("mcc_mnc", "46000")
-                    put("rom", "MIUI-V14.0.23.0.TMACNXM")
-                    put("rom_version", "UKQ1.230804.001")
+                    put("rom", "OS2.0")
+                    put("rom_version", "BP2A.250605.031.A3")
                     put("openudid", openudid)
                     put("clientudid", clientudid)
                     put("cdid", cdid)
@@ -246,6 +246,10 @@ object DeviceRegister {
     private const val NATIVE_VERSION_CODE = 73532
     private const val NATIVE_DEVICE_MODEL = "25053RT47C"
 
+    /** upstream hongguo_client.go 的 defaultHongguoUA，注册/账号请求统一用它。 */
+    const val NATIVE_UA =
+        "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
+
     /**
      * 官方原生匿名注册（tt-data 加密体 + X-Gorgon + X-Argus）。
      *
@@ -324,7 +328,9 @@ object DeviceRegister {
             )
             put("_gen_time", stamp)
         }
-        val body = ttEncrypt(json.toString().toByteArray(Charsets.UTF_8))
+        // upstream passportTTEncrypt 内部会先 gzip 再算 SHA512：body = MAGIC||seed||AES(SHA512(gz)||gz)。
+        // 这里 ttEncrypt 不收 gzip 逻辑，因此必须先压再传，否则服务端解出来不是 gzip 流，直接判非法。
+        val body = ttEncrypt(gzip(json.toString().toByteArray(Charsets.UTF_8)))
 
         val queryMap = linkedMapOf(
             "aid" to "8662",
@@ -353,7 +359,7 @@ object DeviceRegister {
         val queryStr = encodeQuery(queryMap)
 
         val headers = linkedMapOf(
-            "User-Agent" to VendorConstants.MOBILE_V5_RECOVERY_UA,
+            "User-Agent" to NATIVE_UA,
             "Content-Type" to "application/octet-stream;tt-data=a",
             "Accept" to "application/json; charset=utf-8,application/x-protobuf",
             "Content-Encoding" to "gzip",
@@ -368,7 +374,7 @@ object DeviceRegister {
             "X-Tt-Store-Region" to "cn",
             "X-Tt-Store-Region-Src" to "did",
             "X-Khronos" to ts.toString(),
-            "X-Argus" to java.util.Base64.getEncoder().encodeToString(le32(ts)),
+            "X-Argus" to le32(ts).base64(),
             "X-SS-Req-Ticket" to stamp.toString(),
             "X-SS-STUB" to digest("MD5", body).hex(),
             "X-Gorgon" to Signer().gorgon(queryStr, body, ts, (Math.random() * 65536).toInt()),

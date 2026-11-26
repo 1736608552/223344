@@ -792,47 +792,32 @@ object HongguoStreamResolver {
     }
 
     /**
-     * Provider 1 (官方免风控最高优先级，对齐 aston314/hongguo-tv 核心突破):
-     * 官方客户端视频推荐流原生 video_tab GET 接口，放行率最高且不消耗匿名设备一次性限额
+     * Provider：官方 video_tab 无正文 GET（对齐 upstream miniReelMobileV5Source.recoverVideoTab）。
+     *
+     * 这条 GET 必须带 v5 信封签名（x-khronos / x-helios / x-medusa），且与 POST 共用同一台
+     * 已注册设备；早期实现把它当「免签名通道」裸发，服务端一律回 HTTP 200 + 0 字节，
+     * 诊断里的 VIDEO_TAB_RESP len=0 就是这么来的。
      */
     private fun executeVideoTab(vid: String, profile: PlaybackDeviceSession.Profile): JSONObject? {
-        val stamp = System.currentTimeMillis()
-        val cdid = profile.values["cdid"] ?: VendorConstants.cdid
         val deviceId = profile.values["device_id"] ?: ""
         val installId = profile.values["iid"] ?: profile.values["install_id"] ?: ""
-        val deviceBrand = profile.values["device_brand"] ?: "Redmi"
-        val deviceType = profile.values["device_type"] ?: "23049RAD8C"
+        if (deviceId.isBlank() || installId.isBlank() || deviceId == "0" || installId == "0") return null
 
+        // 顺序即签名顺序：13 个设备字段 + 9 个业务字段，_rticket 由签名器追加在最后。
         val queryParams = linkedMapOf(
-            "_rticket" to stamp.toString(),
-            "ac" to "wifi",
             "aid" to "8662",
             "app_name" to "novelread",
-            "channel" to "update_64",
-            "cdid" to cdid,
-            "device_brand" to deviceBrand,
-            "device_id" to deviceId,
+            "version_code" to VendorConstants.mobileV5VersionCode,
+            "version_name" to VendorConstants.mobileV5VersionName,
+            "manifest_version_code" to VendorConstants.mobileV5VersionCode,
+            "channel" to VendorConstants.mobileV5Channel,
             "device_platform" to "android",
-            "device_type" to deviceType,
-            "dpi" to "440",
-            "dragon_device_type" to "phone",
-            "host_abi" to "arm64-v8a",
+            "device_type" to VendorConstants.mobileV5DeviceType,
+            "os_version" to VendorConstants.mobileV5OsVersion,
+            "update_version_code" to VendorConstants.mobileV5VersionCode,
             "iid" to installId,
-            "is_android_pad_screen" to "0",
-            "language" to "zh",
-            "manifest_version_code" to "73532",
-            "need_personal_recommend" to "1",
-            "os" to "android",
-            "os_api" to "34",
-            "os_version" to "14",
-            "resolution" to "1080*2400",
-            "player_so_load" to "1",
-            "pv_player" to "73532",
-            "ssmix" to "a",
-            "update_version_code" to "73532",
-            "version_code" to "73532",
-            "version_name" to "7.3.5.32",
-            "compliance_status" to "0",
+            "cdid" to (profile.values["cdid"] ?: VendorConstants.cdid),
+            "device_id" to deviceId,
             "video_id" to vid,
             "video_id_type" to "0",
             "device_level" to "1",
@@ -844,23 +829,20 @@ object HongguoStreamResolver {
             "from_video_id" to ""
         )
 
-        val qs = queryParams.entries.joinToString("&") { (k, v) ->
-            java.net.URLEncoder.encode(k, "UTF-8") + "=" + java.net.URLEncoder.encode(v, "UTF-8")
-        }
-        val url = "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/?$qs"
-
+        val signed = signer.signPlaybackV5VideoTab(
+            "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/",
+            queryParams
+        )
         val reqBuilder = Request.Builder()
-            .url(url)
+            .url(signed.url)
             .get()
-            .header("User-Agent", VendorConstants.VIDEO_UA)
+            .header("User-Agent", VendorConstants.MOBILE_V5_RECOVERY_UA)
             .header("Accept", "application/json; charset=utf-8")
-
-        val cookie = if (profile.cookie.isNotBlank()) {
-            profile.cookie
-        } else {
-            "install_id=$installId; ttreq=1; store-region=cn; store-region-src=did"
+            .header("Accept-Language", "zh-CN,zh;q=0.9")
+        for ((k, v) in signed.headers) {
+            if (k.equals("X-SS-STUB", ignoreCase = true)) continue
+            reqBuilder.header(k, v)
         }
-        reqBuilder.header("Cookie", cookie)
 
         try {
             val resp = client.newCall(reqBuilder.build()).execute()
