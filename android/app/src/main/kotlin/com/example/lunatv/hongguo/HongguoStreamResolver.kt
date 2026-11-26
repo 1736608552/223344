@@ -584,6 +584,10 @@ object HongguoStreamResolver {
                     android.util.Log.w("HongguoStreamResolver", "mobile_v5 异常: ${e.message}")
                 }
             }
+            if (sawEmpty200) {
+                val recovered = recoverVideoTabV5(vid, currentProfile)
+                if (recovered != null) return recovered
+            }
             if (attempt == 0 && sawEmpty200) {
                 val rotated = PlaybackDeviceSession.shared.rotate(client, failedDeviceId = deviceId)
                 if (rotated.values["device_id"] != deviceId) {
@@ -594,6 +598,67 @@ object HongguoStreamResolver {
             break
         }
         return null
+    }
+
+    /**
+     * 对齐 aston314/hongguo-tv v0.2.182 recoverVideoTab:
+     * 当 V5 双主机均返回 200 空包时，使用同一已注册身份 + 7.4.3.32 参数 + V5 签名请求 video_tab 恢复。
+     */
+    private fun recoverVideoTabV5(vid: String, profile: PlaybackDeviceSession.Profile): JSONObject? {
+        val deviceId = profile.values["device_id"] ?: return null
+        val installId = profile.values["iid"] ?: profile.values["install_id"] ?: return null
+        val cdid = profile.values["cdid"] ?: VendorConstants.cdid
+        if (deviceId.isBlank() || installId.isBlank() || deviceId == "0" || installId == "0") return null
+
+        val tabParams = linkedMapOf(
+            "aid" to "8662",
+            "app_name" to "novelread",
+            "version_code" to VendorConstants.mobileV5VersionCode,
+            "version_name" to VendorConstants.mobileV5VersionName,
+            "manifest_version_code" to VendorConstants.mobileV5VersionCode,
+            "channel" to VendorConstants.mobileV5Channel,
+            "device_platform" to "android",
+            "device_type" to VendorConstants.mobileV5DeviceType,
+            "os_version" to VendorConstants.mobileV5OsVersion,
+            "update_version_code" to VendorConstants.mobileV5VersionCode,
+            "iid" to installId,
+            "cdid" to cdid,
+            "device_id" to deviceId,
+            "video_id" to vid,
+            "item_id" to vid,
+            "need_all_video_definition" to "true",
+        )
+        return try {
+            val tabUrl = "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/"
+            val signed = signer.signPlaybackV5(tabUrl, tabParams, ByteArray(0))
+            val reqBuilder = Request.Builder().url(signed.url).get()
+            for ((k, v) in signed.headers) {
+                if (!k.equals("X-SS-STUB", ignoreCase = true)) {
+                    reqBuilder.header(k, v)
+                }
+            }
+            reqBuilder.header("User-Agent", VendorConstants.mobileV5Ua)
+            reqBuilder.header("Accept", "application/json; charset=utf-8")
+            reqBuilder.header("Accept-Language", "zh-CN,zh;q=0.9")
+
+            val resp = client.newCall(reqBuilder.build()).execute()
+            val statusCode = resp.code
+            val body = resp.body?.string().orEmpty()
+            HongguoDiagnostic.log(
+                if (statusCode == 200 && body.isNotBlank()) "INFO" else "WARN",
+                "stream_resolver",
+                "MOBILE_V5_TAB_RECOVER",
+                "mobile_v5 video_tab 恢复响应: code=$statusCode len=${body.length} preview=${body.take(80)}"
+            )
+            if (resp.isSuccessful && body.isNotBlank()) {
+                extractVideoModelFromResponse(body, vid)
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("HongguoStreamResolver", "recoverVideoTabV5 异常: ${e.message}")
+            null
+        }
     }
 
 

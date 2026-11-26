@@ -216,7 +216,7 @@ internal object VendorConstants {
     @Volatile var mobileV5OsVersion: String = "12"
     @Volatile var mobileV5License: String = "646637794"
     @Volatile var mobileV5Branch: Int = 12
-    @Volatile var mobileV5DeviceLevel: Int = 3
+    @Volatile var mobileV5DeviceLevel: Int = 1
     @Volatile var playbackV5Magic: ByteArray = hex(DEFAULT_V5_MAGIC_HEX)
     @Volatile var playbackV5Key: ByteArray = hex(DEFAULT_V5_KEY_HEX)
     @Volatile var playbackV5SBox: ByteArray = hex(DEFAULT_V5_SBOX_HEX)
