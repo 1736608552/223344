@@ -34,7 +34,16 @@ def main():
                     if target_header in content:
                         parts = content.split(target_header)
                         if len(parts) > 1:
-                            section = parts[1].split('\n---')[0]
+                            rest = parts[1]
+                            # 只截到本节结束：优先「下一个版本标题」，其次真正的水平分隔线。
+                            # 不能用 rest.split('\n---')：markdown 表格分隔行 |---|---| 恰好以
+                            # '\n---' 开头，会把发布说明在表格处腰斩（v2.7.99 就踩了这个）。
+                            cut = len(rest)
+                            for marker in ('\n## v', '\n---'):
+                                idx = rest.find(marker)
+                                if idx != -1 and idx < cut:
+                                    cut = idx
+                            section = rest[:cut]
                             notes = target_header + section
             except Exception as e:
                 print(f'Error reading {fixlog_path}: {e}', file=sys.stderr)

@@ -1,5 +1,97 @@
 # LunaTV-Mobile 修复日记
 
+## v2.7.99 (2026-11-26)
+
+### 手机端清晰度：与 TV 端对齐，「只在短剧可选分辨率」
+
+**1. 现象**
+
+v2.7.98 只给 TV 端加了清晰度胶囊，手机端仍是旧行为：
+
+- 底部控制栏的清晰度胶囊**所有源都显示**，普通采集源也会出现 `1080P / 720P / 480P`；
+- 这三档是 `DuanjuCoreBridge.buildMultiResolutionUrls()` 往直链上**拼 `bt= / qs= / ratio=` 参数**伪造出来的，不是上游真实档位，切过去大概率 403/404 或仍按原档播；
+- 短剧走的是另一条分支（用 `getEpisodeQualities()` 的 int 列表），拿不到就给写死的 `[1080,720,480]`，把上游真实的 `540P / 360P` 档丢掉，且档位直链不在缓存里时会**重新签名解析**（慢、还耗配额）。
+
+用户的要求是：跟 TV 端一致，**只在短剧里可选分辨率**。
+
+**2. 根因**
+
+- 手机端没有区分「上游真实档位」和「本地拼出来的假档位」。`DuanjuPlaybackPlan.multiMap` 有两个来源：
+  - 原生通道 1（`HongguoStreamResolver.resolveStream`）：`video_tab` 一次解析带回的 360P~1080P 五档直链 + 各自 CENC 密钥，**真**（上游按编码过滤后 VVC/`bytevc2` 档常被剔除，缺档的 url 为空 = 不可播，不算档位）；
+  - 通道 3（Go 核心）/ 通道 4（Web 兜底）：`buildMultiResolutionUrls()` 拼参生成的 1080P/720P/480P，**假**。
+- 两者写进同一个 `multiMap` 字段，UI 无从分辨，于是「有档位」的条件恒为真。
+- 另外 4 个档位读取方法用 `dramaId.trim()` 当缓存 key，而缓存是按 `cleanSeriesId()` 写的，传 `hongguo:xxx` 形式时查不到。
+
+**3. 改法**
+
+- `DuanjuPlaybackPlan` 新增 `multiMapIsReal`（默认 `false`），**通道 1 与通道 2 置 `true`**：
+  通道 2 的 `multiMap` 同样是上游 `video_list` 逐条 `definition` + `main_url` 解析出来的真实档位
+  （已剔除 `bytevc2`/VVC），此前被当成拼参假档位，导致没有原生通道 1 的 iOS 端完全出不来胶囊；
+- `DuanjuCoreBridge.getEpisodeQualityUrls(dramaId, episode)` 新方法：只认 `multiMapIsReal == true` 的 plan，键必须是 `^\d{3,4}P$`、值必须是 http 直链，`自动` 别名不进列表。普通采集源 / 兜底通道恒返回空 Map；
+- `getEpisodeMultiResolutions` / `getEpisodeResolution` / `getEpisodeQualities` / `getEpisodeActualQuality` 的缓存 key 统一走 `cleanSeriesId()`；
+- `player_screen.dart`：
+  - 新增 `_isShortDramaSource` / `_shortDramaQualityUrls` / `_shortDramaQualityLabels`（按像素降序）；
+  - 底部栏改成 `if (_shortDramaQualityLabels.length > 1) _buildResolutionButton()` —— 档位 < 2 根本不渲染；
+  - `_buildResolutionButton()` 外显优先级：用户选过且本集可用 → 实际解析到的档位 → 最高档；
+  - `_showResolutionSelectorSheet()` 短剧分支改为读真实档位标签，删掉「取不到就写死 `[1080,720,480]`」，也删掉「用 `buildMultiResolutionUrls` 补档」这条假档位来源；切档仍走缓存直链 + 对应 CENC key，不重新签名。
+
+**4. TV 端补一刀（v2.7.98 遗留的收尾）**
+
+v2.7.98 的 TV 侧主体是好的：`HongguoStreamResolver.resolve` 一次带回的 `multiMap` / `keys` /
+`softDecMap` 被 `qualityOptionsFromResolved()` 还原成档位列表，切档走缓存直链 + 对应 CENC key，
+不重新签名，`preferredQualityPx` 也记住了用户选择。但胶囊的挂载条件是 `qualityOptions.isNotEmpty()`
+——**只要解析出 1 个档位就会显示**，与「只在多档源出现」不符：红果 `bytevc2`(VVC) 档被上游过滤后
+只剩 1080P 的剧，会看到一个只有一项、点了也没反应的弹层。
+
+- 挂载条件收紧为 `qualityOptions.size > 1`；
+- 画面比例胶囊的 `rightTarget`、倍速胶囊的 `leftTarget` 同步改成同一条件 —— 否则焦点会落向一个
+  没有挂载的 `FocusRequester`，遥控器「右」变死路。
+
+**5. 行为对照**
+
+| 场景 | v2.7.98 手机端 | v2.7.99 手机端 | TV 端（v2.7.98 起） |
+|---|---|---|---|
+| 短剧多档源 | 胶囊在，档位混假档 | 胶囊在，只有真实 5 档 | 胶囊在，只有真实档 |
+| 普通采集源 | 胶囊在（假档位） | 不显示 | 不显示 |
+| 单档短剧 | 显示 3 个假档 | 不显示 | 不显示 |
+| 切档 | 缺档时重新签名 | 缓存直链 + 对应 key | 缓存直链 + 对应 key |
+
+### CI：iOS 编译重新上线（macOS 14 runner 已于 2026-11-02 退役）
+
+**1. 现象**
+
+Release 里 v2.7.96 / v2.7.97 / v2.7.98 三个版本都只有 `apk`、`windows-x64.zip` 和三个 `tv apk`，
+**没有任何 `.ipa`**；而 v2.7.47 的 Release 里是有 `LunaTV-Mobile-v2.7.47-unsigned.ipa` 的。
+
+**2. 根因**
+
+`build-ios` job 写的是 `runs-on: macos-14`。GitHub 于 2026-10-01 公告、**2026-11-02 正式退役**
+macOS 14 hosted runner 镜像，之后使用该标签的 job 在**启动前就被取消**：
+
+- Actions 里 `ios` job 结论 `cancelled`，`steps` 是空数组、`runner_id = 0`、
+  `started_at` 与 `completed_at` 只差 1 秒 —— 一个 shell 都没执行过；
+- 该 check-run 上唯一的注解：`The configuration 'macos-14-arm64-us-default' is not supported`；
+- `release` job 是 `if: always()` 且四端任一成功即发布，所以缺 IPA 时既不报错也不提示，Release 照发。
+
+**3. 改法**
+
+- `runs-on: macos-14` → **`macos-15`**（当前 GA 的 Apple Silicon 标准镜像，原生产出 iOS arm64 真机产物）；
+- 新增 `Show macOS toolchain` 步骤，把 `sw_vers` / `uname -m` / `xcodebuild -version` / `pod --version`
+  打进日志，以后再遇 runner 换代能第一时间看出差异；
+- iOS 编译超时 45 → 60 分钟（干净 runner 上 `pod install --repo-update` 拉全量 specs + 首次 Xcode 编译）；
+- `release` job 新增 `Verify artifact coverage`：把四端 job 结果与实际下载到的产物对一遍，
+  缺 `.ipa` 时打 `::warning title=iOS 产物缺失::` 注解，不再静默少件。
+
+### 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `lib/services/duanju_core_bridge.dart` | `DuanjuPlaybackPlan.multiMapIsReal`；通道 1 / 通道 2 置真；新增 `getEpisodeQualityUrls()`；4 个档位读取方法改用 `cleanSeriesId()` |
+| `lib/screens/player_screen.dart` | 新增 `_isShortDramaSource` / `_shortDramaQualityUrls` / `_shortDramaQualityLabels`；底部栏按档位数决定是否渲染胶囊；`_buildResolutionButton()` 重写外显逻辑；`_showResolutionSelectorSheet()` 短剧分支改用真实档位 |
+| `tv/.../screen/player/PlayerScreen.kt` | 清晰度胶囊挂载条件 `isNotEmpty()` → `size > 1`，画面比例/倍速胶囊的左右焦点目标同步收紧 |
+| `.github/workflows/build.yml` | `build-ios` 的 `runs-on` 由已退役的 `macos-14` 改为 `macos-15`；新增工具链版本日志步骤；iOS 编译超时 45→60 分钟；`release` 增加产物缺失告警 |
+| `pubspec.yaml` | `2.7.98+20898` → `2.7.99+20899` |
+
 ## v2.7.98 (2026-11-26)
 
 ### 四件事：短剧搜索彻底并入全局、TV 加清晰度、播完推荐海报删掉、热更新删掉

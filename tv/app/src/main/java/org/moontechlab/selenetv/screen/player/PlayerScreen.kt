@@ -1273,7 +1273,9 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                                 onClick = { speedPopupOpen = false; danmakuMenuOpen = false; aspectPopupOpen = true; wake() },
                                 focusRequester = aspectPillFocus,
                                 scrubberFocus = scrubberFocus,
-                                rightTarget = if (qualityOptions.isNotEmpty()) qualityPillFocus else speedPillFocus,
+                                // v2.7.99: 胶囊只在「≥2 个真实档位」时挂载，焦点目标必须同条件，
+                                // 否则画面比例「右」会落向一个没挂载的 FocusRequester（焦点死路）。
+                                rightTarget = if (qualityOptions.size > 1) qualityPillFocus else speedPillFocus,
                                 leftTarget = if (danmakuActive) danmakuGearFocus else null,
                                 upTarget = if (activeSegment != null) skipFocus else null,
                             )
@@ -1289,7 +1291,9 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                             )
                         }
                         // v2.7.98: 清晰度胶囊 —— 只有短剧这类多档源才出现（源站单流的普通源没有档位可选）
-                        if (qualityOptions.isNotEmpty()) {
+                        // v2.7.99: 收紧为「>1」，与手机端一致。单档源（含红果 bytevc2/VVC 档被上游
+                        //   过滤后只剩 1080P 的剧）不再显示一个只有一项、点了也没反应的弹层。
+                        if (qualityOptions.size > 1) {
                             Spacer(modifier = Modifier.width(8.dp))
                             Box {
                                 QualityPill(
@@ -1324,7 +1328,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                                 focusRequester = speedPillFocus,
                                 scrubberFocus = scrubberFocus,
                                 upTarget = if (activeSegment != null) skipFocus else null,
-                                leftTarget = if (qualityOptions.isNotEmpty()) qualityPillFocus else aspectPillFocus,
+                                leftTarget = if (qualityOptions.size > 1) qualityPillFocus else aspectPillFocus,
                                 rightTarget = decodePillFocus,
                             )
                             // SpeedPopup 内部用 MutableTransitionState 跟踪进出态，

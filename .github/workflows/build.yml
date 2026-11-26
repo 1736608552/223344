@@ -91,11 +91,24 @@ jobs:
 
   build-ios:
     name: ios
-    runs-on: macos-14
+    # v2.7.99: GitHub 已于 2026-11-02 退役 macOS 14 runner 镜像。
+    #   原 runs-on: macos-14 的 job 会在启动前被直接取消（steps 为空、runner_id=0），
+    #   check-run 注解原文：The configuration 'macos-14-arm64-us-default' is not supported。
+    #   表现是 v2.7.96~v2.7.98 三版 Release 里完全没有 IPA（v2.7.47 还有）。
+    #   改用当前 GA 的 macos-15（Apple Silicon 标准镜像），iOS 真机 arm64 产物原生产出。
+    runs-on: macos-15
     env:
       LANG: en_US.UTF-8
     steps:
       - uses: actions/checkout@v4
+
+      # 把镜像 / 架构 / Xcode / CocoaPods 版本打进日志，runner 换代后能第一时间看出差异
+      - name: Show macOS toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          pod --version
 
       - uses: subosito/flutter-action@v2
         with:
@@ -136,7 +149,9 @@ jobs:
           max_attempts: 3
           retry_on: error
           retry_wait_seconds: 30
-          timeout_minutes: 45
+          # v2.7.99: 45 → 60。首次在干净 runner 上 pod install --repo-update 会拉全量 specs，
+          #   45 分钟在 macos-15 上容易被 pod + Xcode 编译一起顶穿。
+          timeout_minutes: 60
           command: flutter build ios --release --no-codesign
 
       - name: Package Unsigned IPA
@@ -330,6 +345,23 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: downloaded_artifacts
+
+      # v2.7.99: 以前 iOS job 静默死掉时，Release 照样发出去、只是少一个 IPA，很难发现。
+      #   这里把四端的 job 结果和实际拿到的产物对一遍，缺 IPA 时打 warning annotation。
+      - name: Verify artifact coverage
+        if: always()
+        env:
+          ANDROID_RESULT: ${{ needs.build-android.result }}
+          IOS_RESULT: ${{ needs.build-ios.result }}
+          WINDOWS_RESULT: ${{ needs.build-windows.result }}
+          TV_RESULT: ${{ needs.build-tv.result }}
+        run: |
+          echo "job 结果：android=$ANDROID_RESULT ios=$IOS_RESULT windows=$WINDOWS_RESULT tv=$TV_RESULT"
+          echo "实际下载到的产物："
+          find downloaded_artifacts -type f \( -name "*.apk" -o -name "*.ipa" -o -name "*.zip" \) -exec ls -lh {} + 2>/dev/null || echo "(无)"
+          if [ -z "$(find downloaded_artifacts -type f -name '*.ipa' 2>/dev/null)" ]; then
+            echo "::warning title=iOS 产物缺失::ios job 结果=${IOS_RESULT}，本次 Release 不含 IPA。请检查 macos runner 标签是否仍受支持。"
+          fi
 
       - name: Create or Update GitHub Release
         env:

@@ -29,6 +29,13 @@ class DuanjuPlaybackPlan {
   final String session;
   final String danmakuId;
 
+  /// v2.7.99: [multiMap] 是否为「上游真实档位」。
+  /// 只有 Android 原生通道（HongguoStreamResolver.resolveStream）一次解析带回的
+  /// 360P~1080P 五档直链 + 各自 CENC 密钥才是真的；Go 核心 / Web 兜底通道的
+  /// multiMap 是 buildMultiResolutionUrls 拼 bt/qs 参数伪造出来的，切过去会
+  /// 直接 403/404。手机端「清晰度胶囊」只认真实档位，保证与 TV 端一致。
+  final bool multiMapIsReal;
+
   /// 直链到期时间（秒级时间戳）。0 表示服务端未给或该通道不提供，此时不做 TTL 判断。
   /// 红果 video_model 通道实测 expire_time = 请求时刻 + 21600s（6 小时），
   /// 过期后 CDN 返回 403/410，所以缓存必须带失效判断。
@@ -40,6 +47,7 @@ class DuanjuPlaybackPlan {
     this.keys = const {},
     this.headers = const {},
     this.multiMap = const {},
+    this.multiMapIsReal = false,
     this.resolution = '1080P',
     this.quality = 0,
     this.actualQuality = 1080,
@@ -927,26 +935,60 @@ class DuanjuCoreBridge {
   }
 
   /// 获取某集真实多清晰度 URL 字典 (1080P/720P/480P)
+  ///
+  /// v2.7.99: 缓存 key 统一用 [cleanSeriesId]（数字 series_id），调用方传
+  /// `hongguo:xxx` / `shortdrama:xxx` 前缀形式时也能命中，避免"已解析到多档
+  /// 却查不到"导致手机端胶囊消失。
   Map<String, String>? getEpisodeMultiResolutions(String dramaId, int episode) {
-    final cleanId = dramaId.trim();
-    return _playbackMultiResCache['$cleanId-$episode'];
+    final cleanId = cleanSeriesId(dramaId);
+    if (cleanId.isEmpty || episode < 1) return null;
+    return _playbackMultiResCache['$cleanId-$episode'] ??
+        _playbackMultiResCache['hongguo:$cleanId-$episode'];
   }
 
   /// 获取某集已解析的真实清晰度 (如 720P, 1080P, 原画)
   String? getEpisodeResolution(String dramaId, int episode) {
-    return _playbackResolutionCache['$dramaId-$episode'];
+    final cleanId = cleanSeriesId(dramaId);
+    if (cleanId.isEmpty || episode < 1) return null;
+    return _playbackResolutionCache['$cleanId-$episode'] ??
+        _playbackResolutionCache['hongguo:$cleanId-$episode'];
   }
 
   /// 获取某集真实支持的清晰度档位列表 (对齐红果鉴, 如 [1080, 720, 480])
   List<int>? getEpisodeQualities(String dramaId, int episode) {
-    final cleanId = dramaId.trim();
+    final cleanId = cleanSeriesId(dramaId);
+    if (cleanId.isEmpty || episode < 1) return null;
     return _planCache['$cleanId-$episode']?.qualities;
   }
 
   /// 获取某集实际播放的清晰度数值 (如 1080)
   int? getEpisodeActualQuality(String dramaId, int episode) {
-    final cleanId = dramaId.trim();
+    final cleanId = cleanSeriesId(dramaId);
+    if (cleanId.isEmpty || episode < 1) return null;
     return _planCache['$cleanId-$episode']?.actualQuality;
+  }
+
+  /// 某集「上游真实档位」直链字典：`档位标签 -> 直链`（1080P / 720P / 540P / 480P / 360P）。
+  ///
+  /// v2.7.99: 手机端清晰度胶囊的数据源。三条硬规则，与 TV 端
+  /// `qualityOptionsFromResolved()` 完全对齐：
+  ///   1. 只认 `multiMapIsReal == true` 的 plan（原生通道 1）；Go 核心 / Web
+  ///      兜底拼出来的 bt/qs 假档位一律不返回，普通采集源也永远返回空 ——
+  ///      这就是"手机端和电视端一样只在短剧可选分辨率"的落点；
+  ///   2. 键必须是纯 `\d+P` 形态，`自动` 别名由 UI 单独提供；
+  ///   3. 值必须是 http 直链。
+  Map<String, String> getEpisodeQualityUrls(String dramaId, int episode) {
+    final cleanId = cleanSeriesId(dramaId);
+    if (cleanId.isEmpty || episode < 1) return const {};
+    final plan = _planCache['$cleanId-$episode'];
+    if (plan == null || !plan.multiMapIsReal) return const {};
+    final out = <String, String>{};
+    plan.multiMap.forEach((label, url) {
+      if (!RegExp(r'^\d{3,4}P$').hasMatch(label)) return;
+      if (!url.startsWith('http')) return;
+      out[label] = url;
+    });
+    return out;
   }
 
   final Map<String, Future<List<String>>> _pendingVidRequests = {};
@@ -1436,6 +1478,9 @@ class DuanjuCoreBridge {
                 'Referer': 'https://novel.snssdk.com/',
               },
               multiMap: multiMap,
+              // 通道 1 的 multiMap 是上游 video_tab 一次解析带回的真实 5 档直链，
+              // 手机端清晰度胶囊只认这一种来源（见 getEpisodeQualityUrls）。
+              multiMapIsReal: true,
               resolution: '${actQ}P',
               quality: quality,
               actualQuality: actQ,
@@ -2182,6 +2227,10 @@ class DuanjuCoreBridge {
                       'Referer': 'https://novel.snssdk.com/',
                     },
                     multiMap: multiMap,
+                    // 通道 2 的 multiMap 同样是上游 video_list 里逐条 definition + main_url
+                    // 解析出来的真实档位（已剔除 bytevc2/VVC），不是拼参伪造，故与通道 1 一样标记为真。
+                    // 不标这一条的话：iOS 没有原生通道 1，手机端就永远出不来清晰度胶囊。
+                    multiMapIsReal: true,
                     resolution: targetLabel,
                     quality: quality,
                     actualQuality: targetQuality,

@@ -7242,8 +7242,12 @@ class _PlayerScreenState extends State<PlayerScreen>
                               ),
                             ),
                           ),
-                          // 分辨率 / 原画切换控件 (高度 24 胶囊、居中对齐、文本精炼)
-                          _buildResolutionButton(),
+                          // 清晰度胶囊: v2.7.99 起与 TV 端完全一致 —— 只有短剧
+                          // 原生通道解析出 ≥2 个「上游真实档位」时才出现；
+                          // 普通采集源没有真实档位就不显示（不再用 bt/qs 拼
+                          // 假档位凑数，切过去只会 403）。
+                          if (_shortDramaQualityLabels.length > 1)
+                            _buildResolutionButton(),
                           // 右: 倍速
                           _iconBtn(
                             icon: Icons.speed,
@@ -7294,28 +7298,55 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
-  /// 构建分辨率 / 清晰度切换控件 (高度居中、胶囊圆角、精炼显示且视觉水平完全对齐，短剧对齐红果鉴)
-  Widget _buildResolutionButton() {
-    final isShortDrama = widget.preferredSource == 'hongguo' ||
-        widget.videoInfo.source == 'hongguo' ||
-        widget.videoInfo.source == 'shortdrama' ||
-        (_selectedSource?.source == 'hongguo');
+  /// 是否短剧源 —— 与 TV 端「只有短剧出现清晰度胶囊」一致
+  bool get _isShortDramaSource =>
+      widget.preferredSource == 'hongguo' ||
+      widget.videoInfo.source == 'hongguo' ||
+      widget.videoInfo.source == 'shortdrama' ||
+      (_selectedSource?.source == 'hongguo');
 
-    String label = _currentResolution;
-    if (isShortDrama) {
-      label = (_userPreferredResolution == '自动' || _userPreferredResolution.isEmpty)
-          ? '自动'
-          : _userPreferredResolution;
-    } else if (label.contains('1080')) {
-      label = '1080P';
-    } else if (label.contains('720')) {
-      label = '720P';
-    } else if (label.contains('480')) {
-      label = '480P';
-    } else if (label.contains('原画')) {
-      label = '原画';
-    } else if (label.length > 5) {
-      label = label.substring(0, 4);
+  /// 当前集「上游真实档位」直链字典（键 = 1080P/720P/540P/480P/360P）
+  Map<String, String> get _shortDramaQualityUrls {
+    if (!_isShortDramaSource) return const {};
+    final dramaId = _selectedSource?.id.isNotEmpty == true
+        ? _selectedSource!.id
+        : widget.videoInfo.id;
+    return DuanjuCoreBridge.instance
+        .getEpisodeQualityUrls(dramaId, _currentEpisodeIndex + 1);
+  }
+
+  /// 真实档位标签，按像素降序（1080P → 720P → …）
+  List<String> get _shortDramaQualityLabels {
+    final urls = _shortDramaQualityUrls;
+    if (urls.isEmpty) return const [];
+    int px(String s) => int.tryParse(s.replaceAll('P', '')) ?? 0;
+    return urls.keys.toList()..sort((a, b) => px(b).compareTo(px(a)));
+  }
+
+  /// 构建清晰度胶囊（高度居中、圆角、文本精炼，与 TV 端胶囊同语义）
+  ///
+  /// v2.7.99: 只有短剧「上游真实多档」才渲染；档位 < 2 时返回空 widget，
+  /// 普通采集源 / 单档源永远看不到这个胶囊。
+  Widget _buildResolutionButton() {
+    final labels = _shortDramaQualityLabels;
+    if (labels.length < 2) return const SizedBox.shrink();
+
+    final dramaId = _selectedSource?.id.isNotEmpty == true
+        ? _selectedSource!.id
+        : widget.videoInfo.id;
+    final actualQ = DuanjuCoreBridge.instance
+            .getEpisodeActualQuality(dramaId, _currentEpisodeIndex + 1) ??
+        0;
+    final pref = _userPreferredResolution;
+
+    // 外显优先级：用户选过且本集仍可用 → 实际解析到的档位 → 最高档
+    String label;
+    if (pref.isNotEmpty && pref != '自动' && labels.contains(pref)) {
+      label = pref;
+    } else if (actualQ > 0 && labels.contains('${actualQ}P')) {
+      label = '${actualQ}P';
+    } else {
+      label = labels.first;
     }
 
     return Center(
@@ -7352,39 +7383,34 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   /// 弹出分辨率 / 清晰度切换面板 (100% 对齐红果鉴：支持自动优先高清与真实档位平滑热切)
   void _showResolutionSelectorSheet() {
-    final isShortDrama = widget.preferredSource == 'hongguo' ||
-        widget.videoInfo.source == 'hongguo' ||
-        widget.videoInfo.source == 'shortdrama' ||
-        (_selectedSource?.source == 'hongguo');
+    final isShortDrama = _isShortDramaSource;
 
     final dramaId = _selectedSource?.id.isNotEmpty == true
         ? _selectedSource!.id
         : widget.videoInfo.id;
 
-    final playUrl = _currentPlayUrl.isNotEmpty
-        ? _currentPlayUrl
-        : (_player is ExoPlayerBackend
-            ? (_player as ExoPlayerBackend).controller?.dataSource ?? ''
-            : '');
+    // v2.7.99: 只展示上游真实档位（1080P/720P/540P/480P/360P）。
+    //   普通采集源、Go 核心 / Web 兜底通道用 bt/qs 拼出来的假档位一律不进
+    //   列表 —— 切过去只会 403，这也是「手机端和电视端一样只在短剧可选
+    //   分辨率」的另一半落点。
+    final qualityUrls = _shortDramaQualityUrls;
+    final qualityLabels = _shortDramaQualityLabels;
 
-    if (isShortDrama || playUrl.isNotEmpty) {
-      final multiMap = DuanjuCoreBridge.instance.getEpisodeMultiResolutions(dramaId, _currentEpisodeIndex + 1) ??
-          DuanjuCoreBridge.buildMultiResolutionUrls(playUrl);
-      if (multiMap.isNotEmpty) {
-        _resolutionUrlMap.addAll(multiMap);
-      }
+    if (isShortDrama && qualityLabels.isNotEmpty) {
+      _resolutionUrlMap
+        ..clear()
+        ..addAll(qualityUrls);
     }
 
     if (isShortDrama) {
-      final dynamicQualities = DuanjuCoreBridge.instance.getEpisodeQualities(dramaId, _currentEpisodeIndex + 1);
-      final actualQ = DuanjuCoreBridge.instance.getEpisodeActualQuality(dramaId, _currentEpisodeIndex + 1) ?? 1080;
+      final actualQ = DuanjuCoreBridge.instance
+              .getEpisodeActualQuality(dramaId, _currentEpisodeIndex + 1) ??
+          0;
+      // 0 = 「自动」，其余用真实档位像素值；不再回退成写死的 [1080,720,480]
       final qualities = <int>[0];
-      if (dynamicQualities != null && dynamicQualities.isNotEmpty) {
-        for (final q in dynamicQualities) {
-          if (q > 0 && !qualities.contains(q)) qualities.add(q);
-        }
-      } else {
-        qualities.addAll([1080, 720, 480]);
+      for (final label in qualityLabels) {
+        final px = int.tryParse(label.replaceAll('P', '')) ?? 0;
+        if (px > 0 && !qualities.contains(px)) qualities.add(px);
       }
 
       showModalBottomSheet(
