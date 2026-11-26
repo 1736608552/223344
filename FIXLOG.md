@@ -1,5 +1,34 @@
 # LunaTV-Mobile 修复日记
 
+## v2.8.2 (2026-11-26)
+
+### 车机版：顶部 tab 点不动 —— 是屏幕最上方的系统栏把触摸吃掉了
+
+**1. 实测现象（用户在车机上确认）**
+
+车机包（`LunaTV-Car-*`）里**只有屏幕顶部那一条区域点不动**：首页/电影/剧集那排 tab 全无反应，
+而卡片、按钮、播放页控件都正常。包本身没问题（`2.8.1-car`、`org.moontechlab.selenetv.car`）。
+
+**2. 根因**
+
+tab 栏贴在 `top = 16.dp`，而车机屏幕最上方常驻一条系统状态/导航栏（多数不属于本应用窗口）。
+手指落在这一条上时，触摸事件先被系统窗口接走，根本进不到应用 —— 于是「只有最上面一排点不动」。
+这跟 `tv-material` 的点击实现、`pointerInput`、层级顺序都无关，是**窗口坐标被系统栏覆盖**。
+
+**3. 改法（只改车机包，TV 包 0 变化）**
+
+`ui/TabSwitcher.kt` 顶部内边距改为：
+
+```kotlin
+val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+val carTopInset = if (BuildConfig.CAR_TOUCH) maxOf(statusTop, 48.dp) else 0.dp
+.padding(top = 16.dp + carTopInset, ...)
+```
+
+- 能拿到真实状态栏高度就按真实值下移；
+- 车机如果自己画悬浮窗（inset 为 0），用 48dp 兜底，保证 tab 栏一定落在系统栏下面；
+- TV 包 `carTopInset` 恒为 0，布局与旧版逐像素一致。
+
 ## v2.8.1 (2026-11-26)
 
 ### 车机版拆成独立编译包：TV 包里不再有任何触摸元素
