@@ -4217,6 +4217,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (!mounted || _isDisposing) return;
       final posMs = _player?.position.inMilliseconds ?? _currentPosition.inMilliseconds;
       if (posMs > 0) return; // 已经出画，链路正常
+      if (!_isPlaying) return; // 用户主动暂停 / 内核没进播放态，不判死链
       if (_error != null) return; // 已有显式错误提示，不再自作主张
       if (_selfHealedEpisodeKey == key) {
         DiaryService.add('[短剧] 第${index + 1}集换新链后 15s 仍无进度，停止自动重试');
