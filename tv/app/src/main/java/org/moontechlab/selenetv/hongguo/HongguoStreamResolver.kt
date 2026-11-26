@@ -1384,6 +1384,20 @@ object HongguoStreamResolver {
                 } else {
                     keysMap.remove(qLabel)
                 }
+
+                // v2.8.0 多 CDN 线路：同一档位的备用直链各自成为一条可选「线路」，在清晰度弹层里
+                // 直接切（只换 URL，不重新签名、不丢播放进度）。认得出运营商就标 移动/电信/联通。
+                var lineNo = 1
+                for (rawBackup in cand.backups) {
+                    val backupUrl = normalizePlaybackUrl(rawBackup, seed)
+                    if (!backupUrl.startsWith("http") || backupUrl == rawUrl) continue
+                    lineNo++
+                    val lineLabel = "$qLabel·${cdnLineTag(backupUrl, lineNo)}"
+                    if (multiMap.containsKey(lineLabel)) continue
+                    multiMap[lineLabel] = backupUrl
+                    softDecMap[lineLabel] = softDecMap[qLabel] == true
+                    keysMap[qLabel]?.let { keysMap[lineLabel] = it }
+                }
             }
         }
 
@@ -1494,23 +1508,42 @@ object HongguoStreamResolver {
         }
 
         // 按智能优先级序列依次尝试四大通道（single_registered 内置空响应极速换号）
+        //
+        // v2.8.0 短剧「第 4 集起没有清晰度选择」修复：
+        // 原来「首个成功通道立即返回」，而不同通道对同一个 vid 给的档位数并不一样 ——
+        // video_tab 会给 5 档（360~1080P），单集 video_model 只给 1 档。第 4 集起（不在搜索预览的
+        // 3 条 vid 里）如果 video_tab 先失败、单集通道先成功，就会拿着「只有 1 档」的结果直接返回，
+        // 控制条的清晰度胶囊因为 size>1 不成立而整个不出现。
+        // 现在：一旦某个通道只给出 1 档，就继续往后试剩余通道，取「档位最多」的那一份；
+        // 若首个成功通道已经是多档（绝大多数情况），立即返回 —— 起播速度与原来完全一致。
+        var bestResult: Map<String, Any?>? = null
+        var bestProvider = ""
+        var bestQualityCount = 0
         for (provider in providers) {
             // 每次尝试读取最新会话身份（若在前序通道中已触发换号则自动同步）
             identity = PlaybackDeviceSession.shared.profile(client)
-            val result = tryExecuteProvider(provider, identity)
-            if (result != null) {
-                recordSourceSuccess(seriesId, provider)
-                val totalElapsed = System.currentTimeMillis() - resolveStart
-                android.util.Log.i("HongguoStreamResolver", "取流成功 [通道: $provider, 画质: ${result["quality"]}, seriesId: $seriesId]")
-                HongguoDiagnostic.log("INFO", "stream_resolver", "RESOLVE_OK", "取流成功 [通道: $provider, 画质: ${result["quality"]}, 总耗时: ${totalElapsed}ms]")
-                HongguoDiagnostic.updateReport(
-                    stage = "stream_resolver",
-                    code = "RESOLVE_OK",
-                    elapsedMs = totalElapsed,
-                    summary = "取流成功: 通道 $provider · ${result["quality"]}"
-                )
-                return result
+            val result = tryExecuteProvider(provider, identity) ?: continue
+            val qualityCount = (result["qualities"] as? List<*>)?.size ?: 0
+            if (qualityCount > bestQualityCount) {
+                bestResult = result
+                bestProvider = provider
+                bestQualityCount = qualityCount
             }
+            if (qualityCount > 1) break
+        }
+        val winner = bestResult
+        if (winner != null) {
+            recordSourceSuccess(seriesId, bestProvider)
+            val totalElapsed = System.currentTimeMillis() - resolveStart
+            android.util.Log.i("HongguoStreamResolver", "取流成功 [通道: $bestProvider, 画质: ${winner["quality"]}, 档位数: $bestQualityCount, seriesId: $seriesId]")
+            HongguoDiagnostic.log("INFO", "stream_resolver", "RESOLVE_OK", "取流成功 [通道: $bestProvider, 画质: ${winner["quality"]}, 档位数: $bestQualityCount, 总耗时: ${totalElapsed}ms]")
+            HongguoDiagnostic.updateReport(
+                stage = "stream_resolver",
+                code = "RESOLVE_OK",
+                elapsedMs = totalElapsed,
+                summary = "取流成功: 通道 $bestProvider · ${winner["quality"]} · $bestQualityCount 档"
+            )
+            return winner
         }
 
         // 若记忆通道失效，清除旧通道记忆并尝试受冷却锁保护的单次设备刷新重试首选通道
