@@ -10,11 +10,20 @@ import org.moontechlab.selenetv.model.UpdateInfo
  */
 object UpdateLogic {
 
-    /** 解析版本号为数值段；去掉前导 v/V；任一段非纯数字返回 null。 */
+    /**
+     * 解析版本号为数值段；去掉前导 v/V；任一段非纯数字返回 null。
+     *
+     * v2.8.4：必须容忍渠道后缀。车机包 `versionNameSuffix = "-car"`，本机 versionName 是
+     * `2.8.4-car`；以前 `"4-car".toIntOrNull()` 得 null → 整串判为非法 → compareVersions 返回 0
+     * → `<= 0` → 永远认为「已是最新」。这就是「车机版不能在线更新」的直接原因。
+     * 现在先砍掉 `+build` / `-flavor` / 空格之后的部分再逐段解析。
+     */
     fun parseVersion(raw: String): List<Int>? {
         val cleaned = raw.trim().removePrefix("v").removePrefix("V")
         if (cleaned.isEmpty()) return null
-        val parts = cleaned.split(".")
+        val core = cleaned.substringBefore('+').substringBefore('-').substringBefore(' ').trim()
+        if (core.isEmpty()) return null
+        val parts = core.split('.')
         return parts.map { it.toIntOrNull() ?: return null }
     }
 
@@ -32,19 +41,34 @@ object UpdateLogic {
     }
 
     /**
-     * 按设备 ABI 与设备类型选匹配的 TV 端 APK 资产。
+     * 按设备 ABI 与「本包所属渠道」选匹配的 APK 资产。
      * 规则：
-     * 1. 优先筛选属于 TV 端的 APK（文件名包含 "LunaTV-TV-" 或 "SeleneTV" 或 "-TV-"），防止误匹配手机端包；
-     * 2. 若当前为海信设备 (isHisenseDevice=true)，优先命中包含 "hisense" 的专属包；
-     * 3. 否则排除包含 "hisense" 的包，按 supportedAbis 优先级顺序命中第一个架构包；
-     * 4. 若 assets 中没有标注 TV 的包，则回退到按普通 apk 规则匹配（兼容老版本）。
+     * 0. 渠道优先、绝不跨渠道：车机包只认 `LunaTV-Car-*`；TV 包只认 `LunaTV-TV-*` / `SeleneTV` / `-TV-`。
+     *    跨渠道装上去是**另一个包名**（车机是 `...selenetv.car`），等于并排出第二个 App，
+     *    自己永远更新不掉自己 —— 这是「车机版不能在线更新」的第二个原因（原先只筛 TV 包，
+     *    车机选不到资产 → null → 当作已是最新）。
+     * 1. 若当前为海信设备 (isHisenseDevice=true)，优先命中包含 "hisense" 的专属包；
+     * 2. 否则排除包含 "hisense" 的包，按 supportedAbis 优先级顺序命中第一个架构包；
+     * 3. TV 渠道若 assets 中没有标注 TV 的包，则回退到按普通 apk 规则匹配（兼容老版本）。
+     *    车机渠道**不回退**：宁可判定「无可用包」，也不能给车机装 TV/手机包。
      */
     fun selectAsset(
         supportedAbis: List<String>,
         assets: List<GithubAsset>,
         isHisenseDevice: Boolean = false,
+        isCar: Boolean = false,
     ): Pair<String, GithubAsset>? {
         val allApks = assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
+
+        if (isCar) {
+            val carApks = allApks.filter { it.name.contains("LunaTV-Car-", ignoreCase = true) }
+            for (abi in supportedAbis) {
+                val match = carApks.firstOrNull { it.name.contains(abi, ignoreCase = true) }
+                if (match != null) return abi to match
+            }
+            return null
+        }
+
         val tvApks = allApks.filter {
             it.name.contains("LunaTV-TV-", ignoreCase = true) ||
             it.name.contains("SeleneTV", ignoreCase = true) ||
@@ -77,9 +101,10 @@ object UpdateLogic {
         currentVersion: String,
         supportedAbis: List<String>,
         isHisenseDevice: Boolean = false,
+        isCar: Boolean = false,
     ): UpdateInfo? {
         if (compareVersions(release.tagName, currentVersion) <= 0) return null
-        val (abi, asset) = selectAsset(supportedAbis, release.assets, isHisenseDevice) ?: return null
+        val (abi, asset) = selectAsset(supportedAbis, release.assets, isHisenseDevice, isCar) ?: return null
         val cleanVersion = release.tagName.trim().removePrefix("v").removePrefix("V")
         return UpdateInfo(
             version = cleanVersion,

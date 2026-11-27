@@ -1,5 +1,41 @@
 # LunaTV-Mobile 修复日记
 
+## v2.8.5 (2026-11-27)
+
+### 车机版不能在线更新：版本号被 `-car` 后缀带崩 + 选包只认 TV 包
+
+两个 bug 叠在一起，任意一个都足以让车机包永远认为「已是最新」。
+
+**1. 版本解析被渠道后缀带崩（直接原因）**
+
+车机 flavor 有 `versionNameSuffix = "-car"`，本机 `versionName` 是 `2.8.4-car`。
+`UpdateLogic.parseVersion` 按 `.` 切段后要求每段纯数字，`"4-car".toIntOrNull()` 得 null
+→ 整串判为非法 → `compareVersions` 直接 `return 0` → `buildUpdateInfo` 里
+`<= 0` 成立 → 认定无更新。**连「有没有新版本」这一步都过不去**，跟网络、资产无关。
+
+改法：解析前先砍掉 `+build` / `-flavor` / 空格之后的部分，`2.8.4-car` → `2.8.4`。
+TV 包（`2.8.4`）与海信包（`2.8.4-hisense`）走的都是同一条路径，行为不变。
+
+**2. 选包只认 `LunaTV-TV-*`（第二个原因）**
+
+`selectAsset` 里资产白名单是 `LunaTV-TV-` / `SeleneTV` / `-TV-`，车机包 `LunaTV-Car-*`
+不在其中 → `tvApks` 为空 → 回退到「全部 apk」→ 那里面只有手机包，ABI 又不匹配 → 返回 null。
+CDN 兜底通道更彻底：`changelogs.json` 那条路把模拟资产**写死成 6 个 LunaTV-TV-* 文件**，
+车机走兜底时永远选不到包。
+
+改法：
+
+- `selectAsset(..., isCar)`：车机渠道只认 `LunaTV-Car-*` 且**不回退**——跨渠道装上去是
+  另一个包名（`...selenetv.car`），等于并排多出第二个 App，自己永远更新不掉自己。
+  TV 渠道规则原样保留（含海信优先、老版本回退）。
+- `UpdateService` 按 `BuildConfig.CAR_TOUCH` 决定渠道：兜底资产清单按渠道生成
+  （车机给 `LunaTV-Car-*` 两个 ABI，TV 给原三件），下载文件名前缀也随之区分。
+- 安装链路本来就没问题：FileProvider authority 用的是 `${applicationId}.fileprovider`，
+  车机包自然是 `.car.fileprovider`，与 `InstallHelper` 里 `packageName + ".fileprovider"` 一致。
+
+**注意**：正在用的 `2.8.4-car` 里带的就是旧逻辑，它自己仍然说自己是最新。
+**这一版必须手动装一次**（Release 里 `LunaTV-Car-2.8.5-*`），从 2.8.5 起在线更新才通。
+
 ## v2.8.4 (2026-11-27)
 
 ### 车机版全屏后「露底」：播放页 Dialog 窗口只有屏高减两条系统栏

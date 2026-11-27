@@ -86,16 +86,18 @@ object UpdateService {
      * 网络或解析失败抛 ApiException。
      */
     fun checkForUpdate(context: Context): UpdateInfo? {
-        val release = fetchLatestRelease()
+        // 车机包只挑 LunaTV-Car-*，TV 包只挑 LunaTV-TV-*（跨渠道包名不同，装了也更新不到自己）
+        val isCar = org.moontechlab.selenetv.BuildConfig.CAR_TOUCH
+        val release = fetchLatestRelease(isCar)
         val current = currentVersionName(context)
         val abis = Build.SUPPORTED_ABIS?.toList() ?: emptyList()
         val isHisense = isHisenseDevice()
-        val info = UpdateLogic.buildUpdateInfo(release, current, abis, isHisense) ?: return null
+        val info = UpdateLogic.buildUpdateInfo(release, current, abis, isHisense, isCar) ?: return null
         val acceleratedUrl = buildGithubAssetUrl(info.apkUrl)
         return info.copy(apkUrl = acceleratedUrl)
     }
 
-    private fun fetchLatestRelease(): GithubRelease {
+    private fun fetchLatestRelease(isCar: Boolean): GithubRelease {
         val targetUrl = buildGithubApiUrl(LATEST_URL)
         val request = Request.Builder()
             .url(targetUrl)
@@ -136,32 +138,34 @@ object UpdateService {
                                 val bodyText = map.optString(latestTag, "全新版本 $latestTag 发布！")
                                 val releaseRepo = "https://github.com/1736608552/LunaTV-Release"
 
-                                val simulatedAssets = listOf(
-                                    org.moontechlab.selenetv.model.GithubAsset(
-                                        name = "LunaTV-TV-arm64-v8a.apk",
-                                        browserDownloadUrl = "$releaseRepo/releases/download/$latestTag/LunaTV-TV-arm64-v8a.apk"
-                                    ),
-                                    org.moontechlab.selenetv.model.GithubAsset(
-                                        name = "LunaTV-TV-armeabi-v7a.apk",
-                                        browserDownloadUrl = "$releaseRepo/releases/download/$latestTag/LunaTV-TV-armeabi-v7a.apk"
-                                    ),
-                                    org.moontechlab.selenetv.model.GithubAsset(
-                                        name = "LunaTV-TV-hisense.apk",
-                                        browserDownloadUrl = "$releaseRepo/releases/download/$latestTag/LunaTV-TV-hisense.apk"
-                                    ),
-                                    org.moontechlab.selenetv.model.GithubAsset(
-                                        name = "LunaTV-TV-$cleanTag-arm64-v8a.apk",
-                                        browserDownloadUrl = "$releaseRepo/releases/download/$latestTag/LunaTV-TV-$cleanTag-arm64-v8a.apk"
-                                    ),
-                                    org.moontechlab.selenetv.model.GithubAsset(
-                                        name = "LunaTV-TV-$cleanTag-armeabi-v7a.apk",
-                                        browserDownloadUrl = "$releaseRepo/releases/download/$latestTag/LunaTV-TV-$cleanTag-armeabi-v7a.apk"
-                                    ),
-                                    org.moontechlab.selenetv.model.GithubAsset(
-                                        name = "LunaTV-TV-$cleanTag-hisense.apk",
-                                        browserDownloadUrl = "$releaseRepo/releases/download/$latestTag/LunaTV-TV-$cleanTag-hisense.apk"
-                                    )
-                                )
+                                // 兜底清单必须与「本包渠道」一致：车机包给 Car 资产，TV 包给 TV 资产。
+                                // 以前这里写死 LunaTV-TV-*，车机包走 CDN 兜底时永远选不到包 → 判定「无更新」。
+                                val family = if (isCar) "LunaTV-Car" else "LunaTV-TV"
+                                val abiNames = if (isCar) {
+                                    listOf("arm64-v8a", "armeabi-v7a")
+                                } else {
+                                    listOf("arm64-v8a", "armeabi-v7a", "hisense")
+                                }
+                                val simulatedAssets = buildList {
+                                    abiNames.forEach { tag ->
+                                        // 不带版本号的稳定名：LunaTV-TV-arm64-v8a.apk / LunaTV-TV-hisense.apk
+                                        add(
+                                            org.moontechlab.selenetv.model.GithubAsset(
+                                                name = "$family-$tag.apk",
+                                                browserDownloadUrl = "$releaseRepo/releases/download/$latestTag/$family-$tag.apk"
+                                            )
+                                        )
+                                    }
+                                    abiNames.forEach { tag ->
+                                        // 带版本号的文件名：LunaTV-Car-v2.8.4-arm64-v8a.apk
+                                        add(
+                                            org.moontechlab.selenetv.model.GithubAsset(
+                                                name = "$family-$cleanTag-$tag.apk",
+                                                browserDownloadUrl = "$releaseRepo/releases/download/$latestTag/$family-$cleanTag-$tag.apk"
+                                            )
+                                        )
+                                    }
+                                }
 
                                 return GithubRelease(
                                     tagName = latestTag,
@@ -186,7 +190,8 @@ object UpdateService {
     fun downloadApk(context: Context, info: UpdateInfo, onProgress: (Float) -> Unit): File {
         val dir = File(context.cacheDir, "update").apply { mkdirs() }
         dir.listFiles()?.forEach { it.delete() }
-        val outFile = File(dir, "LunaTV-TV-${info.version}-${info.abi}.apk")
+        val prefix = if (org.moontechlab.selenetv.BuildConfig.CAR_TOUCH) "LunaTV-Car" else "LunaTV-TV"
+        val outFile = File(dir, "$prefix-${info.version}-${info.abi}.apk")
 
         val rawUrl = if (info.apkUrl.contains("github.com/")) {
             "https://github.com/" + info.apkUrl.substringAfter("github.com/")
