@@ -51,7 +51,6 @@ import org.moontechlab.selenetv.service.SearchCacheService
 import org.moontechlab.selenetv.service.SubscriptionService
 import org.moontechlab.selenetv.service.UpdateService
 import qrcode.QRCode
-import java.net.NetworkInterface
 import org.moontechlab.selenetv.ui.AnimatedSelectDialog
 import org.moontechlab.selenetv.ui.ConfirmDialogContent
 import org.moontechlab.selenetv.ui.DialogButton
@@ -71,61 +70,20 @@ private val CacheButtonBgFocused = Color(0xFFF39C12) // 缓存行聚焦填充：
 private val LogoutButtonBgFocused = Color(0xFFE74C3C) // 退出登录聚焦填充：实色红
 
 /**
- * 获取设备所有 IPv4 地址（除回环 IP）
+ * 获取设备所有 IPv4 地址（除回环 IP）。
+ *
+ * v2.8.6: 一律走 [org.moontechlab.selenetv.util.LocalNet] —— Wi-Fi 优先、排除蜂窝/虚拟网卡。
+ * 旧实现按接口名把 `eth` 排在 `wlan` 前面，车机上会挑到内部以太网口或 4G 地址，
+ * 二维码印出来的 IP 手机扫不通。
  */
-private fun getAllIpAddresses(): List<String> {
-    val allIps = mutableListOf<String>()
-    try {
-        val interfaces = NetworkInterface.getNetworkInterfaces()?.toList() ?: emptyList()
-        // 按照物理网卡优先排序：eth (以太网) > wlan (Wi-Fi) > 其余
-        val sortedInterfaces = interfaces.sortedWith { a, b ->
-            val nameA = a.name.lowercase()
-            val nameB = b.name.lowercase()
-            val scoreA = when {
-                nameA.startsWith("eth") -> 0
-                nameA.startsWith("wlan") -> 1
-                nameA.startsWith("en") -> 2
-                else -> 10
-            }
-            val scoreB = when {
-                nameB.startsWith("eth") -> 0
-                nameB.startsWith("wlan") -> 1
-                nameB.startsWith("en") -> 2
-                else -> 10
-            }
-            scoreA.compareTo(scoreB)
-        }
-
-        for (networkInterface in sortedInterfaces) {
-            val name = networkInterface.name.lowercase()
-            // 排除虚拟网卡、热点 P2P、VPN/tun/tap 等干扰接口
-            if (name.startsWith("p2p") || name.startsWith("dummy") || name.startsWith("tun") || name.startsWith("tap")) {
-                continue
-            }
-            if (networkInterface.isUp && !networkInterface.isLoopback) {
-                networkInterface.inetAddresses?.toList()?.forEach { address ->
-                    val host = address.hostAddress ?: ""
-                    // 仅 IPv4 且非回环且非 Wi-Fi Direct 热点 (192.168.49.x)
-                    if (!address.isLoopbackAddress && host.contains('.') && !host.startsWith("192.168.49.")) {
-                        allIps.add(host)
-                    }
-                }
-            }
-        }
-    } catch (_: Exception) {}
-    return allIps
-}
+private fun getAllIpAddresses(context: android.content.Context): List<String> =
+    org.moontechlab.selenetv.util.LocalNet.all(context).map { it.ip }
 
 /**
- * 获取设备所有 IPv4 地址，优先返回物理局域网段 (192.168.x.x / 10.x.x.x / 172.x.x.x)
+ * 获取设备所有 IPv4 地址，优先返回 Wi-Fi 的局域网地址
  */
-private fun getPreferredIpAddress(): String? {
-    val allIps = getAllIpAddresses()
-    return allIps.find { it.startsWith("192.168.") }
-        ?: allIps.find { it.startsWith("10.") }
-        ?: allIps.find { it.startsWith("172.") }
-        ?: allIps.firstOrNull()
-}
+private fun getPreferredIpAddress(context: android.content.Context): String? =
+    org.moontechlab.selenetv.util.LocalNet.preferred(context)
 
 @Composable
 fun SettingsTab(
@@ -267,10 +225,11 @@ fun SettingsTab(
         decodeMode = AppDataService.getDecodeModeDisplayName()
         searchOrigin = AppDataService.getSearchOriginDisplayName()
         // 加载可用 IP 列表（网络接口枚举可能阻塞，放到 IO 线程）
-        val ips = withContext(Dispatchers.IO) { getAllIpAddresses() }
+        val ips = withContext(Dispatchers.IO) { getAllIpAddresses(context) }
         availableIps = ips
         if (selectedIp.isEmpty()) {
-            selectedIp = ips.find { it.startsWith("192.168.") } ?: ips.firstOrNull() ?: ""
+            // LocalNet 已按 Wi-Fi > 以太网 > 其他 排好序，取第一个即可
+            selectedIp = ips.firstOrNull() ?: ""
         }
         isLocalMode = AppDataService.isLocalMode()
         if (isLocalMode) {
@@ -1546,12 +1505,13 @@ private fun RemoteControlQrCode(
 ) {
     var qrBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var remoteUrl by remember { mutableStateOf("") }
+    val appContext = LocalContext.current.applicationContext
     
     // 当 selectedIp 变化时重新生成二维码
     LaunchedEffect(selectedIp) {
         withContext(Dispatchers.IO) {
             org.moontechlab.selenetv.server.RemoteControlServer.ensureRunning()
-            val ip = selectedIp.ifEmpty { getPreferredIpAddress() }
+            val ip = selectedIp.ifEmpty { getPreferredIpAddress(appContext) }
             val port = org.moontechlab.selenetv.server.RemoteControlServer.getPort()
             if (ip != null) {
                 val url = "http://$ip:$port/"

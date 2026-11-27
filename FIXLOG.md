@@ -53,6 +53,39 @@ return "http://127.0.0.1:$port/hongguo/media/$token.mp4"
 与 `VIDEO_LIST_EMPTY`，下次再出现「只有一个清晰度」可以直接分清是上游只给一档，
 还是被解析吃掉了。
 
+**3. 同档位多条候选会串用 CENC 密钥（潜在花屏）**
+
+`multiMap[qLabel]` 是后写覆盖先写，但「线路 N」的备份链是先写那条候选的。
+一旦上游把同一档拆成多条（h264 / hevc 各一条），最终直链来自后一条、备份链来自前一条，
+`spade_a` 与直链不配套 → 切过去必花屏。现在候选归一化后同 `qNum` 只保留第一条。
+
+## v2.8.7 (2026-11-27)
+
+### 车机版二维码印错 IP（蜂窝/内部以太网口抢了 Wi-Fi 的位置）＋ 同集重试把清晰度菜单打成单档
+
+**1. 车机版二维码印的 IP 不是 Wi-Fi 的**
+
+登录页与设置页各自实现了一遍「取本机 IPv4」，规则是「第一个 192.168.x.x」或
+「`eth` 优先于 `wlan`」。车机上同时挂着 `wlan0`、内部以太网 `eth0`、蜂窝 `rmnet_*`、
+Wi-Fi Direct `p2p0`(192.168.49.x)，于是二维码经常印出蜂窝或内部网口的地址，手机扫了打不开。
+
+新增 `util/LocalNet.kt` 统一收口：
+
+- `ConnectivityManager` 里 transport == WIFI 的网络取 `LinkProperties` 的 IPv4，作为第一优先级；
+- 退化路径再按接口枚举，`wlan*` > `eth*` > 其他，跳过 loopback / 169.254 / 192.168.49 /
+  `p2p / tun / tap / rmnet / ccmni / ppp / dummy`；
+- `preferred()` 只返回 Wi-Fi（其次以太网私有网段），**绝不返回蜂窝**。
+
+登录页二维码和设置页「Web 遥控器」二维码、以及设置里的 IP 列表全部改成走它。
+
+**2. 同一集重试会二次缩水：单档结果覆盖掉整个菜单**
+
+线路报错（2004）会触发 `controller.error` → `playEpisode(currentEpisode, 0)` 静默重试。
+重试那次取流若只回 1 档，`qualityOptions` 被直接覆盖 —— 用户看到的就是
+「点了线路 2 报错，回来清晰度只剩一个」。现在带上集号（`qualityOptionsEpisode`）：
+换集才清空列表，同一集重试走 `mergeQualityOptions()`，新档位优先、旧档位补位，
+菜单不再缩水。
+
 ## v2.8.5 (2026-11-27)
 
 ### 车机版不能在线更新：版本号被 `-car` 后缀带崩 + 选包只认 TV 包

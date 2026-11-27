@@ -169,6 +169,10 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
     var qualityPopupOpen by remember { mutableStateOf(false) }
     var qualityOptions by remember { mutableStateOf<List<QualityOption>>(emptyList()) }
     var currentQualityLabel by remember { mutableStateOf("") }
+    // v2.8.6: 当前 qualityOptions 属于哪一集。线路报错会触发同集静默重试，
+    //   而重试那次取流拿到单档时，菜单会被覆盖成只剩一个清晰度（用户侧就是
+    //   「点线路2报错之后清晰度也没了」）。带上集号才能区分「同集重试」和「换集」。
+    var qualityOptionsEpisode by remember { mutableStateOf(-1) }
     var preferredQualityPx by remember { mutableIntStateOf(1080) }
     val qualityPillFocus = remember { FocusRequester() }
     LaunchedEffect(controller, playbackSpeed) { controller.speed = playbackSpeed }
@@ -403,8 +407,12 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                     if (preResolved != null) {
                         pendingPreResolvedStream = null
                     } else {
-                        // 新一集开解析前先清空上一集残留的档位，避免胶囊显示错档
-                        qualityOptions = emptyList()
+                        // 换集时才清空上一集残留的档位，避免胶囊显示错档；
+                        // 同一集的静默重试要保留旧档位（见下方 merge），
+                        // 否则一次线路抖动 + 单档重试就把 720/540/480/360 全吃掉。
+                        if (qualityOptionsEpisode != index) {
+                            qualityOptions = emptyList()
+                        }
                         currentQualityLabel = ""
                         for (rAttempt in 0..1) {
                             try {
@@ -452,8 +460,15 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
                     }
 
                     if (streamInfo != null) {
-                        // 记录本集可选档位与当前档位，控制条「清晰度」胶囊读这两个值
-                        qualityOptions = resolvedQualities
+                        // 记录本集可选档位与当前档位，控制条「清晰度」胶囊读这两个值。
+                        // 同集重试时把旧档位并回来：新一档先到先得，旧档位只在缺档时补位，
+                        // 这样「线路2 报错 → 自动重试 → 上游只回 1 档」不会把 720/540/480/360 全吃掉。
+                        qualityOptions = if (qualityOptionsEpisode == index) {
+                            mergeQualityOptions(qualityOptions, resolvedQualities)
+                        } else {
+                            resolvedQualities
+                        }
+                        qualityOptionsEpisode = index
                         currentQualityLabel = streamInfo.quality
                         // 命中奇数非8对齐分辨率流（如 1924x1080）且当前仍在 ExoPlayer 硬解引擎上：
                         // 携带已解析的 streamInfo 零重复取流切换至 libmpv 纯软解引擎，彻底根除花屏！
@@ -528,6 +543,7 @@ fun PlayerScreen(launch: PlayerLaunch, onExit: () -> Unit, modifier: Modifier = 
             // v2.7.98: 非短剧源没有多档流，清掉短剧残留的清晰度状态
             qualityOptions = emptyList()
             currentQualityLabel = ""
+            qualityOptionsEpisode = -1
 
             // v2.7.81: 网页播放页 → 真实流地址 解析
             //   采集站分集地址里有大量「网页播放页」（/play/xxx、/share/xxx），

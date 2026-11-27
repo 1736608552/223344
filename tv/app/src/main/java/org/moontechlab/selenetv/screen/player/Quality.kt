@@ -122,6 +122,25 @@ fun qualityOptionsFromResolved(resolved: Map<String, Any?>?): List<QualityOption
 }
 
 /**
+ * v2.8.6: 同一集重试取流后的档位合并。
+ *
+ * 一次取流抖动（例如某条 CDN 线路报错触发全局自愈）常常只拿回单档，
+ * 若直接用新结果覆盖，清晰度胶囊会从 5 档塌成 1 档。规则：
+ *   - 新结果里的档位优先（直链更新、过期时间更晚）；
+ *   - 旧结果里新结果没有的档位原样补回，保持用户可选的档位集合不缩水。
+ */
+fun mergeQualityOptions(
+    old: List<QualityOption>,
+    incoming: List<QualityOption>,
+): List<QualityOption> {
+    if (incoming.isEmpty()) return old
+    if (old.isEmpty()) return incoming
+    val incomingLabels = incoming.map { it.label }.toSet()
+    val kept = old.filter { it.label !in incomingLabels }
+    return (incoming + kept).sortedByDescending { it.qualityPx }
+}
+
+/**
  * 控制条顶部的清晰度胶囊。文案 = 当前正在播的档位（如 1080P），未解析出来时显示「清晰度」。
  * 焦点模型镜像 [AspectRatioPill]：左交给画面比例、右交给倍速、下回进度条、上交给跳过或取消。
  */

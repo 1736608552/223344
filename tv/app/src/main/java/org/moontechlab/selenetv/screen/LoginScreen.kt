@@ -51,7 +51,6 @@ import org.moontechlab.selenetv.server.RemoteControlServer
 import org.moontechlab.selenetv.service.AppDataService
 import org.moontechlab.selenetv.service.AuthHelper
 import qrcode.QRCode
-import java.net.NetworkInterface
 import android.util.Log
 import org.moontechlab.selenetv.service.SubscriptionService
 import org.moontechlab.selenetv.ui.AnimatedSelectDialog
@@ -645,25 +644,6 @@ private fun LoginButton(
 }
 
 /**
- * 获取设备所有 IPv4 地址（除回环 IP）
- */
-private fun getAllIpAddresses(): List<String> {
-    val allIps = mutableListOf<String>()
-    try {
-        NetworkInterface.getNetworkInterfaces()?.toList()?.forEach { networkInterface ->
-            if (networkInterface.isUp && !networkInterface.isLoopback) {
-                networkInterface.inetAddresses?.toList()?.forEach { address ->
-                    if (!address.isLoopbackAddress && address.hostAddress?.contains('.') == true) {
-                        address.hostAddress?.let { allIps.add(it) }
-                    }
-                }
-            }
-        }
-    } catch (_: Exception) {}
-    return allIps
-}
-
-/**
  * 登录二维码区域
  */
 @Composable
@@ -675,15 +655,17 @@ private fun LoginQrCodeSection(
 ) {
     var qrBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var remoteUrl by remember { mutableStateOf("") }
+    val appContext = LocalContext.current.applicationContext
 
     // 与设置页 Web 遥控器一致：二维码内容为 http://IP:端口/remote_control。
     // 手机同局域网用浏览器扫码/打开即可远程往登录框输入（D-pad 打字繁琐，引导走 Web 遥控）。
+    // v2.8.6: IP 统一由 LocalNet 给出 —— Wi-Fi 优先。车机上蜂窝/内部以太网口会抢到第一个
+    //   192.168.x.x，二维码印出来手机根本扫不通（实测车机端就是这个现象）。
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             try {
                 org.moontechlab.selenetv.server.RemoteControlServer.ensureRunning()
-                val ips = getAllIpAddresses()
-                val ip = ips.find { it.startsWith("192.168.") } ?: ips.firstOrNull()
+                val ip = org.moontechlab.selenetv.util.LocalNet.preferred(appContext)
                 val port = org.moontechlab.selenetv.server.RemoteControlServer.getPort()
                 if (ip != null) {
                     val url = "http://$ip:$port/remote_control"
