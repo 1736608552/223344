@@ -883,7 +883,9 @@ object HongguoStreamResolver {
             "device_id" to deviceId,
             "video_id" to vid,
             "video_id_type" to "0",
-            "device_level" to "1",
+            // v2.8.6: 原来写死 "1"（等于把本机当最低端机上报），上游据此只下发 1 档。
+            //   手机端同一条通道用的是 3，实测能拿到 360~1080P 五档；这里对齐成 3。
+            "device_level" to VendorConstants.mobileV5DeviceLevel.toString(),
             "need_all_video_definition" to "1",
             "need_mp4_align" to "0",
             "use_os_player" to "0",
@@ -1159,24 +1161,34 @@ object HongguoStreamResolver {
         }
 
         val candidateList = mutableListOf<VideoCandidate>()
+        // v2.8.6 诊断用：上游到底给了几条、被哪一步丢掉了几条。
+        // 「只剩一个清晰度」时，这三个数字能立刻区分「上游只下发 1 档」和「解析把它们合并/过滤掉了」。
+        var rawEntries = 0
+        var skippedCodec = 0
+        var skippedEmptyUrl = 0
         val rawVideoList = model.opt("video_list")
         if (rawVideoList is org.json.JSONArray) {
             for (i in 0 until rawVideoList.length()) {
                 val item = rawVideoList.optJSONObject(i) ?: continue
+                rawEntries++
                 val meta = item.optJSONObject("video_meta") ?: JSONObject()
                 val codec = meta.optString("codec_type", item.optString("codec_type")).lowercase()
-                if (codec == "bytevc2" || codec == "bvc2") continue
+                if (codec == "bytevc2" || codec == "bvc2") { skippedCodec++; continue }
 
                 val mainUrl = item.optString("main_url").ifEmpty {
                     item.optString("backup_url_1").ifEmpty { item.optString("backup_url") }
                 }
-                if (mainUrl.isEmpty()) continue
+                if (mainUrl.isEmpty()) { skippedEmptyUrl++; continue }
 
+                // 注意 Array 形态这里原来只从 video_meta 取 definition，item 层级的同名字段漏了，
+                // 部分档位因此退化成 vheight 甚至默认 720，多档会被合并成同一个 key。补上 item 层级。
                 val defStr = meta.optString("definition").ifEmpty {
-                    meta.optString("quality_desc").ifEmpty {
-                        item.optString("quality_desc").ifEmpty {
-                            meta.optString("vheight").ifEmpty {
-                                meta.optString("height").ifEmpty { item.optString("height") }
+                    item.optString("definition").ifEmpty {
+                        meta.optString("quality_desc").ifEmpty {
+                            item.optString("quality_desc").ifEmpty {
+                                meta.optString("vheight").ifEmpty {
+                                    meta.optString("height").ifEmpty { item.optString("height") }
+                                }
                             }
                         }
                     }
@@ -1200,14 +1212,15 @@ object HongguoStreamResolver {
             while (keys.hasNext()) {
                 val k = keys.next()
                 val item = rawVideoList.optJSONObject(k) ?: continue
+                rawEntries++
                 val meta = item.optJSONObject("video_meta") ?: JSONObject()
                 val codec = meta.optString("codec_type", item.optString("codec_type")).lowercase()
-                if (codec == "bytevc2" || codec == "bvc2") continue
+                if (codec == "bytevc2" || codec == "bvc2") { skippedCodec++; continue }
 
                 val mainUrl = item.optString("main_url").ifEmpty {
                     item.optString("backup_url_1").ifEmpty { item.optString("backup_url") }
                 }
-                if (mainUrl.isEmpty()) continue
+                if (mainUrl.isEmpty()) { skippedEmptyUrl++; continue }
 
                 val defStr = meta.optString("definition").ifEmpty {
                     item.optString("definition").ifEmpty {
@@ -1335,8 +1348,51 @@ object HongguoStreamResolver {
             }
         }
 
-        if (candidateList.isEmpty()) return null
+        if (candidateList.isEmpty()) {
+            HongguoDiagnostic.log(
+                "WARN", "stream_resolver", "VIDEO_LIST_EMPTY",
+                "上游 video_list 无可播档位: 原始 $rawEntries 条, 跳过 bytevc2 $skippedCodec 条, 无直链 $skippedEmptyUrl 条"
+            )
+            return null
+        }
+
+        // v2.8.6：两档解析出同一个 qNum 时，若 video_meta 里的真实高度不同，说明 definition 缺失
+        // 导致退化成默认值 —— 用真实高度纠正，避免 5 档被压成 1 档（用户侧就是「只有一个清晰度」）。
+        val normalized = mutableListOf<VideoCandidate>()
+        val takenHeights = mutableMapOf<Int, Int>()
+        for (c in candidateList.sortedByDescending { it.qNum }) {
+            var q = c.qNum
+            val realH = if (c.vwidth > 0 && (c.vheight == 0 || c.vwidth < c.vheight)) c.vwidth else c.vheight
+            val prevH = takenHeights[q]
+            if (prevH != null && realH > 0 && prevH != realH) {
+                q = realH
+            }
+            takenHeights.getOrPut(q) { realH }
+            normalized.add(if (q == c.qNum) c else c.copy(qNum = q))
+        }
+        candidateList.clear()
+        candidateList.addAll(normalized)
         candidateList.sortByDescending { it.qNum }
+
+        // v2.8.6: 同 qNum（真实高度也相同）的多条候选只保留第一条。
+        //   以前是全留着、靠 `multiMap[qLabel] = rawUrl` 后写覆盖先写 —— 最终直链来自后一条，
+        //   但「线路N」备份链是前一条候选的，spade_a 与直链不配套，切过去必花屏。
+        val deduped = mutableListOf<VideoCandidate>()
+        for (c in candidateList) {
+            if (deduped.any { it.qNum == c.qNum }) continue
+            deduped.add(c)
+        }
+        if (deduped.size != candidateList.size) {
+            candidateList.clear()
+            candidateList.addAll(deduped)
+        }
+
+        HongguoDiagnostic.log(
+            "INFO", "stream_resolver", "VIDEO_LIST_PARSED",
+            "档位解析: 原始 $rawEntries 条 → 可用 ${candidateList.size} 档 " +
+                "[" + candidateList.joinToString(", ") { "${it.qNum}P(${it.vwidth}x${it.vheight})" } + "]" +
+                ", 跳过 bytevc2 $skippedCodec 条, 无直链 $skippedEmptyUrl 条"
+        )
 
         val multiMap = mutableMapOf<String, String>()
         val keysMap = mutableMapOf<String, String>()
@@ -1426,6 +1482,76 @@ object HongguoStreamResolver {
             )
         }
         return null
+    }
+
+    /**
+     * v2.8.6：把多个通道解析出的档位并成一份。
+     *
+     * 只在「所有通道都只给了 1 档」时兜底调用 —— 正常情况下首个给出多档的通道会立即返回，
+     * 根本走不到这里，起播速度不受影响。
+     *
+     * 合并规则：档位标签（`1080P` / `720P·移动`）先到先得，排在前面的通道优先级更高
+     * （video_tab 在序列最前，它给的直链最稳）；每档保留自己通道的 CENC 密钥，
+     * 不同通道的 spade_a 不会串用；同名档位来自多个通道时只留第一条。
+     */
+    private fun mergeResolvedQualities(
+        results: List<Map<String, Any?>>,
+        maxQuality: Int,
+    ): Map<String, Any?>? {
+        if (results.isEmpty()) return null
+        val multiMap = LinkedHashMap<String, String>()
+        val keysMap = LinkedHashMap<String, String>()
+        val softMap = LinkedHashMap<String, Boolean>()
+        val qualitySet = sortedSetOf<Int>()
+        var expireAt = 0L
+
+        for (r in results) {
+            val mm = r["multiMap"] as? Map<*, *> ?: continue
+            val km = r["keys"] as? Map<*, *>
+            val sm = r["softDecMap"] as? Map<*, *>
+            for ((rawKey, rawValue) in mm) {
+                val label = rawKey?.toString().orEmpty()
+                val url = rawValue?.toString().orEmpty()
+                if (label.isEmpty() || label == "自动") continue
+                if (!url.startsWith("http")) continue
+                if (multiMap.containsKey(label)) continue
+                multiMap[label] = url
+                (km?.get(label) as? String)?.takeIf { it.isNotEmpty() }?.let { keysMap[label] = it }
+                if (sm?.get(label)?.toString()?.toBoolean() == true) softMap[label] = true
+            }
+            (r["qualities"] as? List<*>)?.forEach { q ->
+                val n = (q as? Number)?.toInt() ?: 0
+                if (n > 0) qualitySet.add(n)
+            }
+            val exp = (r["expireAt"] as? Number)?.toLong() ?: 0L
+            if (exp > 0 && (expireAt == 0L || exp < expireAt)) expireAt = exp
+        }
+
+        if (multiMap.isEmpty() || qualitySet.isEmpty()) return null
+
+        val desc = qualitySet.sortedDescending()
+        val target = desc.firstOrNull { it <= maxQuality } ?: desc.first()
+        val targetLabel = "${target}P"
+        val primaryUrl = multiMap[targetLabel] ?: multiMap.values.first()
+        val primaryKey = keysMap[targetLabel] ?: ""
+        val needsSoft = softMap[targetLabel] == true
+
+        // 返回结构与 extractPlaybackOptions 保持一致（「自动」别名照旧补上）
+        multiMap["自动"] = primaryUrl
+        softMap["自动"] = needsSoft
+
+        return mapOf(
+            "url" to primaryUrl,
+            "decryptionKey" to primaryKey,
+            "keys" to keysMap,
+            "quality" to targetLabel,
+            "actualQuality" to target,
+            "qualities" to desc,
+            "multiMap" to multiMap,
+            "needsSoftwareDecode" to needsSoft,
+            "softDecMap" to softMap,
+            "expireAt" to expireAt,
+        )
     }
 
     /**
@@ -1519,10 +1645,15 @@ object HongguoStreamResolver {
         var bestResult: Map<String, Any?>? = null
         var bestProvider = ""
         var bestQualityCount = 0
+        // v2.8.6：把每个成功通道的结果都留着。若最终谁都没给出多档，就把它们的档位并起来，
+        // 而不是只认「第一个成功的通道」—— 上游对不同通道下发的档位数量本来就不一样
+        // （video_tab 可能只给 1080P，mobile_v5 却带 720/540/480），合并后用户才有得选。
+        val collected = mutableListOf<Map<String, Any?>>()
         for (provider in providers) {
             // 每次尝试读取最新会话身份（若在前序通道中已触发换号则自动同步）
             identity = PlaybackDeviceSession.shared.profile(client)
             val result = tryExecuteProvider(provider, identity) ?: continue
+            collected.add(result)
             val qualityCount = (result["qualities"] as? List<*>)?.size ?: 0
             if (qualityCount > bestQualityCount) {
                 bestResult = result
@@ -1530,6 +1661,21 @@ object HongguoStreamResolver {
                 bestQualityCount = qualityCount
             }
             if (qualityCount > 1) break
+        }
+        if (bestQualityCount <= 1 && collected.size > 1) {
+            val merged = mergeResolvedQualities(collected, maxQuality)
+            if (merged != null) {
+                val mergedCount = (merged["qualities"] as? List<*>)?.size ?: 0
+                HongguoDiagnostic.log(
+                    "INFO", "stream_resolver", "QUALITY_MERGED",
+                    "单通道档位不足，合并 ${collected.size} 个通道的档位: $bestQualityCount → $mergedCount 档"
+                )
+                if (mergedCount > bestQualityCount) {
+                    bestResult = merged
+                    bestProvider = "merged($bestProvider)"
+                    bestQualityCount = mergedCount
+                }
+            }
         }
         val winner = bestResult
         if (winner != null) {

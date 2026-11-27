@@ -118,8 +118,11 @@ class HongguoLocalServer private constructor() {
             return info.url
         }
 
-        // 以 URL 的哈希或确定性标识作为 token，复用已初始化的 RemoteVideo 避免重复握手
-        val token = "stream_" + Integer.toHexString(info.url.hashCode()) + "_" + (info.quality.filter { it.isLetterOrDigit() })
+        // 以 URL 的哈希或确定性标识作为 token，复用已初始化的 RemoteVideo 避免重复握手。
+        // v2.8.6: token 必须是纯 ASCII。档位标签一旦含中文（如「1080P·线路2」），
+        //   播放器会把 URL 百分号编码，服务端按原始字节比对永远匹配不上 → 404 → 2004。
+        val token = "stream_" + Integer.toHexString(info.url.hashCode()) +
+            "_" + Integer.toHexString(info.quality.hashCode())
 
         val remote = activeStreams[token]
         if (remote == null) {
@@ -192,7 +195,10 @@ class HongguoLocalServer private constructor() {
             }
 
             // 解析路由: /hongguo/media/{token}.mp4
-            val cleanPath = rawPath.substringBefore('?')
+            // v2.8.6: 请求行里的 path 可能被播放器百分号编码过，解码后再比对 token
+            val cleanPath = runCatching {
+                android.net.Uri.decode(rawPath.substringBefore('?'))
+            }.getOrDefault(rawPath.substringBefore('?'))
             val prefix = "/hongguo/media/"
             if (!cleanPath.startsWith(prefix) || !cleanPath.endsWith(".mp4")) {
                 sendNotFound(socket)

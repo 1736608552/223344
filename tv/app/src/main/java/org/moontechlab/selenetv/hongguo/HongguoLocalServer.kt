@@ -31,7 +31,10 @@ class HongguoLocalServer private constructor() {
     companion object {
         private const val TAG = "HongguoLocalServer"
         private const val BUFFER_CHUNK_SIZE = 256 * 1024 // 256KB 分块传输
-        private const val MAX_ACTIVE_STREAMS = 16
+        // v2.8.6: 16 → 24。v2.8.0 起每个档位的每条 CDN 线路都是独立 token，
+        // 反复切档/切线路很容易把 16 撑满，一旦正在播的那条被淘汰，播放器下一次
+        // Range 请求就直接 404（2004）。上限不设太高，避免车机上缓存过多解密块。
+        private const val MAX_ACTIVE_STREAMS = 24
 
         val instance: HongguoLocalServer by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
             HongguoLocalServer().apply { start() }
@@ -118,8 +121,15 @@ class HongguoLocalServer private constructor() {
             return info.url
         }
 
-        // 以 URL 的哈希或确定性标识作为 token，复用已初始化的 RemoteVideo 避免重复握手
-        val token = "stream_" + Integer.toHexString(info.url.hashCode()) + "_" + (info.quality.filter { it.isLetterOrDigit() })
+        // 以 URL 的哈希或确定性标识作为 token，复用已初始化的 RemoteVideo 避免重复握手。
+        //
+        // v2.8.6 关键修复：token **必须是纯 ASCII**。
+        //   v2.8.0 引入多 CDN 线路后，档位标签变成了「1080P·线路2」「1080P·移动」这种含中文的串，
+        //   原来直接把它拼进 URL → 播放器请求前会做百分号编码 → 服务端按原始字节比对 token
+        //   永远匹配不上 → 返回 404 → ExoPlayer 抛 ERROR_CODE_IO_BAD_HTTP_STATUS(2004)。
+        //   用户侧表现就是「切到线路 2 必报错」。这里改用档位标签的哈希，彻底与字符集解耦。
+        val token = "stream_" + Integer.toHexString(info.url.hashCode()) +
+            "_" + Integer.toHexString(info.quality.hashCode())
 
         val remote = activeStreams[token]
         if (remote == null) {
@@ -192,7 +202,11 @@ class HongguoLocalServer private constructor() {
             }
 
             // 解析路由: /hongguo/media/{token}.mp4
-            val cleanPath = rawPath.substringBefore('?')
+            // 请求行里的 path 可能被播放器百分号编码过，必须解码后再比对 token，
+            // 否则任何非 ASCII 字符都会让匹配失败（表现为 404 → 播放器 2004）。
+            val cleanPath = runCatching {
+                android.net.Uri.decode(rawPath.substringBefore('?'))
+            }.getOrDefault(rawPath.substringBefore('?'))
             val prefix = "/hongguo/media/"
             if (!cleanPath.startsWith(prefix) || !cleanPath.endsWith(".mp4")) {
                 sendNotFound(socket)
@@ -202,6 +216,9 @@ class HongguoLocalServer private constructor() {
             val token = cleanPath.substring(prefix.length, cleanPath.length - 4)
             val remote = activeStreams[token]
             if (remote == null) {
+                // 播放器侧只会看到 ERROR_CODE_IO_BAD_HTTP_STATUS(2004)，这里留下服务端真因：
+                // 要么 token 拼错（编码/标签问题），要么该流已被 LRU 淘汰。
+                Log.w(TAG, "未知流 token=$token，当前已注册 ${activeStreams.size} 条: ${activeStreams.keys.take(4)}")
                 sendNotFound(socket)
                 return
             }
@@ -213,6 +230,16 @@ class HongguoLocalServer private constructor() {
                 Log.e(TAG, "远程流延迟准备失败: ${e.message}")
                 HongguoDiagnostic.log("ERROR", "local_server", "REMOTE_PREPARE_FAIL", "本地代理流准备失败 token=$token: ${e.message}")
                 HongguoDiagnostic.updateReport("local_server", "REMOTE_PREPARE_FAIL", summary = "本地代理流连接准备失败: ${e.message}", lastError = e.message)
+                // v2.8.6: 摘掉这个坏实例，别让它继续留在缓存里。
+                // 否则同一 token 的后续每一次请求都固定 502（播放器只看到 2004），
+                // 直到被 LRU 淘汰为止；摘掉后下一次 getPlayUrl 会重建连接自愈。
+                synchronized(activeStreams) {
+                    if (activeStreams[token] === remote) {
+                        activeStreams.remove(token)
+                        streamAccessOrder.remove(token)
+                    }
+                }
+                runCatching { remote.close() }
                 sendError(socket, 502, "Bad Gateway")
                 return
             }
