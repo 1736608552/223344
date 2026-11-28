@@ -160,7 +160,7 @@ fun calculateShowGridLayout(screenWidthDp: Float): ShowGridLayout {
     val availableSpace = screenWidthDp - totalCardWidth
 
     // 左右边距: 剩余空间的 15%, 最小 20dp
-    val horizontalPadding = maxOf(20f, availableSpace * 0.15f)
+    val horizontalPadding = 58f
 
     // 卡片间距: 剩余空间的 70% 分给 5 个间隙, 最小 28dp
     val cardGap = maxOf(28f, (availableSpace * 0.7f) / (SHOW_COLUMNS - 1))

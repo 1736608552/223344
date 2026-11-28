@@ -140,6 +140,17 @@ fun <T> MediaGridScaffold(
         focusedRowIndex = 0
     }
 
+    // 触屏/滚动到底部附近时自动触发加载更多（兼容车机触屏滑动不触发卡片焦点事件）
+    LaunchedEffect(scrollState.value, scrollState.maxValue, items.size, isLoading) {
+        if (scrollState.maxValue > 0 &&
+            scrollState.value >= scrollState.maxValue - 300 &&
+            !isLoading &&
+            items.isNotEmpty()
+        ) {
+            onLoadMore()
+        }
+    }
+
     // 卡片聚焦回调
     fun onCardFocus(rowIndex: Int) {
         focusedRowIndex = rowIndex
