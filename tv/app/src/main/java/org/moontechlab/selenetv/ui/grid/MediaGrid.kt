@@ -140,6 +140,17 @@ fun <T> MediaGridScaffold(
         focusedRowIndex = 0
     }
 
+    // 根据当前滚动位置估算视口中心行索引（兼容触屏滑动不更新 focusedRowIndex 的场景）
+    val scrollRowIndex = remember(scrollState.value, filterSectionHeight, screenHeightPx) {
+        val step = rowHeightPx + rowGapPx
+        if (step <= 0f) 0
+        else {
+            val centerY = scrollState.value + (screenHeightPx / 2f)
+            ((centerY - topSpacerPx - filterSectionHeight) / step).toInt().coerceAtLeast(0)
+        }
+    }
+    val activeRowIndex = maxOf(focusedRowIndex, scrollRowIndex)
+
     // 触屏/滚动到底部附近时自动触发加载更多（兼容车机触屏滑动不触发卡片焦点事件）
     LaunchedEffect(scrollState.value, scrollState.maxValue, items.size, isLoading) {
         if (scrollState.maxValue > 0 &&
@@ -200,7 +211,7 @@ fun <T> MediaGridScaffold(
                 // 内容区域 (6列网格)
                 MediaGridContent(
                     rows = rows,
-                    focusedRowIndex = focusedRowIndex,
+                    focusedRowIndex = activeRowIndex,
                     isLoading = isLoading,
                     errorMessage = errorMessage,
                     onRetry = onRetry,
