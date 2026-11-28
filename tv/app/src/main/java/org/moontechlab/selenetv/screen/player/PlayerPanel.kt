@@ -501,6 +501,12 @@ private fun SourcesTabContent(
 ) {
     val listState = rememberLazyListState()
     val selectedIndex = sources.indexOfFirst { sourceKey(it) == currentSourceKey }.coerceAtLeast(0)
+    // 确保当前在用源卡片滚入视口并完成 compose，防止 firstFocus 未初始化导致 Tab 按下键无反应
+    LaunchedEffect(selectedIndex, sources.size) {
+        if (selectedIndex > 0 && selectedIndex < sources.size) {
+            listState.scrollToItem(selectedIndex)
+        }
+    }
     LazyRow(
         state = listState,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
